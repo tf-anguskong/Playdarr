@@ -49,10 +49,12 @@ function rewriteM3u8(content, baseDir) {
 // ── HLS transcode start ────────────────────────────────────
 // Each user gets a session keyed to their user ID so they can
 // seek independently while Socket.io keeps them in sync.
-router.get('/hls/:ratingKey/master.m3u8', async (req, res) => {
-  const { ratingKey } = req.params;
-  const userId = String(req.session.user.id).replace(/\W/g, '').slice(0, 12);
-  const sessionId = `mn-${userId}-${ratingKey}`;
+router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
+  const { roomId, ratingKey } = req.params;
+  // All viewers in the same room share one Plex transcode session.
+  // This avoids Plex 400 errors from concurrent competing sessions for
+  // the same content, and means latecomers reuse already-transcoded segments.
+  const sessionId = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey}`;
 
   try {
     const params = {

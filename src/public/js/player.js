@@ -139,7 +139,7 @@ function tryPlay() {
 function loadHls(ratingKey, targetTime, shouldPlay) {
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   hidePlayOverlay();
-  const src = `/api/stream/hls/${ratingKey}/master.m3u8`;
+  const src = `/api/stream/hls/${roomId}/${ratingKey}/master.m3u8`;
 
   // Show overlay immediately if we expect playback — avoids relying on play()
   // promise rejection which can hang indefinitely in Chrome when buffering.
