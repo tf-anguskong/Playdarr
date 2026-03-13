@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Movie Night — Lobby</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="browser-page">
+  <header class="header">
+    <div class="header-logo">🎬 Movie Night</div>
+    <div class="header-right">
+      <div class="user-menu">
+        <img id="user-avatar" class="user-avatar" src="" alt="" style="display:none">
+        <span id="user-name" class="user-name"></span>
+        <button id="edit-name-btn" class="btn-edit-name" title="Change display name" style="display:none">✎</button>
+        <form action="/auth/logout" method="POST" style="display:inline">
+          <button type="submit" class="btn-logout">Sign out</button>
+        </form>
+      </div>
+
+      <!-- Display name editor (hidden by default) -->
+      <div id="name-editor" class="name-editor" style="display:none">
+        <input id="name-input" class="name-editor-input" type="text" maxlength="40" placeholder="Display name">
+        <button id="name-save-btn" class="btn-create" style="padding:0.25rem 0.75rem;font-size:0.85rem">Save</button>
+        <button id="name-cancel-btn" class="btn-logout">Cancel</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="browser-main">
+    <div class="browser-toolbar">
+      <h2>Rooms</h2>
+      <button id="create-room-btn" class="btn-create" style="display:none">+ Create Room</button>
+    </div>
+    <div id="rooms-grid" class="rooms-grid">
+      <div class="loading">Looking for rooms…</div>
+    </div>
+  </main>
+
+  <!-- Create room modal -->
+  <div id="create-modal" class="modal-overlay" style="display:none">
+    <div class="modal">
+      <h3>Create a Room</h3>
+      <input type="text" id="room-name-input" class="search-input" placeholder="Room name (optional)" maxlength="60" style="width:100%">
+      <div class="modal-actions">
+        <button id="cancel-create" class="btn-logout">Cancel</button>
+        <button id="confirm-create" class="btn-create">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/lobby.js"></script>
+</body>
+</html>

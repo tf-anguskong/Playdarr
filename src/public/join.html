@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Movie Night — Join Room</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="login-page">
+  <div class="login-container">
+    <div class="login-card">
+      <div class="login-logo">🎬</div>
+      <h1>You're Invited</h1>
+      <p>Enter a name to join the room.</p>
+
+      <div id="error-msg" class="error-msg" style="display:none"></div>
+
+      <div class="guest-form" style="margin-top:0">
+        <div class="guest-input-row">
+          <input
+            type="text"
+            id="guest-name"
+            class="search-input"
+            placeholder="Your display name…"
+            maxlength="40"
+            autocomplete="off"
+            style="flex:1"
+          >
+          <button id="join-btn" class="btn-guest">Join →</button>
+        </div>
+      </div>
+
+      <div class="login-divider"><span>or</span></div>
+      <a href="/auth/plex" class="btn-plex" style="width:100%;justify-content:center;box-sizing:border-box">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path d="M11.994 0C5.368 0 0 5.368 0 11.994S5.368 24 11.994 24 24 18.626 24 11.994 18.626 0 11.994 0zm.614 16.865H9.01L9 7.135h3.608l4.382 5.028-4.382 4.702z"/>
+        </svg>
+        Sign in with Plex instead
+      </a>
+    </div>
+  </div>
+
+  <script>
+    const inviteToken = location.pathname.split('/').pop();
+
+    async function joinRoom() {
+      const name = document.getElementById('guest-name').value.trim();
+      if (!name) { document.getElementById('guest-name').focus(); return; }
+
+      const btn = document.getElementById('join-btn');
+      btn.disabled = true; btn.textContent = '…';
+
+      try {
+        // Validate the invite and get the roomId
+        const validateRes = await fetch(`/join/${inviteToken}/info`);
+        if (!validateRes.ok) throw new Error('Invite link is no longer valid.');
+        const { roomId } = await validateRes.json();
+
+        const res = await fetch('/auth/guest-join', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, inviteToken, roomId })
+        });
+        const data = await res.json();
+        if (data.ok) window.location.href = `/watch/${data.roomId}`;
+        else throw new Error(data.error || 'Failed to join.');
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Join →';
+        const el = document.getElementById('error-msg');
+        el.textContent = err.message;
+        el.style.display = 'block';
+      }
+    }
+
+    document.getElementById('join-btn').addEventListener('click', joinRoom);
+    document.getElementById('guest-name').addEventListener('keydown', e => {
+      if (e.key === 'Enter') joinRoom();
+    });
+  </script>
+</body>
+</html>

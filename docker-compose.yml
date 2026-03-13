@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  movienight:
+    build: .
+    container_name: movienight
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - sessions:/data
+    # Allows the container to reach your Plex server on the host machine.
+    # On Windows/Mac Docker this is automatic; on Linux this adds the mapping.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  sessions:
+    driver: local
