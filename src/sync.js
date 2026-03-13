@@ -72,6 +72,14 @@ function broadcastRoomList(io) {
 }
 
 function setupSync(io) {
+  // Periodic sync heartbeat — keeps clients corrected during normal playback
+  // without waiting for a play/pause/seek event to trigger a state broadcast.
+  setInterval(() => {
+    rooms.forEach(room => {
+      if (room.playing && room.viewers.size > 1) room.broadcastState(io);
+    });
+  }, 5000);
+
   io.on('connection', (socket) => {
     const user = socket.user;
 

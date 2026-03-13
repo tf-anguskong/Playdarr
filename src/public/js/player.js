@@ -93,18 +93,46 @@ function applyState(state) {
   titleEl.textContent = state.movieTitle || 'Now Playing';
 
   const elapsed    = (Date.now() - state.lastUpdate) / 1000;
-  const targetTime = state.playing ? state.position + elapsed + 0.1 : state.position;
+  const targetTime = state.playing ? state.position + elapsed : state.position;
 
-  isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-
+  // New movie — full reload
   if (state.movieKey !== currentKey) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
     currentKey = state.movieKey;
     loadHls(state.movieKey, targetTime, state.playing);
-  } else {
-    if (Math.abs(video.currentTime - targetTime) > 1.5) video.currentTime = targetTime;
-    if (state.playing  && video.paused)  video.play().catch(console.warn);
-    if (!state.playing && !video.paused) video.pause();
+    return;
+  }
+
+  // Sync play/pause state
+  if (state.playing && video.paused) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    video.play().catch(console.warn);
     releaseSyncLock();
+  } else if (!state.playing && !video.paused) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    video.currentTime = targetTime;
+    video.pause();
+    releaseSyncLock();
+    return;
+  }
+
+  if (!state.playing) return;
+
+  // Drift correction during playback
+  const drift    = video.currentTime - targetTime;
+  const absDrift = Math.abs(drift);
+
+  if (absDrift > 5) {
+    // Large drift — hard seek
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    video.currentTime = targetTime;
+    releaseSyncLock();
+  } else if (absDrift > 0.5) {
+    // Small drift — nudge playback rate to catch up gradually (±5%)
+    video.playbackRate = drift > 0 ? 0.95 : 1.05;
+  } else {
+    // In sync — restore normal speed
+    if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
   }
 }
 
