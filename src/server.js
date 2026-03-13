@@ -48,7 +48,10 @@ io.use((socket, next) => {
 
 function requireAuth(req, res, next) {
   if (req.session?.user) return next();
-  if (req.headers.accept?.includes('json')) return res.status(401).json({ error: 'Unauthorized' });
+  // Non-page requests (HLS/XHR/fetch) should get a 401, not an HTML redirect —
+  // a redirect causes HLS.js to silently receive a login page and stall.
+  const acceptsHtml = req.headers.accept?.includes('text/html');
+  if (!acceptsHtml) return res.status(401).json({ error: 'Unauthorized' });
   res.redirect('/login');
 }
 

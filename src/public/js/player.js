@@ -163,7 +163,13 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
       }
     });
     hlsInstance.on(Hls.Events.ERROR, (_, d) => {
-      if (d.fatal) console.error('[HLS] Fatal:', d.type, d.details);
+      if (d.fatal) {
+        console.error('[HLS] Fatal:', d.type, d.details);
+        hidePlayOverlay();
+        noMovieText.textContent = `Stream error: ${d.details} — try refreshing.`;
+        noMovie.style.display = 'block';
+        video.style.display = 'none';
+      }
     });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
     video.src = src;

@@ -59,6 +59,7 @@
         const res = await fetch('/auth/guest-join', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
           body: JSON.stringify({ name, inviteToken, roomId })
         });
         const data = await res.json();
