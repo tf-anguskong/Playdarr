@@ -119,7 +119,9 @@ function hidePlayOverlay() {
   if (overlay) overlay.style.display = 'none';
 }
 
-document.getElementById('play-overlay-btn')?.addEventListener('click', () => {
+// Make the entire overlay clickable — the native video spinner can intercept
+// clicks on the button specifically, so we catch clicks on the whole overlay.
+document.getElementById('play-overlay')?.addEventListener('click', () => {
   hidePlayOverlay();
   video.play().catch(console.warn);
   releaseSyncLock();
