@@ -122,6 +122,7 @@ function hidePlayOverlay() {
 document.getElementById('play-overlay-btn')?.addEventListener('click', () => {
   hidePlayOverlay();
   video.play().catch(console.warn);
+  releaseSyncLock();
 });
 
 function tryPlay() {

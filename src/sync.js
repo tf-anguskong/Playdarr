@@ -185,7 +185,7 @@ function setupSync(io) {
           inviteTokens.delete(room.inviteToken);
           rooms.delete(room.id);
           broadcastRoomList(io);
-        }, 8000);
+        }, 30000);
       } else {
         room.broadcastViewers(io);
         console.log(`[Room] ${user.name} left "${room.name}"`);
