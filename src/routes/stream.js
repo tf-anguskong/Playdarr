@@ -6,6 +6,17 @@ const PLEX_URL = process.env.PLEX_URL;
 const PLEX_TOKEN = process.env.PLEX_TOKEN;
 const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
 
+// Cache the master manifest per room+movie so only the first viewer
+// (host) calls start.m3u8. Latecomers get the cached manifest and share
+// the already-running Plex session — no restart, no 400 errors.
+const manifestCache = new Map(); // `${roomId}-${ratingKey}` → { manifest, ts }
+
+function clearRoomManifest(roomId) {
+  for (const key of manifestCache.keys()) {
+    if (key.startsWith(roomId + '-')) manifestCache.delete(key);
+  }
+}
+
 // ── M3U8 URL rewriting ─────────────────────────────────────
 // Rewrites Plex-internal URLs so all HLS traffic routes through
 // our proxy. baseDir is the directory of the m3u8 being rewritten,
@@ -47,14 +58,18 @@ function rewriteM3u8(content, baseDir) {
 }
 
 // ── HLS transcode start ────────────────────────────────────
-// Each user gets a session keyed to their user ID so they can
-// seek independently while Socket.io keeps them in sync.
 router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const { roomId, ratingKey } = req.params;
-  // All viewers in the same room share one Plex transcode session.
-  // This avoids Plex 400 errors from concurrent competing sessions for
-  // the same content, and means latecomers reuse already-transcoded segments.
   const sessionId = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey}`;
+  const cacheKey  = `${roomId}-${ratingKey}`;
+
+  res.setHeader('Content-Type', 'application/x-mpegURL');
+  res.setHeader('Cache-Control', 'no-cache');
+
+  // Serve cached manifest to latecomers — avoids calling start.m3u8 again
+  // which would restart the Plex session and kick other viewers.
+  const cached = manifestCache.get(cacheKey);
+  if (cached) return res.send(cached);
 
   try {
     const params = {
@@ -87,7 +102,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       .join('&');
 
     const transcodeUrl = `${PLEX_URL}/video/:/transcode/universal/start.m3u8?${qs}`;
-    console.log('[HLS] Requesting:', transcodeUrl.replace(PLEX_TOKEN, 'REDACTED'));
+    console.log('[HLS] Starting session:', transcodeUrl.replace(PLEX_TOKEN, 'REDACTED'));
 
     const plexRes = await axios.get(transcodeUrl, {
       headers: {
@@ -100,19 +115,13 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       }
     });
 
-    console.log('[HLS] Plex response status:', plexRes.status);
-    console.log('[HLS] Plex content-type:', plexRes.headers['content-type']);
-    console.log('[HLS] Plex body (first 500):', String(plexRes.data).slice(0, 500));
+    const baseDir  = '/video/:/transcode/universal/';
+    const manifest = rewriteM3u8(plexRes.data, baseDir);
 
-    // Base dir = directory portion of the start.m3u8 URL, for resolving relative paths
-    const baseDir = '/video/:/transcode/universal/';
-
-    res.setHeader('Content-Type', 'application/x-mpegURL');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.send(rewriteM3u8(plexRes.data, baseDir));
+    manifestCache.set(cacheKey, manifest);
+    res.send(manifest);
   } catch (err) {
     console.error('[HLS] Start error:', err.response?.status, err.message);
-    console.error('[HLS] Plex response body:', JSON.stringify(err.response?.data)?.slice(0, 500));
     res.status(500).send('HLS error');
   }
 });
@@ -190,4 +199,4 @@ router.get('/thumb/:ratingKey', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = { router, clearRoomManifest };

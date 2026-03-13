@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const { clearRoomManifest } = require('./routes/stream');
 
 const rooms        = new Map(); // roomId -> Room
 const inviteTokens = new Map(); // inviteToken -> roomId
@@ -135,6 +136,7 @@ function setupSync(io) {
     socket.on('select-movie', ({ movieKey, movieTitle, partId }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || room.hostId !== user.id) return;
+      clearRoomManifest(room.id); // Evict cached manifest so next request starts fresh
       room.movieKey = movieKey; room.movieTitle = movieTitle; room.partId = partId;
       room.playing = false; room.position = 0; room.lastUpdate = Date.now();
       console.log(`[Room] "${room.name}" → "${movieTitle}"`);

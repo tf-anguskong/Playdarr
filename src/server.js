@@ -9,7 +9,7 @@ const fs = require('fs');
 
 const authRouter = require('./routes/auth');
 const moviesRouter = require('./routes/movies');
-const streamRouter = require('./routes/stream');
+const { router: streamRouter, clearRoomManifest } = require('./routes/stream');
 const { setupSync, getRoomByInviteToken } = require('./sync');
 
 const app = express();
