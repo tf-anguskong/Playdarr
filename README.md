@@ -63,20 +63,92 @@ Playdarr is a self-hosted watch-party app for Plex. It lets you and your friends
 - A running Plex Media Server accessible on your LAN
 - Docker (recommended) or Node.js 18+
 
-### Quick start with Docker
+### 1. Clone and configure
 
 ```bash
+git clone https://github.com/tf-anguskong/Playdarr.git
+cd Playdarr
 cp .env.example .env
-# Edit .env — see configuration section below
+```
+
+Open `.env` and fill in the required values — see the [Configuration](#configuration) section below for details. At minimum you need `SESSION_SECRET`, `PLEX_URL`, `PLEX_TOKEN`, `APP_URL`, and `COOKIE_SECURE`.
+
+### 2. Run with Docker (recommended)
+
+```bash
 docker compose up --build -d
 docker compose logs -f
 ```
+
+Playdarr will be available at `http://localhost:3000` (or whichever `PORT` you configured).
+
+### 3. Expose it to the internet
+
+Playdarr needs to be reachable over HTTPS for guests to join from outside your network. Two common approaches:
+
+---
+
+#### Option A — Cloudflare Tunnel (easiest, no port forwarding)
+
+Cloudflare Tunnel creates an outbound-only encrypted tunnel from your server to Cloudflare's edge. No port forwarding, no firewall changes, free on the Zero Trust free tier.
+
+1. Follow the [Cloudflare Tunnel setup guide](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/) to create a tunnel and point it at `http://localhost:3000`
+2. Add your tunnel token to `.env`:
+   ```
+   CLOUDFLARE_TUNNEL_TOKEN=your_token_here
+   ```
+3. Set `APP_URL` to your Cloudflare Tunnel hostname (e.g. `https://playdarr.yourdomain.com`) and `COOKIE_SECURE=true`
+4. The `docker-compose.yml` includes a `cloudflared` service that will start automatically with the token set
+
+> ⚠️ **Important:** Even when using a Cloudflare Tunnel for the app, `PLEX_URL` must remain a **local/LAN address**. Video segments are fetched server-side and must not route through Cloudflare — doing so will saturate your upload bandwidth immediately.
+
+---
+
+#### Option B — NGINX reverse proxy
+
+If you prefer to manage your own reverse proxy, NGINX works well. Point it at `http://localhost:3000` and terminate SSL there.
+
+A minimal NGINX config:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name playdarr.yourdomain.com;
+
+    ssl_certificate     /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        proxy_pass         http://localhost:3000;
+        proxy_http_version 1.1;
+
+        # Required for Socket.io
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Allow long-lived HLS segment requests
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+Set `APP_URL` to your domain and `COOKIE_SECURE=true` in `.env`.
+
+> **Tip:** If you're not comfortable editing NGINX config files directly, [NGINX Proxy Manager](https://nginxproxymanager.com/) provides a web UI that handles proxy hosts, SSL certificates (via Let's Encrypt), and WebSocket support with minimal configuration. It runs as a Docker container and is a popular choice for home lab setups.
+
+---
 
 ### Local development
 
 ```bash
 cp .env.example .env
-# Edit .env
+# Edit .env — set APP_URL=http://localhost:3000 and COOKIE_SECURE=false
 npm install
 npm run dev   # nodemon auto-reload on http://localhost:3000
 ```
