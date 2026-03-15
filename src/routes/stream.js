@@ -28,31 +28,6 @@ function clearRoomManifest(roomId) {
   }
 }
 
-// Keep Plex transcode sessions alive via the /:/timeline endpoint (supported
-// by all Plex versions). Called every 4 minutes to prevent the ~10-minute
-// inactivity timeout regardless of whether HLS.js is actively buffering.
-setInterval(async () => {
-  for (const [, { sessionId, ratingKey }] of activeSessions) {
-    try {
-      await axios.get(`${PLEX_URL}/:/timeline`, {
-        params: {
-          'X-Plex-Token': PLEX_TOKEN,
-          'X-Plex-Client-Identifier': CLIENT_ID,
-          'X-Plex-Session-Identifier': sessionId,
-          ratingKey,
-          key: `/library/metadata/${ratingKey}`,
-          state: 'playing',
-          time: 0,
-          duration: 0
-        },
-        timeout: 5000
-      });
-      console.log(`[HLS] Timeline heartbeat sent (${sessionId})`);
-    } catch (err) {
-      console.warn(`[HLS] Timeline heartbeat failed (${sessionId}):`, err.message);
-    }
-  }
-}, 4 * 60 * 1000);
 
 // ── M3U8 URL rewriting ─────────────────────────────────────
 // Rewrites Plex-internal URLs so all HLS traffic routes through
@@ -228,7 +203,7 @@ router.get('/proxy/*', async (req, res) => {
       url: `${PLEX_URL}${plexPath}`,
       params: { ...filterProxyParams(req.query), 'X-Plex-Token': PLEX_TOKEN },
       responseType: 'stream',
-      timeout: 30000,
+      timeout: 5 * 60 * 1000,
       maxContentLength: Infinity,
       maxBodyLength: Infinity
     });
