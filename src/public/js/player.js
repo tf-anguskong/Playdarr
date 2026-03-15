@@ -239,11 +239,23 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
         releaseSyncLock();
       }
     });
+    let networkRetried = false;
     hlsInstance.on(Hls.Events.ERROR, (_, d) => {
       if (!d.fatal) return;
       if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
         console.warn('[HLS] Media error, attempting recovery:', d.details);
         hlsInstance.recoverMediaError();
+      } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !networkRetried) {
+        // Network error — Plex session may have expired. Reload the source once;
+        // the server will start a fresh transcode session if needed.
+        networkRetried = true;
+        console.warn('[HLS] Network error, reloading source:', d.details);
+        setTimeout(() => {
+          if (hlsInstance) {
+            hlsInstance.loadSource(src);
+            hlsInstance.startLoad();
+          }
+        }, 2000);
       } else {
         console.error('[HLS] Fatal:', d.type, d.details);
         hidePlayOverlay();

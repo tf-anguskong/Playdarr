@@ -14,15 +14,39 @@ const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
 // Plex call rather than racing to start.m3u8 simultaneously.
 const manifestCache   = new Map(); // cacheKey → manifest string
 const manifestPending = new Map(); // cacheKey → Promise<string>
+const activeSessions  = new Map(); // cacheKey → sessionId
 
 function clearRoomManifest(roomId) {
   for (const key of manifestCache.keys()) {
-    if (key.startsWith(roomId + '-')) manifestCache.delete(key);
+    if (key.startsWith(roomId + '-')) {
+      manifestCache.delete(key);
+      activeSessions.delete(key);
+    }
   }
   for (const key of manifestPending.keys()) {
     if (key.startsWith(roomId + '-')) manifestPending.delete(key);
   }
 }
+
+// Plex terminates transcode sessions that don't receive segment requests or
+// a ping within ~10 minutes. Ping all active sessions every 4 minutes so
+// the server-side Plex session stays alive regardless of client buffer state.
+setInterval(async () => {
+  for (const [, sessionId] of activeSessions) {
+    try {
+      await axios.get(`${PLEX_URL}/video/:/transcode/universal/ping`, {
+        params: {
+          'X-Plex-Token': PLEX_TOKEN,
+          'X-Plex-Client-Identifier': CLIENT_ID,
+          'X-Plex-Session-Identifier': sessionId
+        },
+        timeout: 5000
+      });
+    } catch (err) {
+      console.warn(`[HLS] Session ping failed (${sessionId}):`, err.message);
+    }
+  }
+}, 4 * 60 * 1000);
 
 // ── M3U8 URL rewriting ─────────────────────────────────────
 // Rewrites Plex-internal URLs so all HLS traffic routes through
@@ -144,6 +168,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   try {
     const manifest = await promise;
     manifestCache.set(cacheKey, manifest);
+    activeSessions.set(cacheKey, sessionId);
     manifestPending.delete(cacheKey);
     res.send(manifest);
   } catch (err) {
