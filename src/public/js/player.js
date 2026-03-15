@@ -132,7 +132,7 @@ function applyState(state) {
   // Sync play/pause state
   if (state.playing && video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    video.play().catch(console.warn);
+    video.play().catch(err => { console.warn('[Player] Autoplay blocked:', err.message); showPlayOverlay(); });
     releaseSyncLock();
   } else if (!state.playing && !video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
