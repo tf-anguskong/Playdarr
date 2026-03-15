@@ -406,30 +406,154 @@ socket.on('reaction', ({ emoji }) => {
 });
 
 // ── Countdown ──────────────────────────────────────────────
-let countdownInterval = null;
-const countdownOverlay = document.getElementById('countdown-overlay');
-const countdownNumber  = document.getElementById('countdown-number');
-const countdownBtn     = document.getElementById('countdown-btn');
+let countdownRafId   = null;
+let countdownLastSec = -1;
+let audioCtx         = null;
+
+const countdownOverlay   = document.getElementById('countdown-overlay');
+const countdownCanvas    = document.getElementById('countdown-canvas');
+const countdownBtn       = document.getElementById('countdown-btn');
 const cancelCountdownBtn = document.getElementById('cancel-countdown-btn');
+
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playBeep(freq, dur) {
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = 'sine'; osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.28, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + dur);
+  } catch(e) {}
+}
+
+function drawCountdownFrame(remaining, sweepProgress) {
+  const cw = countdownCanvas.width, ch = countdownCanvas.height;
+  const cx = cw / 2, cy = ch / 2;
+  const R  = Math.min(cw, ch) * 0.41;
+  const ctx = countdownCanvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#060606';
+  ctx.fillRect(0, 0, cw, ch);
+
+  // Outer ring
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(225,225,225,0.9)';
+  ctx.lineWidth = 4; ctx.stroke();
+
+  // Crosshairs extending past circle
+  ctx.strokeStyle = 'rgba(200,200,200,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx - R * 1.18, cy); ctx.lineTo(cx + R * 1.18, cy);
+  ctx.moveTo(cx, cy - R * 1.18); ctx.lineTo(cx, cy + R * 1.18);
+  ctx.stroke();
+
+  // Tick marks (12 positions)
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 - Math.PI / 2;
+    const maj   = i % 3 === 0;
+    const inner = maj ? R * 0.76 : R * 0.87;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner);
+    ctx.lineTo(cx + Math.cos(angle) * R,     cy + Math.sin(angle) * R);
+    ctx.strokeStyle = maj ? 'rgba(220,220,220,0.9)' : 'rgba(170,170,170,0.65)';
+    ctx.lineWidth = maj ? 4 : 2; ctx.stroke();
+  }
+
+  // Sweep arm
+  const sa = sweepProgress * Math.PI * 2 - Math.PI / 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(sa) * R * 0.84, cy + Math.sin(sa) * R * 0.84);
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.lineWidth = 3; ctx.stroke();
+
+  // Centre pivot
+  ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+  ctx.fillStyle = 'white'; ctx.fill();
+
+  // Inner circle framing the number
+  ctx.beginPath(); ctx.arc(cx, cy, R * 0.30, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(210,210,210,0.7)'; ctx.lineWidth = 2.5; ctx.stroke();
+
+  // Number
+  if (remaining > 0) {
+    const fSize = Math.floor(R * 0.48);
+    ctx.font = `bold ${fSize}px "Courier New", Courier, monospace`;
+    ctx.fillStyle = 'rgba(240,240,240,0.97)';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(remaining), cx, cy + fSize * 0.05);
+  }
+
+  // Corner alignment circle (classic leader mark)
+  ctx.beginPath(); ctx.arc(cx + R * 0.78, cy - R * 0.78, R * 0.10, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(200,200,200,0.65)'; ctx.lineWidth = 2; ctx.stroke();
+
+  // Film grain (random dots)
+  for (let i = 0; i < 60; i++) {
+    ctx.beginPath();
+    ctx.arc(Math.random() * cw, Math.random() * ch, Math.random() * 1.8 + 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.12})`; ctx.fill();
+  }
+  // Occasional vertical scratch
+  if (Math.random() < 0.04) {
+    const sx = cx + (Math.random() - 0.5) * cw * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(sx, 0); ctx.lineTo(sx + (Math.random() - 0.5) * 30, ch);
+    ctx.strokeStyle = `rgba(255,255,255,${Math.random() * 0.07 + 0.02})`;
+    ctx.lineWidth = Math.random() * 1.5 + 0.5; ctx.stroke();
+  }
+}
+
+function startCountdownAnim(endsAt) {
+  if (countdownRafId) { cancelAnimationFrame(countdownRafId); countdownRafId = null; }
+  countdownLastSec = -1;
+
+  function frame() {
+    const timeLeft = endsAt - Date.now();
+    if (timeLeft <= 0) {
+      drawCountdownFrame(0, 1);
+      setTimeout(() => {
+        countdownOverlay.style.display = 'none';
+        cancelCountdownBtn.style.display = 'none';
+      }, 300);
+      return;
+    }
+    const remaining     = Math.ceil(timeLeft / 1000);
+    const sweepProgress = (1000 - (timeLeft % 1000)) / 1000;
+
+    if (remaining !== countdownLastSec) {
+      countdownLastSec = remaining;
+      playBeep(remaining === 1 ? 1760 : 880, remaining === 1 ? 0.25 : 0.1);
+    }
+
+    drawCountdownFrame(remaining, sweepProgress);
+    countdownRafId = requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+function stopCountdownAnim() {
+  if (countdownRafId) { cancelAnimationFrame(countdownRafId); countdownRafId = null; }
+  countdownOverlay.style.display = 'none';
+  cancelCountdownBtn.style.display = 'none';
+}
 
 socket.on('countdown', ({ endsAt }) => {
   countdownOverlay.style.display = 'flex';
   if (isHost) cancelCountdownBtn.style.display = 'block';
-  if (countdownInterval) clearInterval(countdownInterval);
-  const tick = () => {
-    const remaining = Math.ceil((endsAt - Date.now()) / 1000);
-    countdownNumber.textContent = remaining > 0 ? remaining : 0;
-    if (remaining <= 0) { clearInterval(countdownInterval); countdownInterval = null; }
-  };
-  tick();
-  countdownInterval = setInterval(tick, 200);
+  startCountdownAnim(endsAt);
 });
 
-socket.on('countdown-cancelled', () => {
-  if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
-  countdownOverlay.style.display = 'none';
-  cancelCountdownBtn.style.display = 'none';
-});
+socket.on('countdown-cancelled', stopCountdownAnim);
 
 countdownBtn.addEventListener('click', () => socket.emit('start-countdown'));
 cancelCountdownBtn.addEventListener('click', () => socket.emit('cancel-countdown'));
