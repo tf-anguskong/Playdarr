@@ -12,15 +12,17 @@ const viewersList = document.getElementById('viewers-list');
 const syncDot     = document.getElementById('sync-dot');
 const syncText    = document.getElementById('sync-text');
 
-let isSyncing    = false;
-let syncTimer    = null;
-let currentKey   = null;
-let hlsInstance  = null;
-let isHost       = false;
-let roomType     = 'movie';
-let roomSettings = { playbackLocked: false, reactionsEnabled: true };
+let isSyncing        = false;
+let syncTimer        = null;
+let currentKey       = null;
+let hlsInstance      = null;
+let isHost           = false;
+let roomType         = 'movie';
+let roomSettings     = { playbackLocked: false, reactionsEnabled: true };
+let sidebarCollapsed = false;
+let unreadChats      = 0;
 
-// ── YouTube IFrame API ─────────────────────────────────────
+// ── YouTube state ──────────────────────────────────────────
 let ytApiLoaded   = false;
 let ytApiReady    = false;
 let ytPlayer      = null;
@@ -282,6 +284,42 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
   }
 }
 
+// ── Sidebar collapse ───────────────────────────────────────
+const sidebar   = document.querySelector('.sidebar');
+const expandTab = document.getElementById('sidebar-expand-tab');
+const chatBadge = document.getElementById('chat-badge');
+
+function collapseSidebar() {
+  sidebarCollapsed = true;
+  sidebar.classList.add('collapsed');
+  expandTab.style.display = 'flex';
+}
+
+function expandSidebar() {
+  sidebarCollapsed = false;
+  sidebar.classList.remove('collapsed');
+  expandTab.style.display = 'none';
+  unreadChats = 0;
+  chatBadge.style.display = 'none';
+  chatBadge.textContent = '';
+}
+
+document.getElementById('sidebar-toggle').addEventListener('click', collapseSidebar);
+document.getElementById('sidebar-expand-btn').addEventListener('click', expandSidebar);
+
+// ── Toast notifications ────────────────────────────────────
+function showNotif(text) {
+  const area = document.getElementById('notif-area');
+  const el   = document.createElement('div');
+  el.className   = 'notif-toast';
+  el.textContent = text;
+  area.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('notif-out');
+    el.addEventListener('animationend', () => el.remove(), { once: true });
+  }, 4000);
+}
+
 // ── YouTube IFrame API ─────────────────────────────────────
 function loadYouTubeApi() {
   if (ytApiLoaded) return;
@@ -472,6 +510,12 @@ function renderViewers(viewers) {
 }
 
 socket.on('viewers', (viewers) => {
+  if (sidebarCollapsed && lastViewers.length > 0) {
+    const prevIds = new Set(lastViewers.map(v => v.socketId));
+    const currIds = new Set(viewers.map(v => v.socketId));
+    viewers.forEach(v => { if (!prevIds.has(v.socketId)) showNotif(`👋 ${v.name} joined`); });
+    lastViewers.forEach(v => { if (!currIds.has(v.socketId)) showNotif(`👋 ${v.name} left`); });
+  }
   lastViewers = viewers;
   renderViewers(viewers);
 });
@@ -610,6 +654,14 @@ socket.on('chat', ({ name, text, isGuest, videoTime, isSystem }) => {
   }
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  if (sidebarCollapsed && !isSystem) {
+    unreadChats++;
+    chatBadge.textContent = unreadChats > 99 ? '99+' : String(unreadChats);
+    chatBadge.style.display = 'flex';
+    const preview = text.length > 55 ? text.slice(0, 55) + '…' : text;
+    showNotif(`💬 ${name}: ${preview}`);
+  }
 });
 
 function sendChat() {

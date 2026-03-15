@@ -9,7 +9,10 @@
 <body class="watch-page">
   <div class="watch-layout">
     <aside class="sidebar">
-      <a href="/" class="sidebar-back">← Lobby</a>
+      <div class="sidebar-header">
+        <a href="/" class="sidebar-back">← Lobby</a>
+        <button id="sidebar-toggle" class="sidebar-collapse-btn" title="Collapse sidebar">‹</button>
+      </div>
       <div class="sidebar-room-name" id="room-name"></div>
       <h3 id="movie-title" class="sidebar-title">No movie selected</h3>
       <button id="choose-movie-btn" class="btn-choose-movie" style="display:none">🎬 Choose Movie</button>
@@ -76,6 +79,15 @@
     </aside>
 
     <div class="player-container">
+      <!-- Expand tab + unread badge (visible when sidebar is collapsed) -->
+      <div id="sidebar-expand-tab" class="sidebar-expand-tab" style="display:none">
+        <button id="sidebar-expand-btn" class="sidebar-expand-btn" title="Show sidebar">›</button>
+        <span id="chat-badge" class="notif-badge" style="display:none"></span>
+      </div>
+
+      <!-- Toast notification area -->
+      <div id="notif-area" class="notif-area"></div>
+
       <div id="no-movie" class="no-movie-message">
         <div class="no-movie-icon">🎬</div>
         <p id="no-movie-text">Waiting for host to choose a movie…</p>
