@@ -22,20 +22,27 @@ async function getMovieSections() {
   return dirs.filter(s => s.type === 'movie');
 }
 
-async function getMovies(sectionId, start = 0, limit = 200) {
-  const res = await plexAxios.get(`/library/sections/${sectionId}/all`, {
-    params: {
-      ...token(),
-      type: 1,
-      'X-Plex-Container-Start': start,
-      'X-Plex-Container-Size': limit
-    }
-  });
-  const container = res.data.MediaContainer;
-  return {
-    movies: container.Metadata || [],
-    totalSize: container.totalSize || 0
-  };
+async function getMovies(sectionId) {
+  const PAGE = 500;
+  let start = 0;
+  let all = [];
+  while (true) {
+    const res = await plexAxios.get(`/library/sections/${sectionId}/all`, {
+      params: {
+        ...token(),
+        type: 1,
+        'X-Plex-Container-Start': start,
+        'X-Plex-Container-Size': PAGE
+      }
+    });
+    const container = res.data.MediaContainer;
+    const page = container.Metadata || [];
+    all.push(...page);
+    const total = container.totalSize ?? container.size ?? all.length;
+    if (all.length >= total || page.length === 0) break;
+    start += PAGE;
+  }
+  return { movies: all, totalSize: all.length };
 }
 
 async function getMovieDetails(ratingKey) {
