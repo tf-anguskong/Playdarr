@@ -1,4 +1,11 @@
 require('dotenv').config();
+
+// Prefix every console log/warn/error with an ISO timestamp
+['log', 'warn', 'error'].forEach(level => {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => orig(`[${new Date().toISOString()}]`, ...args);
+});
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
