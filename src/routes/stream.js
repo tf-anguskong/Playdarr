@@ -126,9 +126,17 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   }
 });
 
+// Only transcode segments/manifests and direct-play part files are valid proxy targets.
+const ALLOWED_PROXY_PATH = /^\/(video\/:\/transcode\/universal\/|library\/parts\/)/;
+
 // ── General Plex proxy (HLS segments & sub-manifests) ──────
 router.get('/proxy/*', async (req, res) => {
   const plexPath = '/' + req.params[0];
+
+  if (!ALLOWED_PROXY_PATH.test(plexPath)) {
+    return res.status(403).send('Forbidden');
+  }
+
   const looksLikeM3u8 =
     plexPath.endsWith('.m3u8') || plexPath.includes('/index.m3u8');
 

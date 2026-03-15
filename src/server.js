@@ -24,9 +24,13 @@ const sessionsDir = process.env.DATA_PATH
   : '/data/sessions';
 fs.mkdirSync(sessionsDir, { recursive: true });
 
+if (!process.env.SESSION_SECRET) {
+  throw new Error('SESSION_SECRET env var is not set — refusing to start with an insecure session secret');
+}
+
 const sessionMiddleware = session({
   store: new FileStore({ path: sessionsDir, ttl: 7 * 24 * 3600, retries: 1 }),
-  secret: process.env.SESSION_SECRET || 'change-me-please',
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: {
