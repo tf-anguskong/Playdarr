@@ -187,6 +187,16 @@ app.get('/join/:inviteToken', (req, res) => {
   // Check if it's a scheduled room not yet open
   const scheduled = scheduler.getByInviteToken(token);
   if (scheduled) {
+    // Pass data as query params so waiting.html can render immediately
+    // without needing a separate async fetch for initial display
+    if (!req.query.t) {
+      const q = new URLSearchParams({
+        n: scheduled.name,
+        t: scheduled.scheduledFor,
+        z: scheduled.timezone || 'UTC'
+      });
+      return res.redirect(`/join/${token}?${q}`);
+    }
     return res.sendFile(path.join(__dirname, 'public', 'waiting.html'));
   }
 
