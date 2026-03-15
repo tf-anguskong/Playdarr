@@ -7,13 +7,20 @@ const PLEX_TOKEN = process.env.PLEX_TOKEN;
 const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
 
 // Cache the master manifest per room+movie so only the first viewer
-// (host) calls start.m3u8. Latecomers get the cached manifest and share
+// calls start.m3u8. Latecomers get the cached manifest and share
 // the already-running Plex session — no restart, no 400 errors.
-const manifestCache = new Map(); // `${roomId}-${ratingKey}` → { manifest, ts }
+// manifestPending holds in-flight fetch Promises so concurrent requests
+// (e.g. host + guests all loading after a movie change) coalesce into one
+// Plex call rather than racing to start.m3u8 simultaneously.
+const manifestCache   = new Map(); // cacheKey → manifest string
+const manifestPending = new Map(); // cacheKey → Promise<string>
 
 function clearRoomManifest(roomId) {
   for (const key of manifestCache.keys()) {
     if (key.startsWith(roomId + '-')) manifestCache.delete(key);
+  }
+  for (const key of manifestPending.keys()) {
+    if (key.startsWith(roomId + '-')) manifestPending.delete(key);
   }
 }
 
@@ -71,7 +78,18 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const cached = manifestCache.get(cacheKey);
   if (cached) return res.send(cached);
 
-  try {
+  // If another request is already fetching this manifest (e.g. host + guests
+  // all load simultaneously after a movie change), wait for that same Promise
+  // rather than firing a second start.m3u8 call which would restart the session.
+  if (manifestPending.has(cacheKey)) {
+    try {
+      return res.send(await manifestPending.get(cacheKey));
+    } catch {
+      return res.status(500).send('HLS error');
+    }
+  }
+
+  const fetchManifest = async () => {
     const params = {
       'X-Plex-Token': PLEX_TOKEN,
       'X-Plex-Client-Identifier': CLIENT_ID,
@@ -116,11 +134,19 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     });
 
     const baseDir  = '/video/:/transcode/universal/';
-    const manifest = rewriteM3u8(plexRes.data, baseDir);
+    return rewriteM3u8(plexRes.data, baseDir);
+  };
 
+  const promise = fetchManifest();
+  manifestPending.set(cacheKey, promise);
+
+  try {
+    const manifest = await promise;
     manifestCache.set(cacheKey, manifest);
+    manifestPending.delete(cacheKey);
     res.send(manifest);
   } catch (err) {
+    manifestPending.delete(cacheKey);
     console.error('[HLS] Start error:', err.response?.status, err.message);
     res.status(500).send('HLS error');
   }
