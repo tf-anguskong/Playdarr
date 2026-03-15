@@ -7,6 +7,18 @@ const CLIENT_ID   = process.env.PLEX_CLIENT_ID || 'movienight-app';
 const PLEX_PRODUCT = 'Movie Night';
 const PLEX_API    = 'https://plex.tv/api/v2';
 
+// Cache the server's machine identifier so we only fetch it once
+let cachedMachineId = null;
+async function getServerMachineId() {
+  if (cachedMachineId) return cachedMachineId;
+  const res = await axios.get(`${process.env.PLEX_URL}/identity`, {
+    headers: { Accept: 'application/json' },
+    timeout: 5000
+  });
+  cachedMachineId = res.data?.MediaContainer?.machineIdentifier;
+  return cachedMachineId;
+}
+
 const plexHeaders = {
   'Accept': 'application/json',
   'X-Plex-Client-Identifier': CLIENT_ID,
@@ -46,11 +58,19 @@ router.get('/plex/callback/:pinId', async (req, res) => {
     if (!authToken) return res.redirect('/login?error=no_token');
 
     try {
-      await axios.get(`${process.env.PLEX_URL}/`, {
-        params: { 'X-Plex-Token': authToken },
-        headers: { Accept: 'application/json' },
-        timeout: 5000
-      });
+      const [machineId, resourcesRes] = await Promise.all([
+        getServerMachineId(),
+        axios.get(`${PLEX_API}/resources`, {
+          headers: { ...plexHeaders, 'X-Plex-Token': authToken },
+          params: { includeHttps: 1 },
+          timeout: 8000
+        })
+      ]);
+      const hasAccess = resourcesRes.data.some(r => r.clientIdentifier === machineId);
+      if (!hasAccess) {
+        console.error(`[Auth] User token has no access to server ${machineId}`);
+        return res.redirect('/login?error=access');
+      }
     } catch (e) {
       console.error('[Auth] Server access check failed:', e.code, e.message, e.response?.status);
       return res.redirect('/login?error=access');
