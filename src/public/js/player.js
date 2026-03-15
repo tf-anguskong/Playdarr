@@ -17,7 +17,15 @@ let syncTimer    = null;
 let currentKey   = null;
 let hlsInstance  = null;
 let isHost       = false;
+let roomType     = 'movie';
 let roomSettings = { playbackLocked: false, reactionsEnabled: true };
+
+// ── YouTube IFrame API ─────────────────────────────────────
+let ytApiLoaded   = false;
+let ytApiReady    = false;
+let ytPlayer      = null;
+let ytVideoId     = null;
+let pendingYtInit = null;
 
 const autoplayOnLoad = new URLSearchParams(location.search).has('autoplay');
 
@@ -31,16 +39,18 @@ function esc(s = '') {
 socket.on('connect', () => socket.emit('join-room', { roomId }));
 
 function setHostUI(on, inviteToken) {
-  document.getElementById('choose-movie-btn').style.display       = on ? 'block' : 'none';
-  document.getElementById('countdown-btn').style.display          = on ? 'block' : 'none';
-  document.getElementById('room-controls-section').style.display  = on ? 'block' : 'none';
+  const isYt = roomType === 'youtube';
+  document.getElementById('choose-movie-btn').style.display      = (on && !isYt) ? 'block' : 'none';
+  document.getElementById('yt-controls-section').style.display   = (on && isYt)  ? 'block' : 'none';
+  document.getElementById('countdown-btn').style.display         = on ? 'block' : 'none';
+  document.getElementById('room-controls-section').style.display = on ? 'block' : 'none';
   if (on && inviteToken) setupInviteLink(inviteToken);
   if (!on) document.getElementById('invite-section').style.display = 'none';
 }
 
 function applyRoomSettings(settings) {
   roomSettings = { ...roomSettings, ...settings };
-  video.controls = !roomSettings.playbackLocked || isHost;
+  if (roomType === 'movie') video.controls = !roomSettings.playbackLocked || isHost;
   document.getElementById('reaction-bar').style.display = roomSettings.reactionsEnabled ? '' : 'none';
   if (isHost) {
     const lockEl = document.getElementById('toggle-lock-playback');
@@ -52,6 +62,7 @@ function applyRoomSettings(settings) {
 
 socket.on('room-state', (state) => {
   isHost = state.isHost;
+  roomType = state.roomType || 'movie';
   roomNameEl.textContent = state.name || '';
   setHostUI(isHost, state.inviteToken);
   if (state.settings) applyRoomSettings(state.settings);
@@ -107,6 +118,14 @@ function releaseSyncLock() {
 
 // ── Apply server state ─────────────────────────────────────
 function applyState(state) {
+  if (state.roomType === 'youtube') {
+    video.style.display = 'none';
+    applyYtState(state);
+    return;
+  }
+  // Hide YouTube player if switching room types
+  document.getElementById('yt-player-container').style.display = 'none';
+
   if (!state.movieKey) {
     video.style.display = 'none';
     noMovie.style.display = 'block';
@@ -249,6 +268,165 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
       }
     }, { once: true });
   }
+}
+
+// ── YouTube IFrame API ─────────────────────────────────────
+function loadYouTubeApi() {
+  if (ytApiLoaded) return;
+  ytApiLoaded = true;
+  const tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+}
+
+window.onYouTubeIframeAPIReady = function() {
+  ytApiReady = true;
+  if (pendingYtInit) {
+    const p = pendingYtInit; pendingYtInit = null;
+    createYtPlayer(p.videoId, p.targetTime, p.shouldPlay);
+  }
+};
+
+function initYtPlayer(videoId, targetTime, shouldPlay) {
+  loadYouTubeApi();
+  if (!ytApiReady) {
+    pendingYtInit = { videoId, targetTime, shouldPlay };
+    return;
+  }
+  createYtPlayer(videoId, targetTime, shouldPlay);
+}
+
+function ensureYtDiv() {
+  const container = document.getElementById('yt-player-container');
+  let div = document.getElementById('yt-player');
+  if (!div) {
+    div = document.createElement('div');
+    div.id = 'yt-player';
+    container.appendChild(div);
+  }
+  return div;
+}
+
+function createYtPlayer(videoId, targetTime, shouldPlay) {
+  const container = document.getElementById('yt-player-container');
+  container.style.display = 'block';
+  noMovie.style.display = 'none';
+  video.style.display = 'none';
+
+  if (ytPlayer && ytVideoId === videoId) {
+    // Same video — just sync position/state
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    ytPlayer.seekTo(targetTime, true);
+    if (shouldPlay) ytPlayer.playVideo();
+    else ytPlayer.pauseVideo();
+    releaseSyncLock();
+    return;
+  }
+
+  if (ytPlayer) {
+    ytPlayer.destroy();
+    ytPlayer = null;
+  }
+
+  ytVideoId = videoId;
+  ensureYtDiv();
+
+  ytPlayer = new YT.Player('yt-player', {
+    videoId,
+    width: '100%',
+    height: '100%',
+    playerVars: { rel: 0, modestbranding: 1 },
+    events: {
+      onReady(e) {
+        isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+        e.target.seekTo(targetTime, true);
+        if (shouldPlay) e.target.playVideo();
+        else e.target.pauseVideo();
+        releaseSyncLock();
+      },
+      onStateChange: onYtStateChange
+    }
+  });
+}
+
+function onYtStateChange(event) {
+  if (isSyncing) return;
+  const s = event.data;
+  if (s === YT.PlayerState.PLAYING) {
+    if (roomSettings.playbackLocked && !isHost) {
+      isSyncing = true; ytPlayer.pauseVideo(); releaseSyncLock(); return;
+    }
+    socket.emit('play', { position: ytPlayer.getCurrentTime() });
+  } else if (s === YT.PlayerState.PAUSED) {
+    if (roomSettings.playbackLocked && !isHost) return;
+    socket.emit('pause', { position: ytPlayer.getCurrentTime() });
+  }
+}
+
+function applyYtState(state) {
+  titleEl.textContent = state.movieTitle || (state.youtubeVideoId ? 'YouTube' : 'No video selected');
+
+  if (!state.youtubeVideoId) {
+    document.getElementById('yt-player-container').style.display = 'none';
+    noMovieText.textContent = 'Waiting for host to set a YouTube video…';
+    noMovie.style.display = 'block';
+    return;
+  }
+
+  noMovie.style.display = 'none';
+  const elapsed    = (Date.now() - state.lastUpdate) / 1000;
+  const targetTime = state.playing ? state.position + elapsed : state.position;
+
+  if (state.youtubeVideoId !== ytVideoId || !ytPlayer) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    initYtPlayer(state.youtubeVideoId, targetTime, state.playing);
+    return;
+  }
+
+  const ytState   = ytPlayer.getPlayerState?.();
+  const ytPlaying = ytState === YT.PlayerState.PLAYING;
+
+  if (state.playing && !ytPlaying) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    ytPlayer.seekTo(targetTime, true);
+    ytPlayer.playVideo();
+    releaseSyncLock();
+  } else if (!state.playing && ytPlaying) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    ytPlayer.seekTo(targetTime, true);
+    ytPlayer.pauseVideo();
+    releaseSyncLock();
+  }
+
+  if (!state.playing) return;
+
+  const drift = (ytPlayer.getCurrentTime?.() || 0) - targetTime;
+  if (Math.abs(drift) > 5) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    ytPlayer.seekTo(targetTime, true);
+    releaseSyncLock();
+  }
+}
+
+// ── YouTube host controls ──────────────────────────────────
+document.getElementById('yt-url-btn')?.addEventListener('click', setYoutubeUrl);
+document.getElementById('yt-url-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') setYoutubeUrl();
+});
+
+function setYoutubeUrl() {
+  const url    = document.getElementById('yt-url-input')?.value.trim();
+  const errEl  = document.getElementById('yt-url-error');
+  if (!url) { errEl.textContent = 'URL required'; errEl.style.display = 'block'; return; }
+  try {
+    const u = new URL(url);
+    if (u.hostname !== 'youtu.be' && u.hostname !== 'youtube.com' && u.hostname !== 'www.youtube.com') {
+      errEl.textContent = 'Must be a YouTube URL'; errEl.style.display = 'block'; return;
+    }
+  } catch { errEl.textContent = 'Invalid URL'; errEl.style.display = 'block'; return; }
+  errEl.style.display = 'none';
+  socket.emit('set-youtube', { youtubeUrl: url });
+  document.getElementById('yt-url-input').value = '';
 }
 
 // ── Viewers ────────────────────────────────────────────────
@@ -427,7 +605,13 @@ socket.on('chat', ({ name, text, isGuest, videoTime, isSystem }) => {
 function sendChat() {
   const text = chatInput.value.trim();
   if (!text) return;
-  const videoTime = currentKey ? video.currentTime : null;
+  let videoTime = null;
+  if (roomType === 'youtube' && ytPlayer && ytVideoId) {
+    const t = ytPlayer.getCurrentTime?.();
+    if (typeof t === 'number' && isFinite(t)) videoTime = Math.floor(t);
+  } else if (roomType === 'movie' && currentKey) {
+    videoTime = video.currentTime;
+  }
   socket.emit('chat', { text, videoTime });
   chatInput.value = '';
 }

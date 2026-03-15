@@ -42,7 +42,15 @@
   <div id="create-modal" class="modal-overlay" style="display:none">
     <div class="modal">
       <h3>Create a Room</h3>
+      <div class="room-type-selector">
+        <button class="btn-room-type active" data-type="movie">🎬 Movie</button>
+        <button class="btn-room-type" data-type="youtube">▶ YouTube</button>
+      </div>
       <input type="text" id="room-name-input" class="search-input" placeholder="Room name (optional)" maxlength="60" style="width:100%">
+      <div id="yt-url-row" style="display:none;margin-top:0.75rem">
+        <input type="text" id="yt-url-create" class="search-input" placeholder="YouTube URL…" style="width:100%">
+        <div id="yt-url-create-error" style="color:#ff6b7a;font-size:0.8rem;margin-top:0.3rem;display:none"></div>
+      </div>
       <div class="modal-actions">
         <button id="cancel-create" class="btn-logout">Cancel</button>
         <button id="confirm-create" class="btn-create">Create</button>

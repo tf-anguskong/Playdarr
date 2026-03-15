@@ -1,29 +1,55 @@
 const { v4: uuidv4 } = require('uuid');
+const axios = require('axios');
 const { clearRoomManifest } = require('./routes/stream');
 
 const rooms        = new Map(); // roomId -> Room
 const inviteTokens = new Map(); // inviteToken -> roomId
 const socketToRoom = new Map(); // socketId -> Room
 
+async function fetchYoutubeTitle(videoId) {
+  try {
+    const res = await axios.get('https://www.youtube.com/oembed', {
+      params: { url: `https://www.youtube.com/watch?v=${videoId}`, format: 'json' },
+      timeout: 5000
+    });
+    return res.data?.title || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractYoutubeId(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split(/[?#]/)[0] || null;
+    if (u.hostname === 'youtube.com' || u.hostname === 'www.youtube.com') {
+      return u.searchParams.get('v') || null;
+    }
+  } catch {}
+  return null;
+}
+
 class Room {
   constructor({ hostId, hostName, hostPicture, name }) {
-    this.id           = uuidv4();
-    this.inviteToken  = uuidv4();
-    this.name         = (name || `${hostName}'s Room`).slice(0, 60);
-    this.hostId       = hostId;
-    this.hostName     = hostName;
-    this.hostPicture  = hostPicture || null;
-    this.hostIsGuest  = false;
-    this.hostSocketId = null;
+    this.id             = uuidv4();
+    this.inviteToken    = uuidv4();
+    this.name           = (name || `${hostName}'s Room`).slice(0, 60);
+    this.hostId         = hostId;
+    this.hostName       = hostName;
+    this.hostPicture    = hostPicture || null;
+    this.hostIsGuest    = false;
+    this.hostSocketId   = null;
     this.countdownTimer = null;
-    this.settings     = { playbackLocked: false, reactionsEnabled: true };
-    this.movieKey     = null;
-    this.movieTitle   = null;
-    this.partId       = null;
-    this.playing      = false;
-    this.position     = 0;
-    this.lastUpdate   = Date.now();
-    this.viewers      = new Map(); // socketId -> viewer info
+    this.settings       = { playbackLocked: false, reactionsEnabled: true };
+    this.roomType       = 'movie'; // 'movie' | 'youtube'
+    this.movieKey       = null;
+    this.movieTitle     = null;
+    this.partId         = null;
+    this.youtubeVideoId = null;
+    this.playing        = false;
+    this.position       = 0;
+    this.lastUpdate     = Date.now();
+    this.viewers        = new Map(); // socketId -> viewer info
   }
 
   currentPosition() {
@@ -35,7 +61,9 @@ class Room {
     return {
       id: this.id, name: this.name,
       hostId: this.hostId, hostName: this.hostName,
+      roomType: this.roomType,
       movieKey: this.movieKey, movieTitle: this.movieTitle, partId: this.partId,
+      youtubeVideoId: this.youtubeVideoId,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -46,9 +74,11 @@ class Room {
   summary() {
     return {
       id: this.id, name: this.name, hostName: this.hostName,
+      roomType: this.roomType,
       movieTitle: this.movieTitle,
       viewerCount: this.viewers.size,
-      hasMovie: !!this.movieKey
+      hasMovie: !!this.movieKey,
+      youtubeVideoId: this.youtubeVideoId
     };
   }
 
@@ -110,10 +140,20 @@ function setupSync(io) {
     socket.emit('room-list', Array.from(rooms.values()).map(r => r.summary()));
 
     // ── Create room (Plex users only) ──────────────────────
-    socket.on('create-room', ({ name } = {}) => {
+    socket.on('create-room', async ({ name, roomType, youtubeUrl } = {}) => {
       if (user.isGuest) return socket.emit('error-msg', 'Guests cannot create rooms');
 
+      const type = roomType === 'youtube' ? 'youtube' : 'movie';
+      let youtubeVideoId = null;
+      if (type === 'youtube') {
+        youtubeVideoId = extractYoutubeId(youtubeUrl || '');
+        if (!youtubeVideoId) return socket.emit('error-msg', 'Invalid YouTube URL');
+      }
+
       const room = new Room({ hostId: user.id, hostName: user.displayName || user.name, hostPicture: user.picture, name });
+      room.roomType = type;
+      room.youtubeVideoId = youtubeVideoId;
+      if (youtubeVideoId) room.movieTitle = await fetchYoutubeTitle(youtubeVideoId);
       room.hostSocketId = socket.id;
       room.viewers.set(socket.id, {
         socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null, isGuest: false, isHost: true
@@ -173,6 +213,21 @@ function setupSync(io) {
       room.movieKey = movieKey; room.movieTitle = movieTitle; room.partId = partId;
       room.playing = false; room.position = 0; room.lastUpdate = Date.now();
       console.log(`[Room] "${room.name}" → "${movieTitle}"`);
+      room.broadcastState(io);
+      broadcastRoomList(io);
+    });
+
+    // ── Set YouTube video (host only, YouTube rooms) ───────
+    socket.on('set-youtube', async ({ youtubeUrl }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.hostSocketId !== socket.id) return;
+      if (room.roomType !== 'youtube') return;
+      const videoId = extractYoutubeId(youtubeUrl || '');
+      if (!videoId) return;
+      room.youtubeVideoId = videoId;
+      room.movieTitle = await fetchYoutubeTitle(videoId);
+      room.playing = false; room.position = 0; room.lastUpdate = Date.now();
+      console.log(`[Room] \"${room.name}\" → YouTube ${videoId} \"${room.movieTitle || 'unknown'}\"`);
       room.broadcastState(io);
       broadcastRoomList(io);
     });

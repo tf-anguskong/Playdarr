@@ -78,9 +78,11 @@ socket.on('room-list', (rooms) => {
         <span class="room-host">hosted by ${esc(r.hostName)}</span>
       </div>
       <div class="room-card-movie">
-        ${r.hasMovie
-          ? `<span class="room-now-playing">▶ ${esc(r.movieTitle)}</span>`
-          : `<span style="color:var(--text-muted)">No movie selected yet</span>`
+        ${r.roomType === 'youtube'
+          ? `<span class="room-now-playing">▶ ${r.movieTitle ? esc(r.movieTitle) : (r.youtubeVideoId ? 'YouTube' : 'No video set')}</span>`
+          : r.hasMovie
+            ? `<span class="room-now-playing">▶ ${esc(r.movieTitle)}</span>`
+            : `<span style="color:var(--text-muted)">No movie selected yet</span>`
         }
       </div>
       <div class="room-card-footer">
@@ -92,8 +94,28 @@ socket.on('room-list', (rooms) => {
 });
 
 // ── Create room ────────────────────────────────────────────
+let selectedRoomType = 'movie';
+
+document.querySelectorAll('.btn-room-type').forEach(btn => {
+  btn.addEventListener('click', () => {
+    selectedRoomType = btn.dataset.type;
+    document.querySelectorAll('.btn-room-type').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('yt-url-row').style.display = selectedRoomType === 'youtube' ? 'block' : 'none';
+    if (selectedRoomType === 'youtube') setTimeout(() => document.getElementById('yt-url-create').focus(), 30);
+    else setTimeout(() => document.getElementById('room-name-input').focus(), 30);
+  });
+});
+
 document.getElementById('create-room-btn').addEventListener('click', () => {
+  // Reset modal state
+  selectedRoomType = 'movie';
+  document.querySelectorAll('.btn-room-type').forEach(b => b.classList.remove('active'));
+  document.querySelector('[data-type="movie"]').classList.add('active');
   document.getElementById('room-name-input').value = '';
+  document.getElementById('yt-url-create').value = '';
+  document.getElementById('yt-url-create-error').style.display = 'none';
+  document.getElementById('yt-url-row').style.display = 'none';
   document.getElementById('create-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('room-name-input').focus(), 50);
 });
@@ -105,11 +127,28 @@ document.getElementById('room-name-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') createRoom();
   if (e.key === 'Escape') document.getElementById('create-modal').style.display = 'none';
 });
+document.getElementById('yt-url-create').addEventListener('keydown', e => {
+  if (e.key === 'Enter') createRoom();
+  if (e.key === 'Escape') document.getElementById('create-modal').style.display = 'none';
+});
 
 function createRoom() {
   const name = document.getElementById('room-name-input').value.trim();
-  document.getElementById('create-modal').style.display = 'none';
-  socket.emit('create-room', { name });
+  if (selectedRoomType === 'youtube') {
+    const youtubeUrl = document.getElementById('yt-url-create').value.trim();
+    const errEl = document.getElementById('yt-url-create-error');
+    if (!youtubeUrl) {
+      errEl.textContent = 'YouTube URL is required';
+      errEl.style.display = 'block';
+      return;
+    }
+    errEl.style.display = 'none';
+    document.getElementById('create-modal').style.display = 'none';
+    socket.emit('create-room', { name, roomType: 'youtube', youtubeUrl });
+  } else {
+    document.getElementById('create-modal').style.display = 'none';
+    socket.emit('create-room', { name });
+  }
 }
 
 socket.on('room-created', ({ roomId }) => {

@@ -12,6 +12,7 @@ Playdarr is a self-hosted watch-party app for Plex. It lets you and your friends
 - **Synchronised playback** — play, pause, and seek are broadcast to everyone in the room; clients drift-correct every 5 seconds using gradual playback rate nudging before falling back to a hard seek
 - **Plex HLS proxy** — transcodes via your local Plex server and routes all HLS traffic through the app server, so your Plex token is never exposed to clients
 - **Movie browser** — searchable, filterable (genre, rating, year) grid of your Plex library, host-only
+- **YouTube rooms** — create a YouTube room instead of a movie room; the host pastes any `youtube.com` or `youtu.be` URL and the video embeds for all viewers via the YouTube IFrame API, fully synchronised; the video title is fetched automatically and shown in the sidebar and room list
 - **Multi-room** — multiple watch parties can run simultaneously, each with their own state
 
 ### Rooms & Access

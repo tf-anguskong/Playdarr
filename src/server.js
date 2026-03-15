@@ -34,10 +34,11 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", 'cdn.jsdelivr.net'],
+      scriptSrc: ["'self'", 'cdn.jsdelivr.net', 'https://www.youtube.com', 'https://s.ytimg.com'],
       styleSrc: ["'self'", "'unsafe-inline'"],
       mediaSrc: ["'self'", 'blob:'],
       connectSrc: ["'self'", 'wss:', 'ws:'],
+      frameSrc: ["'self'", 'https://www.youtube.com'],
       imgSrc: ["'self'", 'data:', 'https:'],
     }
   },

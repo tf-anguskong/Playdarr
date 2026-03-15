@@ -608,3 +608,30 @@ body {
   padding: 0.5rem 1.25rem; border-radius: 6px; font-weight: 700; transition: background 0.2s;
 }
 .btn-browse:hover { background: var(--accent-h); }
+
+/* Room type selector in create modal */
+.room-type-selector { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+.btn-room-type {
+  flex: 1;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+}
+.btn-room-type:hover { border-color: var(--accent); color: var(--text); }
+.btn-room-type.active {
+  background: rgba(255,194,48,.12);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* YouTube player */
+#yt-player-container { width: 100%; height: 100%; }
+#yt-player { width: 100%; height: 100%; }
+#yt-player iframe { width: 100% !important; height: 100% !important; border: none; }
