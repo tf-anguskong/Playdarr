@@ -29,15 +29,17 @@ function esc(s = '') {
 // ── Join room ──────────────────────────────────────────────
 socket.on('connect', () => socket.emit('join-room', { roomId }));
 
+function setHostUI(on, inviteToken) {
+  document.getElementById('choose-movie-btn').style.display = on ? 'block' : 'none';
+  document.getElementById('countdown-btn').style.display    = on ? 'block' : 'none';
+  if (on && inviteToken) setupInviteLink(inviteToken);
+  if (!on) document.getElementById('invite-section').style.display = 'none';
+}
+
 socket.on('room-state', (state) => {
   isHost = state.isHost;
   roomNameEl.textContent = state.name || '';
-
-  if (isHost) {
-    document.getElementById('choose-movie-btn').style.display = 'block';
-    if (state.inviteToken) setupInviteLink(state.inviteToken);
-  }
-
+  setHostUI(isHost, state.inviteToken);
   applyState(state);
 });
 
@@ -256,15 +258,13 @@ socket.on('viewers', (viewers) => {
 
 socket.on('became-host', ({ inviteToken }) => {
   isHost = true;
-  document.getElementById('choose-movie-btn').style.display = 'block';
-  setupInviteLink(inviteToken);
+  setHostUI(true, inviteToken);
   renderViewers(lastViewers);
 });
 
 socket.on('lost-host', () => {
   isHost = false;
-  document.getElementById('choose-movie-btn').style.display = 'none';
-  document.getElementById('invite-section').style.display = 'none';
+  setHostUI(false);
   renderViewers(lastViewers);
 });
 
@@ -363,11 +363,16 @@ function formatVideoTime(s) {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
-socket.on('chat', ({ name, text, isGuest, videoTime }) => {
+socket.on('chat', ({ name, text, isGuest, videoTime, isSystem }) => {
   const div = document.createElement('div');
-  div.className = 'chat-msg';
-  const ts = (videoTime != null) ? `<span class="chat-ts">[${esc(formatVideoTime(videoTime))}]</span> ` : '';
-  div.innerHTML = `<span class="chat-name">${esc(name)}${isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span> ${ts}${esc(text)}`;
+  const ts  = videoTime != null ? `<span class="chat-ts">[${esc(formatVideoTime(videoTime))}]</span> ` : '';
+  if (isSystem) {
+    div.className = 'chat-msg chat-system';
+    div.innerHTML = `${esc(name)} <span class="chat-system-action">${esc(text)}</span> ${ts}`;
+  } else {
+    div.className = 'chat-msg';
+    div.innerHTML = `<span class="chat-name">${esc(name)}${isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span> ${ts}${esc(text)}`;
+  }
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 });
@@ -382,3 +387,49 @@ function sendChat() {
 
 document.getElementById('chat-send').addEventListener('click', sendChat);
 chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+// ── Reactions ──────────────────────────────────────────────
+const playerContainer = document.querySelector('.player-container');
+
+document.getElementById('reaction-bar').addEventListener('click', e => {
+  const btn = e.target.closest('.reaction-btn');
+  if (btn) socket.emit('reaction', { emoji: btn.dataset.emoji });
+});
+
+socket.on('reaction', ({ emoji }) => {
+  const el = document.createElement('div');
+  el.className = 'floating-reaction';
+  el.textContent = emoji;
+  el.style.left = (15 + Math.random() * 70) + '%';
+  playerContainer.appendChild(el);
+  setTimeout(() => el.remove(), 2200);
+});
+
+// ── Countdown ──────────────────────────────────────────────
+let countdownInterval = null;
+const countdownOverlay = document.getElementById('countdown-overlay');
+const countdownNumber  = document.getElementById('countdown-number');
+const countdownBtn     = document.getElementById('countdown-btn');
+const cancelCountdownBtn = document.getElementById('cancel-countdown-btn');
+
+socket.on('countdown', ({ endsAt }) => {
+  countdownOverlay.style.display = 'flex';
+  if (isHost) cancelCountdownBtn.style.display = 'block';
+  if (countdownInterval) clearInterval(countdownInterval);
+  const tick = () => {
+    const remaining = Math.ceil((endsAt - Date.now()) / 1000);
+    countdownNumber.textContent = remaining > 0 ? remaining : 0;
+    if (remaining <= 0) { clearInterval(countdownInterval); countdownInterval = null; }
+  };
+  tick();
+  countdownInterval = setInterval(tick, 200);
+});
+
+socket.on('countdown-cancelled', () => {
+  if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+  countdownOverlay.style.display = 'none';
+  cancelCountdownBtn.style.display = 'none';
+});
+
+countdownBtn.addEventListener('click', () => socket.emit('start-countdown'));
+cancelCountdownBtn.addEventListener('click', () => socket.emit('cancel-countdown'));

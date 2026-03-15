@@ -15,6 +15,7 @@ class Room {
     this.hostPicture  = hostPicture || null;
     this.hostIsGuest  = false;
     this.hostSocketId = null;
+    this.countdownTimer = null;
     this.movieKey     = null;
     this.movieTitle   = null;
     this.partId       = null;
@@ -160,6 +161,12 @@ function setupSync(io) {
       room.position = position ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
+      room.broadcast(io, 'chat', {
+        name: user.displayName || user.name,
+        text: '▶ resumed',
+        isSystem: true,
+        videoTime: Math.floor(room.position)
+      });
     });
 
     socket.on('pause', ({ position }) => {
@@ -168,6 +175,12 @@ function setupSync(io) {
       room.position = position ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
+      room.broadcast(io, 'chat', {
+        name: user.displayName || user.name,
+        text: '⏸ paused',
+        isSystem: true,
+        videoTime: Math.floor(room.position)
+      });
     });
 
     socket.on('seek', ({ position }) => {
@@ -192,6 +205,41 @@ function setupSync(io) {
         isGuest: user.isGuest || false,
         videoTime
       });
+    });
+
+    // ── Reactions ──────────────────────────────────────────
+    socket.on('reaction', ({ emoji }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room) return;
+      const allowed = ['👍','❤️','😂','😱','😮','👏'];
+      if (!allowed.includes(emoji)) return;
+      room.broadcast(io, 'reaction', { emoji, name: user.displayName || user.name });
+    });
+
+    // ── Countdown (host only) ──────────────────────────────
+    socket.on('start-countdown', () => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.hostSocketId !== socket.id) return;
+      if (room.countdownTimer) { clearTimeout(room.countdownTimer); room.countdownTimer = null; }
+
+      const SECONDS = 10;
+      const endsAt  = Date.now() + SECONDS * 1000;
+      room.broadcast(io, 'countdown', { endsAt });
+
+      room.countdownTimer = setTimeout(() => {
+        room.countdownTimer = null;
+        room.position  = room.currentPosition();
+        room.playing   = true;
+        room.lastUpdate = Date.now();
+        room.broadcastState(io);
+      }, SECONDS * 1000);
+    });
+
+    socket.on('cancel-countdown', () => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.hostSocketId !== socket.id) return;
+      if (room.countdownTimer) { clearTimeout(room.countdownTimer); room.countdownTimer = null; }
+      room.broadcast(io, 'countdown-cancelled');
     });
 
     // ── Transfer host ──────────────────────────────────────
@@ -231,6 +279,10 @@ function setupSync(io) {
       room.viewers.delete(socket.id);
 
       if (room.hostSocketId === socket.id) {
+        if (room.countdownTimer) {
+          clearTimeout(room.countdownTimer); room.countdownTimer = null;
+          room.broadcast(io, 'countdown-cancelled');
+        }
         if (room.hostIsGuest) {
           // Guest hosts cannot reconnect — close the room immediately
           console.log(`[Room] Guest host "${user.name}" disconnected from "${room.name}" — closing`);

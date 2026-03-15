@@ -13,6 +13,8 @@
       <div class="sidebar-room-name" id="room-name"></div>
       <h3 id="movie-title" class="sidebar-title">No movie selected</h3>
       <button id="choose-movie-btn" class="btn-choose-movie" style="display:none">🎬 Choose Movie</button>
+      <button id="countdown-btn" class="btn-countdown" style="display:none">⏱ Start in 10s</button>
+      <button id="cancel-countdown-btn" class="btn-cancel-countdown" style="display:none">✕ Cancel countdown</button>
 
       <!-- Invite link (host only) -->
       <div id="invite-section" style="display:none">
@@ -51,6 +53,22 @@
       <video id="video-player" controls preload="metadata" style="display:none">
         Your browser does not support the video element.
       </video>
+      <!-- Countdown overlay -->
+      <div id="countdown-overlay" class="countdown-overlay" style="display:none">
+        <div class="countdown-label">Starting in</div>
+        <div id="countdown-number" class="countdown-number">10</div>
+      </div>
+
+      <!-- Reaction bar -->
+      <div class="reaction-bar" id="reaction-bar">
+        <button class="reaction-btn" data-emoji="👍">👍</button>
+        <button class="reaction-btn" data-emoji="❤️">❤️</button>
+        <button class="reaction-btn" data-emoji="😂">😂</button>
+        <button class="reaction-btn" data-emoji="😱">😱</button>
+        <button class="reaction-btn" data-emoji="😮">😮</button>
+        <button class="reaction-btn" data-emoji="👏">👏</button>
+      </div>
+
       <!-- Shown when browser blocks autoplay -->
       <div id="play-overlay" class="play-overlay" style="display:none">
         <button id="play-overlay-btn" class="play-overlay-btn">▶</button>
