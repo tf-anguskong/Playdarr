@@ -4,6 +4,12 @@
 
 Playdarr is a self-hosted watch-party app for Plex. It lets you and your friends stream movies from your Plex server in sync, with real-time chat, reactions, and playback controls — all through a browser, no plugins required.
 
+## What is Playdarr?
+
+Playdarr is a self-hosted watch-party app built around Plex. The idea is simple: you own the media, you own the server, and you invite whoever you want to watch with you — no subscriptions, no third-party accounts, no data leaving your infrastructure.
+
+A Plex user creates a room, shares an invite link, and guests join straight from their browser. Playback is kept in sync across all viewers automatically. Everyone gets chat, reactions, and a shared experience without anyone needing a Plex account except the person hosting.
+
 ---
 
 ## Features
