@@ -43,7 +43,9 @@ socket.on('connect', () => socket.emit('join-room', { roomId }));
 
 function setHostUI(on, inviteToken) {
   const isYt = roomType === 'youtube';
-  document.getElementById('choose-movie-btn').style.display      = (on && !isYt) ? 'block' : 'none';
+  const isTv = roomType === 'tv';
+  document.getElementById('choose-movie-btn').style.display      = (on && !isYt && !isTv) ? 'block' : 'none';
+  document.getElementById('choose-episode-btn').style.display    = (on && isTv) ? 'block' : 'none';
   document.getElementById('yt-controls-section').style.display   = (on && isYt)  ? 'block' : 'none';
   document.getElementById('countdown-section').style.display     = on ? 'block' : 'none';
   document.getElementById('intermission-section').style.display  = on ? 'block' : 'none';
@@ -54,7 +56,7 @@ function setHostUI(on, inviteToken) {
 
 function applyRoomSettings(settings) {
   roomSettings = { ...roomSettings, ...settings };
-  if (roomType === 'movie') video.controls = !roomSettings.playbackLocked || isHost;
+  if (roomType === 'movie' || roomType === 'tv') video.controls = !roomSettings.playbackLocked || isHost;
   document.getElementById('reaction-bar').style.display = roomSettings.reactionsEnabled ? '' : 'none';
   if (isHost) {
     const lockEl = document.getElementById('toggle-lock-playback');
@@ -136,7 +138,10 @@ function applyState(state) {
   if (!state.movieKey) {
     video.style.display = 'none';
     noMovie.style.display = 'block';
-    titleEl.textContent = 'No movie selected';
+    titleEl.textContent = state.roomType === 'tv' ? 'No episode selected' : 'No movie selected';
+    noMovieText.textContent = state.roomType === 'tv'
+      ? 'Waiting for host to choose an episode…'
+      : 'Waiting for host to choose a movie…';
     return;
   }
 
@@ -351,6 +356,13 @@ setInterval(() => {
 // ── Buffering state reporting ──────────────────────────────
 video.addEventListener('waiting', () => socket.emit('buffering-state', { buffering: true }));
 video.addEventListener('playing', () => socket.emit('buffering-state', { buffering: false }));
+
+// ── TV: auto-advance to next episode when current ends ─────
+video.addEventListener('ended', () => {
+  if (roomType === 'tv' && isHost) {
+    socket.emit('episode-ended');
+  }
+});
 
 // ── YouTube IFrame API ─────────────────────────────────────
 function loadYouTubeApi() {
@@ -676,6 +688,166 @@ document.getElementById('search-input').addEventListener('input', () => {
 });
 document.getElementById('genre-select').addEventListener('change', loadMovies);
 document.getElementById('sort-select').addEventListener('change', loadMovies);
+
+// ── Show browser modal (host only, TV rooms) ───────────────
+let showBrowserShowKey   = null;
+let showBrowserShowTitle = null;
+let showBrowserSeasonKey = null;
+let showSearchTimeout;
+
+document.getElementById('choose-episode-btn').addEventListener('click', () => {
+  showBrowserShowKey   = null;
+  showBrowserShowTitle = null;
+  showBrowserSeasonKey = null;
+  setShowBrowserView('shows');
+  document.getElementById('show-modal').style.display = 'flex';
+  loadShows();
+});
+
+document.getElementById('close-show-modal').addEventListener('click', () => {
+  document.getElementById('show-modal').style.display = 'none';
+});
+
+document.getElementById('show-modal-back').addEventListener('click', () => {
+  if (showBrowserSeasonKey) {
+    showBrowserSeasonKey = null;
+    setShowBrowserView('seasons');
+    loadSeasons(showBrowserShowKey);
+  } else {
+    showBrowserShowKey = null;
+    setShowBrowserView('shows');
+    loadShows();
+  }
+});
+
+document.getElementById('show-search-input').addEventListener('input', () => {
+  clearTimeout(showSearchTimeout);
+  showSearchTimeout = setTimeout(loadShows, 300);
+});
+
+function setShowBrowserView(view) {
+  document.getElementById('show-browser-shows').style.display   = view === 'shows'   ? '' : 'none';
+  document.getElementById('show-browser-seasons').style.display  = view === 'seasons'  ? '' : 'none';
+  document.getElementById('show-browser-episodes').style.display = view === 'episodes' ? '' : 'none';
+  document.getElementById('show-modal-back').style.display = view === 'shows' ? 'none' : '';
+  const titles = { shows: 'Choose a Show', seasons: showBrowserShowTitle || 'Seasons', episodes: showBrowserShowTitle || 'Episodes' };
+  document.getElementById('show-modal-title').textContent = titles[view] || 'Choose a Show';
+}
+
+async function loadShows() {
+  const grid   = document.getElementById('shows-grid');
+  const search = document.getElementById('show-search-input').value.trim();
+  grid.innerHTML = '<div class="loading" style="grid-column:1/-1">Loading…</div>';
+  try {
+    const params = new URLSearchParams();
+    if (search) params.set('search', search);
+    const { shows, error } = await fetch(`/api/shows?${params}`).then(r => r.json());
+    if (error) throw new Error(error);
+
+    document.getElementById('show-count').textContent =
+      shows.length ? `${shows.length} show${shows.length !== 1 ? 's' : ''}` : '';
+
+    if (!shows.length) {
+      grid.innerHTML = '<div class="loading" style="grid-column:1/-1">No shows found.</div>';
+      return;
+    }
+    grid.innerHTML = shows.map(s => `
+      <div class="movie-card" data-key="${s.ratingKey}" data-title="${esc(s.title)}">
+        ${s.thumb
+          ? `<img class="movie-poster" src="${s.thumb}" alt="${esc(s.title)}" loading="lazy">`
+          : `<div class="movie-poster-placeholder">📺</div>`}
+        <div class="movie-info">
+          <h3 title="${esc(s.title)}">${esc(s.title)}</h3>
+          <span>${s.year || ''}${s.year && s.leafCount ? ' · ' : ''}${s.leafCount ? s.leafCount + ' ep' : ''}</span>
+        </div>
+      </div>
+    `).join('');
+    grid.querySelectorAll('.movie-card').forEach(card => {
+      card.addEventListener('click', () => {
+        showBrowserShowKey   = card.dataset.key;
+        showBrowserShowTitle = card.dataset.title;
+        setShowBrowserView('seasons');
+        loadSeasons(showBrowserShowKey);
+      });
+    });
+  } catch (err) {
+    grid.innerHTML = `<div class="loading" style="grid-column:1/-1">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+async function loadSeasons(showKey) {
+  const list = document.getElementById('seasons-list');
+  list.innerHTML = '<div class="loading">Loading seasons…</div>';
+  try {
+    const { seasons, error } = await fetch(`/api/shows/${showKey}/seasons`).then(r => r.json());
+    if (error) throw new Error(error);
+    if (!seasons.length) { list.innerHTML = '<div class="loading">No seasons found.</div>'; return; }
+    list.innerHTML = seasons.map(s => `
+      <div class="episode-item" data-key="${s.ratingKey}">
+        ${s.thumb ? `<img class="episode-thumb" src="${s.thumb}" alt="">` : '<div class="episode-thumb-placeholder">📺</div>'}
+        <div class="episode-info">
+          <span class="episode-title">${esc(s.title)}</span>
+          <span class="episode-meta">${s.leafCount ? s.leafCount + ' episodes' : ''}</span>
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('.episode-item').forEach(item => {
+      item.addEventListener('click', () => {
+        showBrowserSeasonKey = item.dataset.key;
+        setShowBrowserView('episodes');
+        loadEpisodes(showBrowserSeasonKey);
+      });
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="loading">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+async function loadEpisodes(seasonKey) {
+  const list = document.getElementById('episodes-list');
+  list.innerHTML = '<div class="loading">Loading episodes…</div>';
+  try {
+    const { episodes, error } = await fetch(`/api/shows/${seasonKey}/episodes`).then(r => r.json());
+    if (error) throw new Error(error);
+    if (!episodes.length) { list.innerHTML = '<div class="loading">No episodes found.</div>'; return; }
+    list.innerHTML = episodes.map(e => {
+      const epNum = e.parentIndex != null && e.index != null
+        ? `S${String(e.parentIndex).padStart(2,'0')}E${String(e.index).padStart(2,'0')} · `
+        : '';
+      const dur = e.duration ? Math.round(e.duration / 60000) + ' min' : '';
+      return `
+        <div class="episode-item" data-key="${e.ratingKey}">
+          ${e.thumb ? `<img class="episode-thumb" src="${e.thumb}" alt="">` : '<div class="episode-thumb-placeholder">📺</div>'}
+          <div class="episode-info">
+            <span class="episode-title">${epNum}${esc(e.title)}</span>
+            <span class="episode-meta">${dur}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+    list.querySelectorAll('.episode-item').forEach(item => {
+      item.addEventListener('click', () => selectEpisode(item.dataset.key));
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="loading">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+async function selectEpisode(ratingKey) {
+  try {
+    const ep = await fetch(`/api/shows/episode/${ratingKey}`).then(r => r.json());
+    if (!ep.partId) { alert('No stream found for this episode.'); return; }
+    socket.emit('select-show', {
+      showKey:         showBrowserShowKey,
+      showTitle:       showBrowserShowTitle,
+      seasonRatingKey: showBrowserSeasonKey,
+      episodeRatingKey: ep.ratingKey,
+      episodeTitle:    ep.title,
+      partId:          ep.partId
+    });
+    document.getElementById('show-modal').style.display = 'none';
+  } catch { alert('Failed to load episode details.'); }
+}
 
 socket.on('disconnect', () => { syncDot.className = 'sync-dot offline'; syncText.textContent = 'Disconnected'; });
 

@@ -85,9 +85,13 @@ socket.on('room-list', (rooms) => {
       <div class="room-card-movie">
         ${r.roomType === 'youtube'
           ? `<span class="room-now-playing">▶ ${r.movieTitle ? esc(r.movieTitle) : (r.youtubeVideoId ? 'YouTube' : 'No video set')}</span>`
-          : r.hasMovie
-            ? `<span class="room-now-playing">▶ ${esc(r.movieTitle)}</span>`
-            : `<span style="color:var(--text-muted)">No movie selected yet</span>`
+          : r.roomType === 'tv'
+            ? (r.hasMovie
+                ? `<span class="room-now-playing">📺 ${esc(r.movieTitle)}</span>`
+                : `<span style="color:var(--text-muted)">No episode selected yet</span>`)
+            : r.hasMovie
+              ? `<span class="room-now-playing">▶ ${esc(r.movieTitle)}</span>`
+              : `<span style="color:var(--text-muted)">No movie selected yet</span>`
         }
       </div>
       <div class="room-card-footer">
@@ -152,7 +156,7 @@ function createRoom() {
     socket.emit('create-room', { name, roomType: 'youtube', youtubeUrl });
   } else {
     document.getElementById('create-modal').style.display = 'none';
-    socket.emit('create-room', { name });
+    socket.emit('create-room', { name, roomType: selectedRoomType });
   }
 }
 

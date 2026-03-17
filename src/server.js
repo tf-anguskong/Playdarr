@@ -18,6 +18,7 @@ const rateLimit = require('express-rate-limit');
 
 const authRouter = require('./routes/auth');
 const moviesRouter = require('./routes/movies');
+const showsRouter = require('./routes/shows');
 const { router: streamRouter, clearRoomManifest } = require('./routes/stream');
 const { setupSync, getRoomByInviteToken, createScheduledRoom } = require('./sync');
 const scheduler = require('./scheduler');
@@ -114,6 +115,7 @@ const authLimiter = rateLimit({
 
 app.use('/auth', authLimiter, authRouter);
 app.use('/api/movies', requirePlexAuth, moviesRouter);
+app.use('/api/shows', requirePlexAuth, showsRouter);
 app.use('/api/stream', requireAuth, streamRouter);
 app.use('/api/schedule', requirePlexAuth, scheduleRouter);
 app.get('/api/me', (req, res) => res.json({ user: req.session?.user || null }));

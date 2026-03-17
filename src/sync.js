@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const { clearRoomManifest } = require('./routes/stream');
+const plex = require('./plex');
 
 const rooms        = new Map(); // roomId -> Room
 const inviteTokens = new Map(); // inviteToken -> roomId
@@ -46,11 +47,15 @@ class Room {
     this.intermissionTimer  = null;
     this.intermissionEndsAt = null;
     this.settings       = { playbackLocked: false, reactionsEnabled: true };
-    this.roomType       = 'movie'; // 'movie' | 'youtube'
+    this.roomType       = 'movie'; // 'movie' | 'youtube' | 'tv'
     this.movieKey       = null;
     this.movieTitle     = null;
     this.partId         = null;
     this.youtubeVideoId = null;
+    this.tvShowKey      = null;
+    this.tvShowTitle    = null;
+    this.tvEpisodeList  = []; // [{ ratingKey, title, index, parentIndex }]
+    this.tvEpisodeIndex = 0;
     this.playing        = false;
     this.position       = 0;
     this.lastUpdate     = Date.now();
@@ -69,6 +74,8 @@ class Room {
       roomType: this.roomType,
       movieKey: this.movieKey, movieTitle: this.movieTitle, partId: this.partId,
       youtubeVideoId: this.youtubeVideoId,
+      tvShowTitle: this.tvShowTitle || null,
+      hasNextEpisode: this.roomType === 'tv' && this.tvEpisodeIndex < this.tvEpisodeList.length - 1,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -141,6 +148,14 @@ const chatLimiter     = makeSocketRateLimiter(3, 2000);  // 3 msgs / 2s
 const reactionLimiter = makeSocketRateLimiter(5, 2000);  // 5 reactions / 2s
 const seekLimiter     = makeSocketRateLimiter(15, 2000); // 15 seeks / 2s (scrubbing)
 
+function formatEpisodeTitle(showTitle, ep) {
+  if (!ep) return showTitle || 'Unknown';
+  const s = ep.parentIndex != null ? `S${String(ep.parentIndex).padStart(2, '0')}` : '';
+  const e = ep.index != null ? `E${String(ep.index).padStart(2, '0')}` : '';
+  const se = (s || e) ? `${s}${e} · ` : '';
+  return `${showTitle ? showTitle + ' · ' : ''}${se}${ep.title || ''}`;
+}
+
 function setupSync(io) {
   _io = io;
   // Periodic sync heartbeat — keeps clients corrected during normal playback
@@ -163,7 +178,7 @@ function setupSync(io) {
     socket.on('create-room', async ({ name, roomType, youtubeUrl } = {}) => {
       if (user.isGuest) return socket.emit('error-msg', 'Guests cannot create rooms');
 
-      const type = roomType === 'youtube' ? 'youtube' : 'movie';
+      const type = roomType === 'youtube' ? 'youtube' : (roomType === 'tv' ? 'tv' : 'movie');
       let youtubeVideoId = null;
       if (type === 'youtube') {
         youtubeVideoId = extractYoutubeId(youtubeUrl || '');
@@ -247,6 +262,77 @@ function setupSync(io) {
       console.log(`[Room] "${room.name}" → "${movieTitle}"`);
       room.broadcastState(io);
       broadcastRoomList(io);
+    });
+
+    // ── Select TV episode (host only, TV rooms) ────────────
+    socket.on('select-show', async ({ showKey, showTitle, seasonRatingKey, episodeRatingKey, episodeTitle, partId }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.hostSocketId !== socket.id) return;
+      if (room.roomType !== 'tv') return;
+      try {
+        const episodes = await plex.getShowChildren(String(seasonRatingKey));
+        const episodeList = episodes.map(e => ({
+          ratingKey: String(e.ratingKey),
+          title: e.title,
+          index: e.index,
+          parentIndex: e.parentIndex
+        }));
+        const episodeIndex = episodeList.findIndex(e => e.ratingKey === String(episodeRatingKey));
+
+        clearRoomManifest(room.id);
+        room.tvShowKey      = String(showKey);
+        room.tvShowTitle    = showTitle;
+        room.tvEpisodeList  = episodeList;
+        room.tvEpisodeIndex = episodeIndex >= 0 ? episodeIndex : 0;
+        room.movieKey       = String(episodeRatingKey);
+        room.movieTitle     = formatEpisodeTitle(showTitle, episodeList[room.tvEpisodeIndex] || { title: episodeTitle, parentIndex: null, index: null });
+        room.partId         = String(partId);
+        room.playing        = false;
+        room.position       = 0;
+        room.lastUpdate     = Date.now();
+        console.log(`[Room] "${room.name}" → TV "${room.movieTitle}"`);
+        room.broadcastState(io);
+        broadcastRoomList(io);
+      } catch (err) {
+        console.error('[Room] select-show error:', err.message);
+        socket.emit('error-msg', 'Failed to load episode list');
+      }
+    });
+
+    // ── Episode ended — advance to next (host only, TV rooms) ──
+    socket.on('episode-ended', async () => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.hostSocketId !== socket.id) return;
+      if (room.roomType !== 'tv' || !room.tvEpisodeList.length) return;
+
+      const nextIndex = room.tvEpisodeIndex + 1;
+      if (nextIndex >= room.tvEpisodeList.length) {
+        console.log(`[Room] "${room.name}" — TV season complete, no more episodes`);
+        return;
+      }
+
+      const nextEp = room.tvEpisodeList[nextIndex];
+      try {
+        const details = await plex.getMovieDetails(nextEp.ratingKey);
+        const part = details.Media?.[0]?.Part?.[0];
+        if (!part) {
+          console.warn(`[Room] episode-ended: no part found for ${nextEp.ratingKey}`);
+          return;
+        }
+        clearRoomManifest(room.id);
+        room.tvEpisodeIndex = nextIndex;
+        room.movieKey       = String(nextEp.ratingKey);
+        room.partId         = String(part.id);
+        room.movieTitle     = formatEpisodeTitle(room.tvShowTitle, nextEp);
+        room.playing        = false;
+        room.position       = 0;
+        room.lastUpdate     = Date.now();
+        console.log(`[Room] "${room.name}" → next episode "${room.movieTitle}"`);
+        room.broadcastState(io);
+        broadcastRoomList(io);
+      } catch (err) {
+        console.error('[Room] episode-ended error:', err.message);
+      }
     });
 
     // ── Set YouTube video (host only, YouTube rooms) ───────
