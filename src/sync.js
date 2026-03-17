@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const { clearRoomManifest } = require('./routes/stream');
 const plex = require('./plex');
+const { sanitizeText } = require('./sanitize');
 
 const rooms        = new Map(); // roomId -> Room
 const inviteTokens = new Map(); // inviteToken -> roomId
@@ -180,6 +181,7 @@ function setupSync(io) {
     // ── Create room (Plex users only) ──────────────────────
     socket.on('create-room', async ({ name, roomType, youtubeUrl } = {}) => {
       if (user.isGuest) return socket.emit('error-msg', 'Guests cannot create rooms');
+      name = sanitizeText((name || '').trim().slice(0, 60)) || undefined;
 
       const type = roomType === 'youtube' ? 'youtube' : (roomType === 'tv' ? 'tv' : 'movie');
       let youtubeVideoId = null;
@@ -405,7 +407,7 @@ function setupSync(io) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!chatLimiter.allow(socket.id)) return;
-      const trimmed = ((data && data.text) || '').trim().slice(0, 300);
+      const trimmed = sanitizeText(((data && data.text) || '').trim().slice(0, 300));
       if (!trimmed) return;
       const videoTime = (typeof data.videoTime === 'number' && isFinite(data.videoTime)
         && data.videoTime >= 0 && data.videoTime < 86400)

@@ -151,7 +151,9 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       .join('&');
 
     const transcodeUrl = `${PLEX_URL}/video/:/transcode/universal/start.m3u8?${qs}`;
-    console.log('[HLS] Starting session:', transcodeUrl.replace(PLEX_TOKEN, 'REDACTED'));
+    console.log('[HLS] Starting session:', transcodeUrl.replace(
+      new RegExp(PLEX_TOKEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), 'REDACTED'
+    ));
 
     const plexRes = await axios.get(transcodeUrl, {
       headers: {

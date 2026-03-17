@@ -26,7 +26,7 @@ function serialize(scheduled) {
 function persist() {
   try {
     fs.mkdirSync(dataPath, { recursive: true });
-    fs.writeFileSync(FILE, JSON.stringify(Array.from(store.values()).map(serialize), null, 2), 'utf8');
+    fs.writeFileSync(FILE, JSON.stringify(Array.from(store.values()).map(serialize), null, 2), { encoding: 'utf8', mode: 0o600 });
   } catch (err) {
     console.error('[Scheduler] Failed to write scheduled.json:', err.message);
   }

@@ -4,8 +4,12 @@ const { v4: uuidv4 } = require('uuid');
 const router = express.Router();
 const { getRoomByInviteToken } = require('../sync');
 const { encryptToken, decryptToken } = require('../tokenCrypto');
+const { sanitizeText } = require('../sanitize');
 
-const CLIENT_ID   = process.env.PLEX_CLIENT_ID || 'movienight-app';
+if (!process.env.PLEX_CLIENT_ID) {
+  throw new Error('PLEX_CLIENT_ID env var must be set (use a unique stable identifier for your app)');
+}
+const CLIENT_ID = process.env.PLEX_CLIENT_ID;
 const PLEX_PRODUCT = 'Movie Night';
 const PLEX_API    = 'https://plex.tv/api/v2';
 
@@ -107,7 +111,7 @@ router.get('/plex/callback/:pinId', async (req, res) => {
 // Guest join via invite link — called from /join/:inviteToken page
 router.post('/guest-join', express.json(), (req, res) => {
   const { name, inviteToken, roomId } = req.body || {};
-  const trimmedName = (name || '').trim().slice(0, 40);
+  const trimmedName = sanitizeText((name || '').trim().slice(0, 40));
   if (!trimmedName) return res.status(400).json({ error: 'Name is required' });
   if (!inviteToken || !roomId) return res.status(400).json({ error: 'Invalid invite' });
 

@@ -17,6 +17,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
 const authRouter = require('./routes/auth');
+const { sanitizeText } = require('./sanitize');
 const moviesRouter = require('./routes/movies');
 const showsRouter = require('./routes/shows');
 const { router: streamRouter, clearRoomManifest } = require('./routes/stream');
@@ -130,7 +131,7 @@ app.get('/api/me', (req, res) => {
 });
 
 app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
-  const name = (req.body?.name || '').trim().slice(0, 40);
+  const name = sanitizeText((req.body?.name || '').trim().slice(0, 40));
   if (!name) return res.status(400).json({ error: 'Name required' });
   req.session.user.displayName = name;
   req.session.save(err => {
