@@ -140,11 +140,15 @@ app.use(express.static(path.join(__dirname, 'public'), {
   }
 }));
 
-app.get('/', requireAuth, (req, res) =>
-  res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/', requireAuth, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
-app.get('/watch/:roomId', requireAuth, (req, res) =>
-  res.sendFile(path.join(__dirname, 'public', 'watch.html')));
+app.get('/watch/:roomId', requireAuth, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(path.join(__dirname, 'public', 'watch.html'));
+});
 
 // Info endpoint used by join.html and waiting.html to get roomId or scheduled info
 app.get('/join/:inviteToken/info', (req, res) => {

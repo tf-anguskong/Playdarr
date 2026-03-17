@@ -44,8 +44,10 @@ socket.on('connect', () => socket.emit('join-room', { roomId }));
 function setHostUI(on, inviteToken) {
   const isYt = roomType === 'youtube';
   const isTv = roomType === 'tv';
-  document.getElementById('choose-movie-btn').style.display      = (on && !isYt && !isTv) ? 'block' : 'none';
-  document.getElementById('choose-episode-btn').style.display    = (on && isTv) ? 'block' : 'none';
+  const movieBtn   = document.getElementById('choose-movie-btn');
+  const episodeBtn = document.getElementById('choose-episode-btn');
+  if (movieBtn)   movieBtn.style.display   = (on && !isYt && !isTv) ? 'block' : 'none';
+  if (episodeBtn) episodeBtn.style.display = (on && isTv) ? 'block' : 'none';
   document.getElementById('yt-controls-section').style.display   = (on && isYt)  ? 'block' : 'none';
   document.getElementById('countdown-section').style.display     = on ? 'block' : 'none';
   document.getElementById('intermission-section').style.display  = on ? 'block' : 'none';
