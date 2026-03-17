@@ -30,12 +30,6 @@ const io = new Server(server);
 
 app.set('trust proxy', 1);
 
-// Temporary request logger — remove once join link issue is diagnosed
-app.use((req, _res, next) => {
-  console.log(`[HTTP] ${req.method} ${req.path}`);
-  next();
-});
-
 // Security headers
 // HSTS is only valid over HTTPS — sending it over HTTP causes Firefox to cache
 // the upgrade and break subsequent requests to http://localhost.

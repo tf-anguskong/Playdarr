@@ -35,7 +35,6 @@ router.get('/plex', async (req, res) => {
       params: { strong: true }
     });
     const { id, code } = pinRes.data;
-    console.log(`[Auth] Created PIN id=${id}`);
 
     const callbackUrl = encodeURIComponent(`${process.env.APP_URL}/auth/plex/callback/${id}`);
     res.redirect(
@@ -52,7 +51,6 @@ router.get('/plex', async (req, res) => {
 // Step 2: Plex OAuth callback
 router.get('/plex/callback/:pinId', async (req, res) => {
   const pinId = req.params.pinId;
-  console.log(`[Auth] Callback for PIN ${pinId}`);
   try {
     const { authToken } = (await axios.get(`${PLEX_API}/pins/${pinId}`, { headers: plexHeaders })).data;
     console.log(`[Auth] authToken present: ${!!authToken}`);
@@ -81,17 +79,23 @@ router.get('/plex/callback/:pinId', async (req, res) => {
       headers: { ...plexHeaders, 'X-Plex-Token': authToken }
     })).data;
 
-    req.session.user = {
-      id: String(plexUser.id),
-      name: plexUser.friendlyName || plexUser.username || plexUser.email,
-      email: plexUser.email,
-      picture: plexUser.thumb,
-      plexToken: authToken,
-      isGuest: false
-    };
-    req.session.save(err => {
-      if (err) console.error('[Auth] Session save error:', err);
-      res.redirect('/');
+    req.session.regenerate(regenErr => {
+      if (regenErr) {
+        console.error('[Auth] Session regenerate error:', regenErr);
+        return res.redirect('/login?error=auth');
+      }
+      req.session.user = {
+        id: String(plexUser.id),
+        name: plexUser.friendlyName || plexUser.username || plexUser.email,
+        email: plexUser.email,
+        picture: plexUser.thumb,
+        plexToken: authToken,
+        isGuest: false
+      };
+      req.session.save(err => {
+        if (err) console.error('[Auth] Session save error:', err);
+        res.redirect('/');
+      });
     });
   } catch (err) {
     console.error('[Auth] Callback error:', err.message);
