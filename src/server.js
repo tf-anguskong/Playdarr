@@ -118,7 +118,12 @@ app.use('/api/movies', requirePlexAuth, moviesRouter);
 app.use('/api/shows', requirePlexAuth, showsRouter);
 app.use('/api/stream', requireAuth, streamRouter);
 app.use('/api/schedule', requirePlexAuth, scheduleRouter);
-app.get('/api/me', (req, res) => res.json({ user: req.session?.user || null }));
+app.get('/api/me', (req, res) => {
+    const user = req.session?.user || null;
+    if (!user) return res.json({ user: null });
+    const { plexToken, ...safeUser } = user;
+    res.json({ user: safeUser });
+});
 
 app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
   const name = (req.body?.name || '').trim().slice(0, 40);
