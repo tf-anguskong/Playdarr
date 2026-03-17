@@ -148,6 +148,12 @@
         <button class="reaction-btn" data-emoji="👏">👏</button>
       </div>
 
+      <!-- Volume control overlay (visible when native controls are hidden due to playback lock) -->
+      <div id="volume-overlay" class="volume-overlay" style="display:none">
+        <button id="volume-mute-btn" class="volume-mute-btn" title="Mute/Unmute">🔊</button>
+        <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.05" value="1">
+      </div>
+
       <!-- Shown when browser blocks autoplay -->
       <div id="play-overlay" class="play-overlay" style="display:none">
         <button id="play-overlay-btn" class="play-overlay-btn">▶</button>

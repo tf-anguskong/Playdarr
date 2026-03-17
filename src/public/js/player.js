@@ -58,12 +58,19 @@ function setHostUI(on, inviteToken) {
 
 function applyRoomSettings(settings) {
   roomSettings = { ...roomSettings, ...settings };
-  if (roomType === 'movie' || roomType === 'tv') video.controls = !roomSettings.playbackLocked || isHost;
+  const locked = roomSettings.playbackLocked;
+  if (roomType === 'movie' || roomType === 'tv') {
+    // When locked, hide native controls for guests so they can't seek/pause.
+    // Hosts always keep native controls. A custom volume overlay fills the gap.
+    video.controls = !locked || isHost;
+    const volOverlay = document.getElementById('volume-overlay');
+    if (volOverlay) volOverlay.style.display = (locked && !isHost) ? 'flex' : 'none';
+  }
   document.getElementById('reaction-bar').style.display = roomSettings.reactionsEnabled ? '' : 'none';
   if (isHost) {
     const lockEl = document.getElementById('toggle-lock-playback');
     const reactEl = document.getElementById('toggle-reactions');
-    if (lockEl) lockEl.checked = !!roomSettings.playbackLocked;
+    if (lockEl) lockEl.checked = !!locked;
     if (reactEl) reactEl.checked = !!roomSettings.reactionsEnabled;
   }
 }
@@ -1202,4 +1209,45 @@ document.getElementById('intermission-minutes').addEventListener('keydown', e =>
 });
 
 cancelIntermissionBtn.addEventListener('click', () => socket.emit('cancel-intermission'));
+
+// ── Volume overlay (guest controls when playback is locked) ────────────────
+// Volume is purely client-side — never emitted to the server.
+// This widget is shown instead of native controls when the host locks playback.
+(function initVolumeOverlay() {
+  const muteBtn    = document.getElementById('volume-mute-btn');
+  const volSlider  = document.getElementById('volume-slider');
+  if (!muteBtn || !volSlider) return;
+
+  function updateMuteIcon() {
+    if (video.muted || video.volume === 0) {
+      muteBtn.textContent = '🔇';
+    } else if (video.volume < 0.5) {
+      muteBtn.textContent = '🔉';
+    } else {
+      muteBtn.textContent = '🔊';
+    }
+  }
+
+  muteBtn.addEventListener('click', () => {
+    video.muted = !video.muted;
+    // If un-muting while slider is at 0, restore to a sensible level
+    if (!video.muted && video.volume === 0) {
+      video.volume = 0.5;
+      volSlider.value = 0.5;
+    }
+    updateMuteIcon();
+  });
+
+  volSlider.addEventListener('input', () => {
+    video.volume = parseFloat(volSlider.value);
+    video.muted  = video.volume === 0;
+    updateMuteIcon();
+  });
+
+  // Keep slider in sync if volume changes via other means (e.g. OS media keys)
+  video.addEventListener('volumechange', () => {
+    volSlider.value = video.muted ? 0 : video.volume;
+    updateMuteIcon();
+  });
+})();
 
