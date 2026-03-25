@@ -12,25 +12,57 @@ const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
 // manifestPending holds in-flight fetch Promises so concurrent requests
 // (e.g. host + guests all loading after a movie change) coalesce into one
 // Plex call rather than racing to start.m3u8 simultaneously.
-const manifestCache   = new Map(); // cacheKey → { manifest: string, cachedAt: number }
-const manifestPending = new Map(); // cacheKey → Promise<string>
-const activeSessions  = new Map(); // cacheKey → { sessionId, ratingKey }
-const MANIFEST_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours — evict stale manifests
+const manifestCache    = new Map(); // cacheKey → { manifest: string, cachedAt: number }
+const manifestPending  = new Map(); // cacheKey → Promise<string>
+const activeSessions   = new Map(); // cacheKey → { sessionId, ratingKey }
+const keepaliveTimers  = new Map(); // cacheKey → intervalId
+const MANIFEST_TTL_MS  = 4 * 60 * 60 * 1000; // 4 hours — evict stale manifests
+const KEEPALIVE_MS     = 8000; // ping Plex every 8s to prevent session cleanup
 
 // Periodically evict manifests that haven't been used for MANIFEST_TTL_MS
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of manifestCache.entries()) {
     if (now - entry.cachedAt > MANIFEST_TTL_MS) {
+      stopKeepalive(key);
       manifestCache.delete(key);
       activeSessions.delete(key);
     }
   }
 }, 30 * 60 * 1000); // run every 30 minutes
 
+// Send periodic timeline pings so Plex doesn't clean up the transcode session.
+// Without these, Plex kills the session after ~60s of perceived inactivity,
+// causing 404s on segment requests and forcing a full session restart.
+function startKeepalive(cacheKey, sessionId, ratingKey) {
+  stopKeepalive(cacheKey);
+  const timer = setInterval(() => {
+    axios.get(`${PLEX_URL}/:/timeline`, {
+      params: {
+        'X-Plex-Token': PLEX_TOKEN,
+        'X-Plex-Client-Identifier': CLIENT_ID,
+        'X-Plex-Session-Identifier': sessionId,
+        ratingKey,
+        key: `/library/metadata/${ratingKey}`,
+        state: 'playing',
+        time: 0,
+        duration: 0,
+        hasMDE: 1
+      }
+    }).catch(() => {}); // ignore errors — best effort
+  }, KEEPALIVE_MS);
+  keepaliveTimers.set(cacheKey, timer);
+}
+
+function stopKeepalive(cacheKey) {
+  const timer = keepaliveTimers.get(cacheKey);
+  if (timer) { clearInterval(timer); keepaliveTimers.delete(cacheKey); }
+}
+
 function clearRoomManifest(roomId) {
   for (const key of manifestCache.keys()) {
     if (key.startsWith(roomId + '-')) {
+      stopKeepalive(key);
       // Fire-and-forget: stop the Plex transcode session so the next
       // fetchManifest() starts a clean session rather than reusing a
       // potentially stuck/terminating one with the same session ID.
@@ -193,6 +225,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
     activeSessions.set(cacheKey, { sessionId, ratingKey });
+    startKeepalive(cacheKey, sessionId, ratingKey);
     manifestPending.delete(cacheKey);
     res.send(manifest);
   } catch (err) {
