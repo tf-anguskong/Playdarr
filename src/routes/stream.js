@@ -1,13 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const { getGuide } = require('../livetv-manager');
 
 const PLEX_URL = process.env.PLEX_URL;
 const PLEX_TOKEN = process.env.PLEX_TOKEN;
 const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
-// Live TV transcode must use the local Plex address — external relay rejects live TV requests
-const LIVETV_PLEX_URL = process.env.LIVETV_PLEX_HOST || process.env.PLEX_URL;
 
 // Cache the master manifest per room+movie so only the first viewer
 // calls start.m3u8. Latecomers get the cached manifest and share
@@ -240,97 +237,8 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   }
 });
 
-// ── Live TV HLS transcode start ───────────────────────────
-const LIVE_CHANNEL_ID = /^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$/;
-
-router.get('/hls/livetv/:roomId/:channelId/master.m3u8', async (req, res) => {
-  const { roomId, channelId } = req.params;
-  if (!LIVE_CHANNEL_ID.test(channelId)) return res.status(400).send('Invalid channelId');
-
-  const sessionId = `mn-live-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)}-${channelId.slice(0, 8)}`;
-  const cacheKey  = `${roomId}-livetv-${channelId}`;
-
-  res.setHeader('Content-Type', 'application/x-mpegURL');
-  res.setHeader('Cache-Control', 'no-cache');
-
-  const cached = manifestCache.get(cacheKey);
-  if (cached) {
-    if (Date.now() - cached.cachedAt < MANIFEST_TTL_MS) return res.send(cached.manifest);
-    stopKeepalive(cacheKey);
-    manifestCache.delete(cacheKey);
-    activeSessions.delete(cacheKey);
-  }
-
-  if (manifestPending.has(cacheKey)) {
-    try { return res.send(await manifestPending.get(cacheKey)); }
-    catch { return res.status(500).send('HLS error'); }
-  }
-
-  const fetchManifest = async () => {
-    const guide = await getGuide();
-    const chan = guide.channels.find(c => c.id === channelId);
-    const plexPath = chan?.plexKey || `/livetv/channels/${channelId}`;
-    if (!chan?.plexKey) {
-      console.warn(`[LiveTV HLS] No plexKey found for channel ${channelId}, falling back to ${plexPath}`);
-    }
-
-    const params = {
-      'X-Plex-Token':              PLEX_TOKEN,
-      'X-Plex-Client-Identifier':  CLIENT_ID,
-      'X-Plex-Session-Identifier': sessionId,
-      'X-Plex-Product':            'Movie Night',
-      'X-Plex-Platform':           'Chrome',
-      'X-Plex-Platform-Version':   '120.0',
-      'X-Plex-Device':             'Windows',
-      'X-Plex-Device-Name':        'Movie Night',
-      'X-Plex-Version':            '1.0.0',
-      hasMDE:          '1',
-      path:            plexPath,
-      videoResolution: '1920x1080',
-      maxVideoBitrate: '8000',
-      videoCodec:      'h264',
-      audioCodec:      'aac',
-      protocol:        'hls',
-      copyts:          '1',
-      mediaIndex:      '0',
-    };
-
-    const qs = Object.entries(params)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${k === 'path' ? v : encodeURIComponent(v)}`)
-      .join('&');
-
-    const transcodeUrl = `${LIVETV_PLEX_URL}/video/:/transcode/universal/start.m3u8?${qs}`;
-    console.log(`[LiveTV HLS] Starting Plex session for channel ${channelId}, path=${plexPath}, url=`, transcodeUrl.replace(PLEX_TOKEN, 'REDACTED'));
-    const plexRes = await axios.get(transcodeUrl, {
-      headers: {
-        Accept: 'application/x-mpegURL',
-        'X-Plex-Client-Identifier': CLIENT_ID,
-        'X-Plex-Token': PLEX_TOKEN,
-      }
-    });
-
-    const baseDir = '/video/:/transcode/universal/';
-    return rewriteM3u8(plexRes.data, baseDir);
-  };
-
-  const promise = fetchManifest();
-  manifestPending.set(cacheKey, promise);
-
-  try {
-    const manifest = await promise;
-    manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
-    activeSessions.set(cacheKey, { sessionId, ratingKey: null });
-    manifestPending.delete(cacheKey);
-    res.send(manifest);
-  } catch (err) {
-    manifestPending.delete(cacheKey);
-    console.error('[LiveTV HLS] Start error:', err.response?.status, err.message, err.response?.data);
-    res.status(500).send('HLS error');
-  }
-});
-
-// Only transcode segments/manifests, direct-play part files, and live TV paths are valid proxy targets.
-const ALLOWED_PROXY_PATH = /^\/(video\/:\/transcode\/universal\/|library\/parts\/|livetv\/)/;
+// Only transcode segments/manifests and direct-play part files are valid proxy targets.
+const ALLOWED_PROXY_PATH = /^\/(video\/:\/transcode\/universal\/|library\/parts\/)/;
 
 // Strip any query params that could be used for open redirect or SSRF manipulation
 const BLOCKED_PROXY_PARAMS = new Set(['redirect', 'url', 'callback', 'next', 'forward', 'dest', 'destination', 'return', 'returnurl', 'returnto']);
@@ -393,106 +301,6 @@ router.get('/proxy/*', async (req, res) => {
     if (!res.headersSent) {
       res.status(status).send('Proxy error');
     }
-  }
-});
-
-// ── Temporary debug: probe transcode path formats + explore live TV API ──
-// Usage: /api/stream/debug/livetv-probe?channelId=<epg-id>&lineup=4.1
-router.get('/debug/livetv-probe', async (req, res) => {
-  const { channelId, lineup } = req.query;
-  if (!channelId || !lineup) return res.status(400).json({ error: 'channelId and lineup required' });
-
-  const headers = { Accept: 'application/json', 'X-Plex-Token': PLEX_TOKEN };
-
-  // Explore endpoints to find proper channel key / session flow
-  const explore = {};
-  for (const ep of ['/livetv/channels', '/livetv/dvrs/4', '/livetv/dvrs/4/channels', '/media/providers']) {
-    try {
-      const r = await axios.get(`${LIVETV_PLEX_URL}${ep}`, { headers, validateStatus: () => true, timeout: 5000 });
-      explore[ep] = { status: r.status, body: JSON.stringify(r.data).slice(0, 800) };
-    } catch (e) {
-      explore[ep] = { error: e.message };
-    }
-  }
-
-  // Try creating a live TV session (POST), which may be required before transcoding
-  const sessionAttempts = {};
-  for (const [label, params] of [
-    ['channelKey', { channelID: channelId, deviceID: '1' }],
-    ['lineupId',   { channelID: lineup,    deviceID: '1' }],
-  ]) {
-    try {
-      const r = await axios.post(`${LIVETV_PLEX_URL}/livetv/sessions`, null, {
-        headers, params: { ...params, 'X-Plex-Token': PLEX_TOKEN }, validateStatus: () => true, timeout: 5000,
-      });
-      sessionAttempts[label] = { status: r.status, body: JSON.stringify(r.data).slice(0, 500) };
-    } catch (e) {
-      sessionAttempts[label] = { error: e.message };
-    }
-  }
-
-  // Then probe transcode paths using local URL
-  const paths = [
-    `/livetv/timelines/${lineup}`,
-    `/livetv/channels/${lineup}`,
-    `/livetv/timelines/${channelId}`,
-  ];
-
-  const transcodeResults = {};
-  for (const path of paths) {
-    const params = {
-      'X-Plex-Token': PLEX_TOKEN,
-      'X-Plex-Client-Identifier': CLIENT_ID,
-      'X-Plex-Session-Identifier': `mn-probe-${Date.now()}`,
-      'X-Plex-Product': 'Movie Night',
-      'X-Plex-Platform': 'Chrome',
-      hasMDE: '1',
-      path,
-      videoResolution: '1920x1080',
-      maxVideoBitrate: '8000',
-      videoCodec: 'h264',
-      audioCodec: 'aac',
-      protocol: 'hls',
-      copyts: '1',
-      mediaIndex: '0',
-    };
-    const qs = Object.entries(params)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${k === 'path' ? v : encodeURIComponent(v)}`)
-      .join('&');
-    try {
-      const r = await axios.get(`${LIVETV_PLEX_URL}/video/:/transcode/universal/start.m3u8?${qs}`, {
-        headers: { Accept: 'application/x-mpegURL', 'X-Plex-Token': PLEX_TOKEN },
-        validateStatus: () => true,
-      });
-      transcodeResults[path] = { status: r.status, body: typeof r.data === 'string' ? r.data.slice(0, 300) : r.data };
-    } catch (e) {
-      transcodeResults[path] = { error: e.message };
-    }
-  }
-  res.json({ localPlexUrl: LIVETV_PLEX_URL, explore, sessionAttempts, transcodeResults });
-});
-
-// ── Temporary debug: inspect raw /livetv/channels and EPG data ──
-router.get('/debug/livetv', async (req, res) => {
-  const LTHOST  = process.env.LIVETV_PLEX_HOST  || PLEX_URL;
-  const LTTOKEN = process.env.LIVETV_PLEX_TOKEN || PLEX_TOKEN;
-  try {
-    const headers = { Accept: 'application/json', 'X-Plex-Token': LTTOKEN };
-    const dvrsRes = await axios.get(`${LTHOST}/livetv/dvrs`, { headers, timeout: 10000 });
-    const dvr     = dvrsRes.data?.MediaContainer?.Dvr?.[0];
-    const epgId   = dvr?.epgIdentifier;
-    const [plexChRes, epgRes] = await Promise.all([
-      axios.get(`${LTHOST}/livetv/channels`, { headers, timeout: 10000 }).catch(e => ({ error: e.message, status: e.response?.status })),
-      epgId
-        ? axios.get(`${LTHOST}/${epgId}/lineups/dvr/channels`, { headers, timeout: 10000 }).catch(e => ({ error: e.message }))
-        : Promise.resolve({ data: null }),
-    ]);
-    // Return first 3 channels of each so we can see all fields without huge payload
-    const epgChannels   = epgRes.data?.MediaContainer?.Channel?.slice(0, 3)   ?? epgRes;
-    const plexChannels  = plexChRes.data?.MediaContainer?.Channel?.slice(0, 3) ?? plexChRes;
-    res.json({ epgId, dvr, plexChannels, epgChannels });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 
