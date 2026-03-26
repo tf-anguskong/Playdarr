@@ -411,6 +411,17 @@ function applyLiveTvState(state) {
     loadLiveTv(state.liveTvChannel);
   }
 
+  // Sync play/pause state (no position — live TV always plays at live edge)
+  if (state.playing && video.paused) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    video.play().catch(() => showPlayOverlay());
+    releaseSyncLock();
+  } else if (!state.playing && !video.paused) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    video.pause();
+    releaseSyncLock();
+  }
+
   if (guideOpen) renderGuide(); // re-highlight active channel
 }
 
@@ -790,8 +801,7 @@ video.addEventListener('click', () => {
 
 video.addEventListener('play', () => {
   if (isSyncing) return;
-  if (roomType === 'livetv') return; // live TV play/pause is viewer-local, not synced
-  if (roomSettings.playbackLocked && !isHost) {
+  if (roomSettings.playbackLocked && !isHost && roomType !== 'livetv') {
     // Immediately revert — don't let the video run while server-state says paused
     isSyncing = true; video.pause(); releaseSyncLock(); return;
   }
@@ -799,8 +809,7 @@ video.addEventListener('play', () => {
 });
 video.addEventListener('pause',  () => {
   if (isSyncing) return;
-  if (roomType === 'livetv') return; // live TV play/pause is viewer-local, not synced
-  if (roomSettings.playbackLocked && !isHost) return;
+  if (roomSettings.playbackLocked && !isHost && roomType !== 'livetv') return;
   socket.emit('pause', { position: video.currentTime });
 });
 video.addEventListener('seeked', () => {

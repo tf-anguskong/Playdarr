@@ -383,6 +383,8 @@ function setupSync(io, enabledRoomTypes) {
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       room.liveTvChannel      = String(channel || '').slice(0, 20);
       room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
+      room.playing    = true;
+      room.lastUpdate = Date.now();
       if (liveTvManager) liveTvManager.switchChannel(room.liveTvChannel);
       room.broadcastState(io);
       console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel}`);
@@ -393,7 +395,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
       room.position = position ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
@@ -409,7 +411,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
       room.position = position ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
