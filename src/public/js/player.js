@@ -431,32 +431,13 @@ function applyLiveTvState(state) {
     releaseSyncLock();
   }
 
-  // Drift correction during live TV playback
+  // Drift correction during live TV playback (mirrors movie room logic)
   if (state.playing && !video.paused) {
-    let targetTime = null;
-
-    // Segment-level sync: use the server's current segment sequence number to
-    // anchor the target time to a known segment boundary in the HLS timeline.
-    // This eliminates floating-point drift that accumulates between the server
-    // clock and HLS.js's internal timeline.
-    if (state.liveTvSegment != null && hlsInstance) {
-      const details = hlsInstance.levels?.[hlsInstance.currentLevel]?.details;
-      if (details?.fragments?.length) {
-        const frag = details.fragments.find(f => f.sn === state.liveTvSegment);
-        if (frag) {
-          // Target the midpoint of that segment — same content for every viewer
-          targetTime = frag.start + frag.duration * 0.5;
-        }
-      }
-    }
-
-    // Fallback: position-based sync (also used when HLS.js hasn't loaded fragments yet)
-    if (targetTime === null) {
-      const elapsed  = (Date.now() - state.lastUpdate) / 1000;
-      const serverPos = state.position + elapsed;
-      const liveEdge  = hlsInstance?.liveSyncPosition ?? null;
-      targetTime = (liveEdge !== null && serverPos < liveEdge) ? liveEdge : serverPos;
-    }
+    const elapsed   = (Date.now() - state.lastUpdate) / 1000;
+    const serverPos = state.position + elapsed;
+    // Never target older than the live edge — live buffer is finite
+    const liveEdge   = hlsInstance?.liveSyncPosition ?? null;
+    const targetTime = (liveEdge !== null && serverPos < liveEdge) ? liveEdge : serverPos;
 
     const drift    = video.currentTime - targetTime;
     const absDrift = Math.abs(drift);

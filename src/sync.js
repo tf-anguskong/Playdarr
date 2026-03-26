@@ -66,7 +66,6 @@ class Room {
     this.playing        = false;
     this.position       = 0;
     this.lastUpdate     = Date.now();
-    this.liveTvSegment  = null; // latest complete HLS segment sequence number
     this.viewers        = new Map(); // socketId -> viewer info
   }
 
@@ -86,7 +85,6 @@ class Room {
       hasNextEpisode: this.roomType === 'tv' && this.tvEpisodeIndex < this.tvEpisodeList.length - 1,
       liveTvChannel:      this.liveTvChannel,
       liveTvChannelTitle: this.liveTvChannelTitle,
-      liveTvSegment:      this.liveTvSegment,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -186,11 +184,7 @@ function setupSync(io, enabledRoomTypes) {
       }
       // Ping streamer for live TV rooms with active viewers
       if (room.roomType === 'livetv' && room.viewers.size > 0) {
-        if (liveTvManager) {
-          liveTvManager.heartbeat();
-          const seg = liveTvManager.getCurrentSegment();
-          if (seg !== null) room.liveTvSegment = seg;
-        }
+        if (liveTvManager) liveTvManager.heartbeat();
       }
     });
   }, 5000);
