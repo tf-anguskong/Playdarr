@@ -436,13 +436,13 @@ function applyLiveTvState(state) {
     const liveEdge = hlsInstance?.liveSyncPosition ?? null;
     if (liveEdge !== null) {
       const drift = video.currentTime - liveEdge;
-      if (drift < -4) {
+      if (drift < -2) {
         // Too far behind the delayed live edge — snap forward
         isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
         video.currentTime = liveEdge;
         releaseSyncLock();
-      } else if (Math.abs(drift) > 0.5) {
-        video.playbackRate = drift > 0 ? 0.95 : 1.05;
+      } else if (Math.abs(drift) > 0.2) {
+        video.playbackRate = drift > 0 ? 0.97 : 1.03;
       } else {
         if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
       }
