@@ -187,7 +187,7 @@ app.get('/watch/:roomId', (req, res, next) => {
           : room.name)
       : 'Playdarr';
     const desc = room
-      ? `${room.viewers.size} viewer${room.viewers.size !== 1 ? 's' : ''} watching. Click to join!`
+      ? 'Click to join!'
       : 'Join the room on Playdarr.';
     const url = `${process.env.APP_URL || ''}/watch/${req.params.roomId}`;
     return res.send(`<!DOCTYPE html><html><head>
@@ -245,7 +245,7 @@ app.get('/join/:inviteToken', (req, res) => {
           : room.name)
       : 'Playdarr';
     const desc = room
-      ? `${room.viewers.size} viewer${room.viewers.size !== 1 ? 's' : ''} watching. Click to join!`
+      ? 'Click to join!'
       : 'Join the room on Playdarr.';
     const url = `${process.env.APP_URL || ''}/join/${token}`;
     return res.send(`<!DOCTYPE html><html><head>
