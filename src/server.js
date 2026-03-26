@@ -114,14 +114,19 @@ const authLimiter = rateLimit({
 app.use('/auth', authLimiter, authRouter);
 app.use('/api/movies', requirePlexAuth, moviesRouter);
 app.use('/api/shows', requirePlexAuth, showsRouter);
-const streamLimiter = rateLimit({
+// Segment proxy is the high-volume path (one request per .ts chunk, every few
+// seconds per viewer). The manifest endpoint is called once per movie load and
+// must never be rate-limited — a 429 there kills the whole stream startup.
+// The segment limiter is registered first so it runs before the stream router.
+const segmentLimiter = rateLimit({
   windowMs: 60 * 1000,        // 1 minute
-  max: 300,                   // 300 HLS segment requests per minute per IP
+  max: 600,                   // 600 segment requests per minute per IP (~10/s)
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many stream requests' }
 });
-app.use('/api/stream', requireAuth, streamLimiter, streamRouter);
+app.use('/api/stream/proxy', segmentLimiter);
+app.use('/api/stream', requireAuth, streamRouter);
 app.use('/api/schedule', requirePlexAuth, scheduleRouter);
 app.get('/api/me', (req, res) => {
     const user = req.session?.user || null;
