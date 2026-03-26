@@ -64,8 +64,8 @@ function startFfmpeg(channel) {
     '-af', 'aresample=async=1000',
     '-f', 'hls',
     '-hls_time', '2',
-    '-hls_list_size', '20',
-    '-hls_flags', 'delete_segments+append_list+omit_endlist',
+    '-hls_list_size', '300',
+    '-hls_flags', 'append_list+omit_endlist',
     '-hls_segment_filename', path.join(HLS_DIR, 'seg%05d.ts'),
     path.join(HLS_DIR, 'index.m3u8'),
   ];
