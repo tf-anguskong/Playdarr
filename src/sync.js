@@ -9,6 +9,9 @@ const inviteTokens = new Map(); // inviteToken -> roomId
 const socketToRoom = new Map(); // socketId -> Room
 
 let _io = null; // set in setupSync, used by createScheduledRoom
+let _enabledRoomTypes = { movie: true, tv: true, youtube: true, livetv: false };
+
+const LIVETV_API = process.env.LIVETV_API_URL || 'http://livetv-streamer:8080';
 
 async function fetchYoutubeTitle(videoId) {
   try {
@@ -48,7 +51,9 @@ class Room {
     this.intermissionTimer  = null;
     this.intermissionEndsAt = null;
     this.settings       = { playbackLocked: false, reactionsEnabled: true };
-    this.roomType       = 'movie'; // 'movie' | 'youtube' | 'tv'
+    this.roomType       = 'movie'; // 'movie' | 'youtube' | 'tv' | 'livetv'
+    this.liveTvChannel      = null;  // e.g. '7.1'
+    this.liveTvChannelTitle = null;  // e.g. 'KIRO/CBS'
     this.movieKey       = null;
     this.movieTitle     = null;
     this.partId         = null;
@@ -77,6 +82,8 @@ class Room {
       youtubeVideoId: this.youtubeVideoId,
       tvShowTitle: this.tvShowTitle || null,
       hasNextEpisode: this.roomType === 'tv' && this.tvEpisodeIndex < this.tvEpisodeList.length - 1,
+      liveTvChannel:      this.liveTvChannel,
+      liveTvChannelTitle: this.liveTvChannelTitle,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -92,7 +99,8 @@ class Room {
       movieTitle: this.movieTitle,
       viewerCount: this.viewers.size,
       hasMovie: !!this.movieKey,
-      youtubeVideoId: this.youtubeVideoId
+      youtubeVideoId: this.youtubeVideoId,
+      liveTvChannel: this.liveTvChannel
     };
   }
 
@@ -160,8 +168,10 @@ function formatEpisodeTitle(showTitle, ep) {
   return `${showTitle ? showTitle + ' · ' : ''}${se}${ep.title || ''}`;
 }
 
-function setupSync(io) {
+function setupSync(io, enabledRoomTypes) {
   _io = io;
+  if (enabledRoomTypes) _enabledRoomTypes = enabledRoomTypes;
+
   // Periodic sync heartbeat — keeps clients corrected during normal playback
   // without waiting for a play/pause/seek event to trigger a state broadcast.
   setInterval(() => {
@@ -169,6 +179,10 @@ function setupSync(io) {
       if (room.playing && room.viewers.size > 1) {
         room.broadcastState(io);
         room.broadcastViewers(io);
+      }
+      // Ping streamer for live TV rooms with active viewers
+      if (room.roomType === 'livetv' && room.viewers.size > 0) {
+        axios.post(`${LIVETV_API}/api/heartbeat`).catch(() => {});
       }
     });
   }, 5000);
@@ -183,7 +197,8 @@ function setupSync(io) {
       if (user.isGuest) return socket.emit('error-msg', 'Guests cannot create rooms');
       name = sanitizeText((name || '').trim().slice(0, 60)) || undefined;
 
-      const type = roomType === 'youtube' ? 'youtube' : (roomType === 'tv' ? 'tv' : 'movie');
+      const VALID_TYPES = Object.keys(_enabledRoomTypes).filter(t => _enabledRoomTypes[t]);
+      const type = VALID_TYPES.includes(roomType) ? roomType : (VALID_TYPES[0] || 'movie');
       let youtubeVideoId = null;
       if (type === 'youtube') {
         youtubeVideoId = extractYoutubeId(youtubeUrl || '');
@@ -358,6 +373,17 @@ function setupSync(io) {
       console.log(`[Room] \"${room.name}\" → YouTube ${videoId} \"${room.movieTitle || 'unknown'}\"`);
       room.broadcastState(io);
       broadcastRoomList(io);
+    });
+
+    // ── Select live TV channel (host only, livetv rooms) ──
+    socket.on('select-livetv-channel', ({ channel, channelTitle }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      room.liveTvChannel      = String(channel || '').slice(0, 20);
+      room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
+      axios.post(`${LIVETV_API}/api/channel`, { channel: room.liveTvChannel }).catch(() => {});
+      room.broadcastState(io);
+      console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel}`);
     });
 
     // ── Playback (anyone in room, unless locked) ───────────

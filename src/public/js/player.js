@@ -23,6 +23,11 @@ let sidebarCollapsed = false;
 let unreadChats      = 0;
 let lastKnownState   = null;
 
+// ── Guide state ────────────────────────────────────────────
+let guideOpen     = false;
+let guideExpanded = false;
+let guideChannels = [];
+
 // ── YouTube state ──────────────────────────────────────────
 let ytApiLoaded   = false;
 let ytApiReady    = false;
@@ -42,15 +47,18 @@ function esc(s = '') {
 socket.on('connect', () => socket.emit('join-room', { roomId }));
 
 function setHostUI(on, inviteToken) {
-  const isYt = roomType === 'youtube';
-  const isTv = roomType === 'tv';
-  const movieBtn   = document.getElementById('choose-movie-btn');
-  const episodeBtn = document.getElementById('choose-episode-btn');
-  if (movieBtn)   movieBtn.style.display   = (on && !isYt && !isTv) ? 'block' : 'none';
+  const isYt     = roomType === 'youtube';
+  const isTv     = roomType === 'tv';
+  const isLiveTv = roomType === 'livetv';
+  const movieBtn     = document.getElementById('choose-movie-btn');
+  const episodeBtn   = document.getElementById('choose-episode-btn');
+  const channelBtn   = document.getElementById('choose-channel-btn');
+  if (movieBtn)   movieBtn.style.display   = (on && !isYt && !isTv && !isLiveTv) ? 'block' : 'none';
   if (episodeBtn) episodeBtn.style.display = (on && isTv) ? 'block' : 'none';
+  if (channelBtn) channelBtn.style.display = (on && isLiveTv) ? 'block' : 'none';
   document.getElementById('yt-controls-section').style.display   = (on && isYt)  ? 'block' : 'none';
-  document.getElementById('countdown-section').style.display     = on ? 'block' : 'none';
-  document.getElementById('intermission-section').style.display  = on ? 'block' : 'none';
+  document.getElementById('countdown-section').style.display     = (on && !isLiveTv) ? 'block' : 'none';
+  document.getElementById('intermission-section').style.display  = (on && !isLiveTv) ? 'block' : 'none';
   document.getElementById('room-controls-section').style.display = on ? 'block' : 'none';
   if (on && inviteToken) setupInviteLink(inviteToken);
   if (!on) document.getElementById('invite-section').style.display = 'none';
@@ -65,6 +73,12 @@ function applyRoomSettings(settings) {
     video.controls = !locked || isHost;
     const volOverlay = document.getElementById('volume-overlay');
     if (volOverlay) volOverlay.style.display = (locked && !isHost) ? 'flex' : 'none';
+  } else if (roomType === 'livetv') {
+    // Live TV: hide native controls (no seeking on a live stream).
+    // Show volume overlay for all viewers so they can still adjust volume.
+    video.controls = false;
+    const volOverlay = document.getElementById('volume-overlay');
+    if (volOverlay) volOverlay.style.display = 'flex';
   }
   document.getElementById('reaction-bar').style.display = roomSettings.reactionsEnabled ? '' : 'none';
   if (isHost) {
@@ -141,8 +155,15 @@ function applyState(state) {
     applyYtState(state);
     return;
   }
+  if (state.roomType === 'livetv') {
+    applyLiveTvState(state);
+    return;
+  }
   // Hide YouTube player if switching room types
   document.getElementById('yt-player-container').style.display = 'none';
+  document.getElementById('livetv-info').style.display = 'none';
+  document.getElementById('guide-toggle-btn').style.display = 'none';
+  closeGuide();
 
   if (!state.movieKey) {
     video.style.display = 'none';
@@ -328,6 +349,147 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
   }
 }
 
+// ── Live TV player ─────────────────────────────────────────
+function loadLiveTv(channel) {
+  if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+  hidePlayOverlay();
+  document.getElementById('yt-player-container').style.display = 'none';
+  const src = '/api/livetv/hls/index.m3u8';
+  if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+    hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true });
+    hlsInstance.loadSource(src);
+    hlsInstance.attachMedia(video);
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+      video.play().catch(() => showPlayOverlay());
+    });
+    hlsInstance.on(Hls.Events.ERROR, (_, d) => {
+      if (!d.fatal) return;
+      currentKey = null; // allow retry on next state event
+      console.error('[LiveTV] Fatal HLS error:', d.details);
+      setTimeout(() => { if (currentKey === null) loadLiveTv(channel); }, 5000);
+    });
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = src;
+    video.play().catch(() => showPlayOverlay());
+  }
+}
+
+function applyLiveTvState(state) {
+  document.getElementById('yt-player-container').style.display = 'none';
+
+  const guideBtn = document.getElementById('guide-toggle-btn');
+  if (guideBtn) guideBtn.style.display = 'block';
+
+  if (!state.liveTvChannel) {
+    video.style.display = 'none';
+    noMovie.style.display = 'block';
+    noMovieText.textContent = 'Waiting for host to choose a channel…';
+    titleEl.textContent = 'Live TV';
+    document.getElementById('livetv-info').style.display = 'none';
+    return;
+  }
+
+  noMovie.style.display = 'none';
+  video.style.display = 'block';
+  // Apply livetv controls (no seeking)
+  video.controls = false;
+  const volOverlay = document.getElementById('volume-overlay');
+  if (volOverlay) volOverlay.style.display = 'flex';
+
+  titleEl.textContent = state.liveTvChannelTitle || state.liveTvChannel;
+
+  // Update sidebar channel info
+  const liveTvInfo = document.getElementById('livetv-info');
+  const liveTvChannelTitle = document.getElementById('livetv-channel-title');
+  if (liveTvInfo) liveTvInfo.style.display = 'block';
+  if (liveTvChannelTitle) liveTvChannelTitle.textContent = state.liveTvChannelTitle || '';
+
+  // Channel change → reload stream
+  if (state.liveTvChannel !== currentKey) {
+    currentKey = state.liveTvChannel;
+    loadLiveTv(state.liveTvChannel);
+  }
+
+  if (guideOpen) renderGuide(); // re-highlight active channel
+}
+
+// ── Live TV Guide panel ────────────────────────────────────
+function openGuide() {
+  guideOpen = true;
+  const panel = document.getElementById('guide-panel');
+  panel.classList.add('open');
+  document.getElementById('guide-toggle-btn').style.opacity = '1';
+  loadGuide();
+}
+
+function closeGuide() {
+  guideOpen = false;
+  guideExpanded = false;
+  const panel = document.getElementById('guide-panel');
+  if (panel) panel.classList.remove('open', 'expanded');
+  const expandBtn = document.getElementById('guide-expand-btn');
+  if (expandBtn) expandBtn.title = 'Expand';
+}
+
+function toggleGuideExpand() {
+  guideExpanded = !guideExpanded;
+  const panel = document.getElementById('guide-panel');
+  panel.classList.toggle('expanded', guideExpanded);
+  document.getElementById('guide-expand-btn').title = guideExpanded ? 'Collapse' : 'Expand';
+}
+
+async function loadGuide() {
+  const list = document.getElementById('guide-channel-list');
+  if (!list) return;
+  if (guideChannels.length) { renderGuide(); return; }
+  list.innerHTML = '<div class="loading" style="padding:1rem">Loading guide…</div>';
+  try {
+    const { channels } = await fetch('/api/livetv/guide').then(r => r.json());
+    guideChannels = channels || [];
+    renderGuide();
+  } catch {
+    list.innerHTML = '<div class="loading" style="padding:1rem">Failed to load guide.</div>';
+  }
+}
+
+function renderGuide() {
+  const list = document.getElementById('guide-channel-list');
+  if (!list) return;
+  if (!guideChannels.length) {
+    list.innerHTML = '<div class="loading" style="padding:1rem">No channels found.</div>';
+    return;
+  }
+  list.innerHTML = guideChannels.map(ch => {
+    const isActive  = ch.number === currentKey;
+    const clickable = isHost;
+    return `
+      <div class="guide-channel-item${isActive ? ' active' : ''}${clickable ? ' clickable' : ''}"
+           data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}">
+        <span class="guide-channel-num">${esc(ch.number)}</span>
+        <span class="guide-channel-name">${esc(ch.title || ch.number)}</span>
+        ${isActive ? '<span class="guide-now-playing">On Air</span>' : ''}
+      </div>
+    `;
+  }).join('');
+  if (isHost) {
+    list.querySelectorAll('.guide-channel-item.clickable').forEach(item => {
+      item.addEventListener('click', () => {
+        socket.emit('select-livetv-channel', {
+          channel:      item.dataset.channel,
+          channelTitle: item.dataset.title
+        });
+        closeGuide();
+      });
+    });
+  }
+}
+
+document.getElementById('guide-toggle-btn')?.addEventListener('click', () => {
+  guideOpen ? closeGuide() : openGuide();
+});
+document.getElementById('guide-close-btn')?.addEventListener('click', closeGuide);
+document.getElementById('guide-expand-btn')?.addEventListener('click', toggleGuideExpand);
+
 // ── Sidebar collapse ───────────────────────────────────────
 const sidebar   = document.querySelector('.sidebar');
 const expandTab = document.getElementById('sidebar-expand-tab');
@@ -366,6 +528,7 @@ function showNotif(text) {
 
 // ── Position reporting (for drift indicator) ───────────────
 setInterval(() => {
+  if (roomType === 'livetv') return; // live TV has no position to report
   let pos = null;
   if ((roomType === 'movie' || roomType === 'tv') && currentKey && !video.paused && !video.ended) {
     pos = video.currentTime;
@@ -873,6 +1036,46 @@ async function selectEpisode(ratingKey) {
   } catch { alert('Failed to load episode details.'); }
 }
 
+// ── Live TV channel selector (host only) ──────────────────
+document.getElementById('choose-channel-btn')?.addEventListener('click', () => {
+  document.getElementById('channel-modal').style.display = 'flex';
+  loadChannels();
+});
+
+document.getElementById('cancel-channel')?.addEventListener('click', () => {
+  document.getElementById('channel-modal').style.display = 'none';
+});
+
+async function loadChannels() {
+  const list = document.getElementById('channel-list');
+  list.innerHTML = '<div class="loading">Loading channels…</div>';
+  try {
+    const { channels, error } = await fetch('/api/livetv/guide').then(r => r.json());
+    if (!channels || !channels.length) {
+      list.innerHTML = '<div class="loading">No channels found.</div>';
+      return;
+    }
+    list.innerHTML = channels.map(ch => `
+      <div class="episode-item" data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" style="cursor:pointer">
+        <div class="episode-info">
+          <span class="episode-title">${esc(ch.number)} ${esc(ch.title || '')}</span>
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('.episode-item').forEach(item => {
+      item.addEventListener('click', () => {
+        socket.emit('select-livetv-channel', {
+          channel: item.dataset.channel,
+          channelTitle: item.dataset.title
+        });
+        document.getElementById('channel-modal').style.display = 'none';
+      });
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="loading">Error loading channels.</div>`;
+  }
+}
+
 socket.on('disconnect', () => { syncDot.className = 'sync-dot offline'; syncText.textContent = 'Disconnected'; });
 
 // ── Chat ───────────────────────────────────────────────────
@@ -1114,6 +1317,7 @@ function stopCountdownAnim() {
 }
 
 socket.on('countdown', ({ endsAt }) => {
+  closeGuide();
   countdownOverlay.style.display = 'flex';
   if (isHost) cancelCountdownBtn.style.display = 'block';
   startCountdownAnim(endsAt);
@@ -1203,6 +1407,7 @@ function hideIntermissionOverlay() {
 }
 
 socket.on('intermission-started', ({ endsAt }) => {
+  closeGuide();
   showIntermissionOverlay(endsAt);
 });
 

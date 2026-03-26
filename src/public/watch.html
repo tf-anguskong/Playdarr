@@ -17,6 +17,12 @@
       <h3 id="movie-title" class="sidebar-title">No movie selected</h3>
       <button id="choose-movie-btn" class="btn-choose-movie" style="display:none">🎬 Choose Movie</button>
       <button id="choose-episode-btn" class="btn-choose-movie" style="display:none">📺 Choose Episode</button>
+      <button id="choose-channel-btn" class="btn-choose-movie" style="display:none">📡 Change Channel</button>
+
+      <!-- Live TV info (shown for livetv rooms) -->
+      <div id="livetv-info" style="display:none">
+        <div id="livetv-channel-title" class="sidebar-title" style="font-size:0.9rem;color:var(--text-muted)"></div>
+      </div>
 
       <!-- Host: set YouTube video (YouTube rooms only) -->
       <div id="yt-controls-section" style="display:none">
@@ -154,10 +160,26 @@
         <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.05" value="1">
       </div>
 
+      <!-- Guide toggle button (livetv rooms only, shown on player hover) -->
+      <button id="guide-toggle-btn" class="guide-toggle-btn" style="display:none">📋 Guide</button>
+
       <!-- Shown when browser blocks autoplay -->
       <div id="play-overlay" class="play-overlay" style="display:none">
         <button id="play-overlay-btn" class="play-overlay-btn">▶</button>
         <p>Click to start playback</p>
+      </div>
+
+      <!-- TV Guide slide-up panel (livetv rooms only) -->
+      <div id="guide-panel" class="guide-panel">
+        <div class="guide-handle">
+          <div class="guide-handle-bar"></div>
+          <span class="guide-title">📋 Guide</span>
+          <button id="guide-expand-btn" class="guide-expand-btn" title="Expand">⌃</button>
+          <button id="guide-close-btn" class="guide-close-btn" title="Close">✕</button>
+        </div>
+        <div id="guide-channel-list" class="guide-channel-list">
+          <div class="loading">Loading guide…</div>
+        </div>
       </div>
     </div>
   </div>
@@ -211,6 +233,19 @@
         <span id="movie-count" class="movie-count"></span>
       </div>
       <div id="movies-grid" class="movies-grid modal-grid"></div>
+    </div>
+  </div>
+
+  <!-- Channel guide modal (livetv host only) -->
+  <div id="channel-modal" class="modal-overlay" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Choose Channel</h3>
+        <button id="cancel-channel" class="modal-close">✕</button>
+      </div>
+      <div id="channel-list" class="episodes-list" style="max-height:400px;overflow-y:auto">
+        <div class="loading">Loading channels…</div>
+      </div>
     </div>
   </div>
 

@@ -25,6 +25,13 @@ const { setupSync, getRoomByInviteToken, createScheduledRoom } = require('./sync
 const scheduler = require('./scheduler');
 const scheduleRouter = require('./routes/schedule');
 
+const enabledRoomTypes = {
+  movie:   process.env.ROOM_TYPE_MOVIE   !== 'false',
+  tv:      process.env.ROOM_TYPE_TV      !== 'false',
+  youtube: process.env.ROOM_TYPE_YOUTUBE !== 'false',
+  livetv:  process.env.ROOM_TYPE_LIVETV  === 'true',
+};
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -128,6 +135,13 @@ const segmentLimiter = rateLimit({
 app.use('/api/stream/proxy', segmentLimiter);
 app.use('/api/stream', requireAuth, streamRouter);
 app.use('/api/schedule', requirePlexAuth, scheduleRouter);
+
+app.get('/api/config', (req, res) => res.json({ enabledRoomTypes }));
+
+if (enabledRoomTypes.livetv) {
+  app.use('/api/livetv', requireAuth, require('./routes/livetv'));
+}
+
 app.get('/api/me', (req, res) => {
     const user = req.session?.user || null;
     if (!user) return res.json({ user: null });
@@ -229,7 +243,7 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
-setupSync(io);
+setupSync(io, enabledRoomTypes);
 
 scheduler.init((scheduled) => {
   const room = createScheduledRoom(scheduled);
