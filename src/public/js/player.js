@@ -357,7 +357,13 @@ function loadLiveTv(channel) {
   document.getElementById('yt-player-container').style.display = 'none';
   const src = '/api/livetv/hls/index.m3u8';
   if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-    hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true });
+    hlsInstance = new Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+      liveSyncDuration: 3,        // target 3s behind live edge — keeps all viewers aligned
+      liveMaxLatencyDuration: 8,  // auto-seek forward if >8s behind (late joiners, buffering)
+      liveBackBufferLength: 30,   // retain 30s back-buffer so pause/resume doesn't lose data
+    });
     hlsInstance.loadSource(src);
     hlsInstance.attachMedia(video);
     hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -411,9 +417,10 @@ function applyLiveTvState(state) {
     loadLiveTv(state.liveTvChannel);
   }
 
-  // Sync play/pause state (no position — live TV always plays at live edge)
+  // Sync play/pause state — on resume, snap to live edge so all viewers react together
   if (state.playing && video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    if (hlsInstance?.liveSyncPosition) video.currentTime = hlsInstance.liveSyncPosition;
     video.play().catch(() => showPlayOverlay());
     releaseSyncLock();
   } else if (!state.playing && !video.paused) {
