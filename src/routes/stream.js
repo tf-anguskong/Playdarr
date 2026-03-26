@@ -396,19 +396,33 @@ router.get('/proxy/*', async (req, res) => {
   }
 });
 
-// ── Temporary debug: probe transcode path formats for live TV ──
+// ── Temporary debug: probe transcode path formats + explore live TV API ──
 // Usage: /api/stream/debug/livetv-probe?channelId=<epg-id>&lineup=4.1
 router.get('/debug/livetv-probe', async (req, res) => {
   const { channelId, lineup } = req.query;
   if (!channelId || !lineup) return res.status(400).json({ error: 'channelId and lineup required' });
 
+  const headers = { Accept: 'application/json', 'X-Plex-Token': PLEX_TOKEN };
+
+  // First, explore what endpoints exist to find a proper channel ratingKey
+  const explore = {};
+  for (const ep of ['/livetv/channels', '/media/providers', '/livetv/sessions']) {
+    try {
+      const r = await axios.get(`${LIVETV_PLEX_URL}${ep}`, { headers, validateStatus: () => true, timeout: 5000 });
+      explore[ep] = { status: r.status, body: JSON.stringify(r.data).slice(0, 500) };
+    } catch (e) {
+      explore[ep] = { error: e.message };
+    }
+  }
+
+  // Then probe transcode paths using local URL
   const paths = [
     `/livetv/timelines/${lineup}`,
     `/livetv/channels/${lineup}`,
     `/livetv/timelines/${channelId}`,
   ];
 
-  const results = {};
+  const transcodeResults = {};
   for (const path of paths) {
     const params = {
       'X-Plex-Token': PLEX_TOKEN,
@@ -430,16 +444,16 @@ router.get('/debug/livetv-probe', async (req, res) => {
       .map(([k, v]) => `${encodeURIComponent(k)}=${k === 'path' ? v : encodeURIComponent(v)}`)
       .join('&');
     try {
-      const r = await axios.get(`${PLEX_URL}/video/:/transcode/universal/start.m3u8?${qs}`, {
+      const r = await axios.get(`${LIVETV_PLEX_URL}/video/:/transcode/universal/start.m3u8?${qs}`, {
         headers: { Accept: 'application/x-mpegURL', 'X-Plex-Token': PLEX_TOKEN },
         validateStatus: () => true,
       });
-      results[path] = { status: r.status, body: typeof r.data === 'string' ? r.data.slice(0, 200) : r.data };
+      transcodeResults[path] = { status: r.status, body: typeof r.data === 'string' ? r.data.slice(0, 300) : r.data };
     } catch (e) {
-      results[path] = { error: e.message };
+      transcodeResults[path] = { error: e.message };
     }
   }
-  res.json(results);
+  res.json({ localPlexUrl: LIVETV_PLEX_URL, explore, transcodeResults });
 });
 
 // ── Temporary debug: inspect raw /livetv/channels and EPG data ──
