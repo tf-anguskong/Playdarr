@@ -393,6 +393,29 @@ router.get('/proxy/*', async (req, res) => {
   }
 });
 
+// ── Temporary debug: inspect raw /livetv/channels and EPG data ──
+router.get('/debug/livetv', async (req, res) => {
+  try {
+    const headers = { Accept: 'application/json', 'X-Plex-Token': PLEX_TOKEN };
+    const axios2 = require('axios');
+    const dvrsRes = await axios2.get(`${PLEX_URL}/livetv/dvrs`, { headers, timeout: 10000 });
+    const epgId = dvrsRes.data?.MediaContainer?.Dvr?.[0]?.epgIdentifier;
+    const [plexRes, epgRes] = await Promise.all([
+      axios2.get(`${PLEX_URL}/livetv/channels`, { headers, timeout: 10000 }).catch(e => ({ error: e.message })),
+      epgId
+        ? axios2.get(`${PLEX_URL}/${epgId}/lineups/dvr/channels`, { headers, timeout: 10000 }).catch(e => ({ error: e.message }))
+        : Promise.resolve({ data: null }),
+    ]);
+    res.json({
+      epgId,
+      plexChannels: plexRes.data ?? plexRes,
+      epgChannels: epgRes.data ?? epgRes,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Thumbnail proxy ────────────────────────────────────────
 router.get('/thumb/:ratingKey', async (req, res) => {
   if (!/^\d+$/.test(req.params.ratingKey)) return res.status(400).send('Invalid ratingKey');
