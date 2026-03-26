@@ -176,4 +176,23 @@ async function getGuide() {
   };
 }
 
-module.exports = { switchChannel, heartbeat, getGuide, stopFfmpeg, getHlsDir };
+// Returns the sequence number of the latest complete segment in the manifest,
+// or null if the manifest isn't ready yet.  Uses the second-to-last segment to
+// avoid races where ffmpeg is still writing the final segment.
+function getCurrentSegment() {
+  const manifestPath = path.join(HLS_DIR, 'index.m3u8');
+  try {
+    const content = fs.readFileSync(manifestPath, 'utf8');
+    const seqMatch = content.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/);
+    if (!seqMatch) return null;
+    const mediaSequence = parseInt(seqMatch[1], 10);
+    const segments = content.match(/^seg\d+\.ts$/mg) || [];
+    if (segments.length < 2) return null;
+    // Second-to-last: safe to assume fully written
+    return mediaSequence + segments.length - 2;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { switchChannel, heartbeat, getGuide, stopFfmpeg, getHlsDir, getCurrentSegment };
