@@ -714,4 +714,8 @@ function createScheduledRoom(scheduled) {
   return room;
 }
 
-module.exports = { setupSync, getRoomByInviteToken, createScheduledRoom };
+function getRoom(roomId) {
+  return rooms.get(roomId) || null;
+}
+
+module.exports = { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom };

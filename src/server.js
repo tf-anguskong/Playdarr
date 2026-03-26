@@ -21,7 +21,7 @@ const { sanitizeText } = require('./sanitize');
 const moviesRouter = require('./routes/movies');
 const showsRouter = require('./routes/shows');
 const { router: streamRouter, clearRoomManifest } = require('./routes/stream');
-const { setupSync, getRoomByInviteToken, createScheduledRoom } = require('./sync');
+const { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom } = require('./sync');
 const scheduler = require('./scheduler');
 const scheduleRouter = require('./routes/schedule');
 
@@ -174,9 +174,36 @@ app.get('/', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.get('/watch/:roomId', requireAuth, (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(path.join(__dirname, 'public', 'watch.html'));
+app.get('/watch/:roomId', (req, res, next) => {
+  // Discord/Slack/Telegram crawlers don't have a session — intercept before requireAuth
+  // and return a lightweight OG preview page so link unfurls work.
+  const ua = req.headers['user-agent'] || '';
+  if (/discordbot|slackbot|telegrambot|whatsapp|twitterbot|facebookexternalhit/i.test(ua)) {
+    const esc = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const room = getRoom(req.params.roomId);
+    const title = room
+      ? (room.movieTitle || room.liveTvChannelTitle
+          ? `${room.name} — ${room.movieTitle || room.liveTvChannelTitle}`
+          : room.name)
+      : 'Playdarr';
+    const desc = room
+      ? `${room.viewers.size} viewer${room.viewers.size !== 1 ? 's' : ''} watching. Click to join!`
+      : 'Join the room on Playdarr.';
+    const url = `${process.env.APP_URL || ''}/watch/${req.params.roomId}`;
+    return res.send(`<!DOCTYPE html><html><head>
+<meta charset="UTF-8">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Playdarr">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(desc)}">
+<meta property="og:url" content="${esc(url)}">
+<meta name="twitter:card" content="summary">
+</head><body></body></html>`);
+  }
+  requireAuth(req, res, () => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(__dirname, 'public', 'watch.html'));
+  });
 });
 
 // Info endpoint used by join.html and waiting.html to get roomId or scheduled info
