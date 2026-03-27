@@ -203,12 +203,15 @@ async function startFfmpeg(channel) {
 
   const args = [
     '-hide_banner', '-loglevel', 'warning',
+    // Buffer HDHomeRun input to absorb MPEG-TS discontinuities
     '-fflags', '+genpts+discardcorrupt',
-    '-analyzeduration', '2M', '-probesize', '2M',
+    '-analyzeduration', '5M', '-probesize', '5M',
+    '-thread_queue_size', '4096',
     '-i', url,
     '-map', '0:v:0', '-map', '0:a:0',
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-    '-b:v', '6M', '-maxrate', '6M', '-bufsize', '3M',
+    // No -tune zerolatency: allow x264 lookahead for smooth rate control
+    '-c:v', 'libx264', '-preset', 'fast',
+    '-b:v', '6M', '-maxrate', '6M', '-bufsize', '6M',
     '-bsf:v', 'dump_extra',
     '-g', '30',
     '-c:a', 'libopus', '-b:a', '128k', '-ac', '2',
