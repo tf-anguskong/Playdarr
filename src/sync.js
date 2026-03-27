@@ -89,7 +89,8 @@ class Room {
       position: this.currentPosition(),
       lastUpdate: Date.now(),
       settings: this.settings,
-      intermissionEndsAt: this.intermissionEndsAt || null
+      intermissionEndsAt: this.intermissionEndsAt || null,
+      liveTvTargetTime: this._liveTvTargetTime ?? null
     };
   }
 
@@ -185,6 +186,10 @@ function setupSync(io, enabledRoomTypes) {
       // Ping streamer for live TV rooms with active viewers
       if (room.roomType === 'livetv' && room.viewers.size > 0) {
         if (liveTvManager) liveTvManager.heartbeat();
+        // Compute server-authoritative live edge target for inter-viewer sync
+        const livetvRoute = require('./routes/livetv');
+        const targetTime = livetvRoute.getLiveEdgeTime?.();
+        if (targetTime != null) room._liveTvTargetTime = targetTime;
       }
     });
   }, 5000);

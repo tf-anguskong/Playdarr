@@ -458,10 +458,11 @@ function applyLiveTvState(state) {
     loadLiveTv(state.liveTvChannel);
   }
 
-  // Sync play/pause state — on resume, snap to live edge so all viewers react together
+  // Sync play/pause state — on resume, snap to server-provided live edge
   if (state.playing && video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    if (hlsInstance?.liveSyncPosition) video.currentTime = hlsInstance.liveSyncPosition;
+    if (state.liveTvTargetTime != null) video.currentTime = state.liveTvTargetTime;
+    else if (hlsInstance?.liveSyncPosition) video.currentTime = hlsInstance.liveSyncPosition;
     video.play().catch(() => showPlayOverlay());
     releaseSyncLock();
   } else if (!state.playing && !video.paused) {
@@ -470,21 +471,19 @@ function applyLiveTvState(state) {
     releaseSyncLock();
   }
 
-  // Drift correction — manifest is the source of truth; nudge toward the delayed live edge
-  if (state.playing && !video.paused) {
-    const liveEdge = hlsInstance?.liveSyncPosition ?? null;
-    if (liveEdge !== null) {
-      const drift = video.currentTime - liveEdge;
-      if (drift < -2) {
-        // Too far behind the delayed live edge — snap forward
-        isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-        video.currentTime = liveEdge;
-        releaseSyncLock();
-      } else if (Math.abs(drift) > 0.2) {
-        video.playbackRate = drift > 0 ? 0.97 : 1.03;
-      } else {
-        if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
-      }
+  // Drift correction — server-computed live edge is the shared reference point
+  if (state.playing && !video.paused && state.liveTvTargetTime != null) {
+    const drift = video.currentTime - state.liveTvTargetTime;
+    if (Math.abs(drift) > 3) {
+      // Too far off — hard snap
+      isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+      video.currentTime = state.liveTvTargetTime;
+      releaseSyncLock();
+    } else if (Math.abs(drift) > 0.5) {
+      // Gradual correction via playback rate
+      video.playbackRate = drift > 0 ? 0.97 : 1.03;
+    } else {
+      if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
     }
   }
 
