@@ -16,32 +16,48 @@ const PLEX_TOKEN       = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN
 const GUIDE_TTL_MS       = 300_000;
 const NOW_PLAYING_TTL_MS = 120_000;
 
-// Resolved at initMediasoup time; used by createWebRtcTransport
+// Resolved at initMediasoup time and refreshed periodically; used by createWebRtcTransport
 let resolvedAnnouncedIp = null;
+let ipResolvedAt        = 0;
+const IP_REFRESH_MS     = 300_000; // re-check public IP every 5 minutes
 
 async function resolveAnnouncedIp() {
+  // Static override — never auto-refresh
   if (process.env.WEBRTC_ANNOUNCED_IP) {
     resolvedAnnouncedIp = process.env.WEBRTC_ANNOUNCED_IP;
+    ipResolvedAt = Date.now();
     console.log(`[LiveTV] WebRTC announced IP: ${resolvedAnnouncedIp} (from WEBRTC_ANNOUNCED_IP)`);
     return;
   }
   try {
     const res = await axios.get('https://api.ipify.org?format=json', { timeout: 5000 });
-    resolvedAnnouncedIp = res.data.ip;
-    console.log(`[LiveTV] WebRTC announced IP: ${resolvedAnnouncedIp} (auto-detected)`);
+    const newIp = res.data.ip;
+    if (newIp !== resolvedAnnouncedIp) {
+      console.log(`[LiveTV] WebRTC announced IP: ${newIp} (auto-detected${resolvedAnnouncedIp ? `, was ${resolvedAnnouncedIp}` : ''})`);
+    }
+    resolvedAnnouncedIp = newIp;
+    ipResolvedAt = Date.now();
   } catch {
-    // Last resort: pull hostname from APP_URL
+    // Keep existing IP if we have one; only fall back if this is the first resolve
+    if (resolvedAnnouncedIp) {
+      console.warn('[LiveTV] Public IP refresh failed — keeping current:', resolvedAnnouncedIp);
+      return;
+    }
     try {
       resolvedAnnouncedIp = new URL(process.env.APP_URL || 'http://localhost').hostname;
     } catch {
       resolvedAnnouncedIp = '127.0.0.1';
     }
+    ipResolvedAt = Date.now();
     console.warn(`[LiveTV] Could not auto-detect public IP — falling back to "${resolvedAnnouncedIp}". ` +
       'Set WEBRTC_ANNOUNCED_IP to your public IP if WebRTC fails for external viewers.');
   }
 }
 
-function getAnnouncedIp() {
+async function getAnnouncedIp() {
+  if (!resolvedAnnouncedIp || (Date.now() - ipResolvedAt >= IP_REFRESH_MS && !process.env.WEBRTC_ANNOUNCED_IP)) {
+    await resolveAnnouncedIp();
+  }
   return resolvedAnnouncedIp || '127.0.0.1';
 }
 
@@ -246,7 +262,7 @@ async function createWebRtcTransport(socketId) {
   if (process.env.WEBRTC_LAN_IP) {
     listenIps.push({ ip: '0.0.0.0', announcedIp: process.env.WEBRTC_LAN_IP });
   }
-  listenIps.push({ ip: '0.0.0.0', announcedIp: getAnnouncedIp() });
+  listenIps.push({ ip: '0.0.0.0', announcedIp: await getAnnouncedIp() });
 
   const transport = await router.createWebRtcTransport({
     listenIps,
