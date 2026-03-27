@@ -90,7 +90,7 @@ class Room {
       lastUpdate: Date.now(),
       settings: this.settings,
       intermissionEndsAt: this.intermissionEndsAt || null,
-      liveTvTargetTime: this._liveTvTargetTime ?? null
+      liveTvEdgeOffset: this._liveTvEdgeOffset ?? null
     };
   }
 
@@ -191,12 +191,10 @@ function setupSync(io, enabledRoomTypes) {
     rooms.forEach(room => {
       if (room.roomType !== 'livetv') return;
       if (room.viewers.size > 0 && liveTvManager) liveTvManager.heartbeat();
-      // Use host's reported playback position as the sync target
+      // Broadcast host's offset from their live edge — guests apply this to their own edge
       const hostViewer = room.viewers.get(room.hostSocketId);
-      if (hostViewer?.reportedTime != null && hostViewer.reportedAt != null) {
-        // Extrapolate host position to "now" based on elapsed time since last report
-        const elapsed = (Date.now() - hostViewer.reportedAt) / 1000;
-        room._liveTvTargetTime = hostViewer.reportedTime + (room.playing ? elapsed : 0);
+      if (hostViewer?.liveEdgeOffset != null) {
+        room._liveTvEdgeOffset = hostViewer.liveEdgeOffset;
       }
       if (room.playing && room.viewers.size > 1) {
         room.broadcastState(io);
@@ -601,7 +599,7 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Position report (for drift display) ───────────────
-    socket.on('position-report', ({ position }) => {
+    socket.on('position-report', ({ position, liveEdgeOffset }) => {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!positionLimiter.allow(socket.id)) return;
@@ -610,6 +608,10 @@ function setupSync(io, enabledRoomTypes) {
       if (typeof position !== 'number' || !isFinite(position) || position < 0) return;
       viewer.reportedTime = position;
       viewer.reportedAt   = Date.now();
+      // Store host's live edge offset for live TV sync
+      if (typeof liveEdgeOffset === 'number' && isFinite(liveEdgeOffset)) {
+        viewer.liveEdgeOffset = liveEdgeOffset;
+      }
     });
 
     // ── Buffering state ────────────────────────────────────
