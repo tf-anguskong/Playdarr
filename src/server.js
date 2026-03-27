@@ -162,6 +162,10 @@ app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
   });
 });
 
+app.get('/vendor/mediasoup-client.min.js', (req, res) => {
+  res.sendFile(path.join(__dirname, '../node_modules/mediasoup-client/dist/mediasoup-client.min.js'));
+});
+
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.css') || filePath.endsWith('.js')) {
