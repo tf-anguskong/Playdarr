@@ -385,8 +385,16 @@ async function loadLiveTv(channel) {
       body: JSON.stringify({ rtpCapabilities: liveTvDevice.rtpCapabilities }),
     }).then(r => r.json());
 
-    const tracks = await Promise.all(consumers.map(c => liveTvTransport.consume(c)));
-    video.srcObject = new MediaStream(tracks.map(c => c.track));
+    const mediaConsumers = await Promise.all(consumers.map(c => liveTvTransport.consume(c)));
+    // Increase playout delay — WebRTC's default jitter buffer is tuned for
+    // real-time calls (~50ms), too small for transcoded live TV.
+    mediaConsumers.forEach(c => {
+      const receiver = c.rtpReceiver;
+      if (receiver && 'playoutDelayHint' in receiver) {
+        receiver.playoutDelayHint = 0.5; // 500ms buffer
+      }
+    });
+    video.srcObject = new MediaStream(mediaConsumers.map(c => c.track));
     video.play().catch(() => showPlayOverlay());
   } catch (err) {
     console.error('[LiveTV] WebRTC connect error:', err);
