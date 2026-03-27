@@ -225,9 +225,15 @@ async function createWebRtcTransport(socketId) {
   const existing = clientTransports.get(socketId);
   if (existing) { try { existing.close(); } catch {} }
 
-  const announcedIp = getAnnouncedIp();
+  const listenIps = [{ ip: '0.0.0.0', announcedIp: getAnnouncedIp() }];
+  // If a separate LAN IP is configured, add it as a second ICE candidate so
+  // internal and external clients can both connect simultaneously.
+  if (process.env.WEBRTC_LAN_IP) {
+    listenIps.push({ ip: '0.0.0.0', announcedIp: process.env.WEBRTC_LAN_IP });
+  }
+
   const transport = await router.createWebRtcTransport({
-    listenIps: [{ ip: '0.0.0.0', announcedIp }],
+    listenIps,
     enableUdp: true,
     enableTcp: true,
     preferUdp: true,
