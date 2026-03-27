@@ -371,19 +371,28 @@ function cleanupLiveTv() {
   if (liveTvMediaSource && liveTvMediaSource.readyState === 'open') {
     try { liveTvMediaSource.endOfStream(); } catch {}
   }
-  liveTvMediaSource = null;
+  if (video.src && video.src.startsWith('blob:')) {
+    URL.revokeObjectURL(video.src);
+  }
+  video.src = '';
   video.srcObject = null;
+  liveTvMediaSource = null;
 }
 
 function liveTvDrainQueue() {
-  if (!liveTvSourceBuf || liveTvSourceBuf.updating || !liveTvQueue.length) return;
+  if (!liveTvActive || !liveTvSourceBuf || !liveTvMediaSource || liveTvMediaSource.readyState !== 'open') return;
+  if (liveTvSourceBuf.updating || !liveTvQueue.length) return;
   try {
     liveTvSourceBuf.appendBuffer(liveTvQueue.shift());
   } catch (err) {
+    if (err.name === 'QuotaExceededError') {
+      // Buffer full — trim and retry
+      liveTvTrimBuffer();
+      return;
+    }
     console.error('[LiveTV] appendBuffer error:', err);
-    // Likely a codec mismatch or QuotaExceeded — reset
     cleanupLiveTv();
-    setTimeout(() => loadLiveTv(currentKey), 2000);
+    if (currentKey) setTimeout(() => loadLiveTv(currentKey), 2000);
   }
 }
 
@@ -411,7 +420,7 @@ function loadLiveTv(channel) {
 
   liveTvMediaSource.addEventListener('sourceopen', () => {
     try {
-      liveTvSourceBuf = liveTvMediaSource.addSourceBuffer('video/mp4; codecs="avc1.42e01f, mp4a.40.2"');
+      liveTvSourceBuf = liveTvMediaSource.addSourceBuffer('video/mp4; codecs="avc1.640029, mp4a.40.2"');
       liveTvSourceBuf.mode = 'segments';
       liveTvSourceBuf.addEventListener('updateend', () => {
         liveTvTrimBuffer();
