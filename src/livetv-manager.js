@@ -181,8 +181,8 @@ async function startFfmpeg(channel) {
   console.log(`[LiveTV] Starting ffmpeg for channel ${channel} — ${url} (video:${videoPort} audio:${audioPort})`);
 
   const teeOutput = [
-    `[select=v:f=rtp:ssrc=1111:payload_type=97]rtp://127.0.0.1:${videoPort}`,
-    `[select=a:f=rtp:ssrc=2222:payload_type=100]rtp://127.0.0.1:${audioPort}`,
+    `[select=v:f=rtp:ssrc=1111:payload_type=97:onfail=ignore:flush_packets=1]rtp://127.0.0.1:${videoPort}`,
+    `[select=a:f=rtp:ssrc=2222:payload_type=100:onfail=ignore:flush_packets=1]rtp://127.0.0.1:${audioPort}`,
   ].join('|');
 
   const args = [
@@ -192,8 +192,10 @@ async function startFfmpeg(channel) {
     '-i', url,
     '-map', '0:v:0', '-map', '0:a:0',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-tune', 'zerolatency',
+    '-bsf:v', 'dump_extra',
     '-c:a', 'libopus', '-b:a', '128k', '-ac', '2',
     '-af', 'aresample=async=1000',
+    '-flush_packets', '1',
     '-f', 'tee', teeOutput,
   ];
 
