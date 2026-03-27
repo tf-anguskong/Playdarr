@@ -229,11 +229,6 @@ async function startFfmpeg(channel) {
   console.log(`[LiveTV] Probe: ${probe.width}x${probe.height} ${probe.fps}fps ${probe.interlaced ? 'interlaced' : 'progressive'}`);
   console.log(`[LiveTV] Starting ffmpeg for channel ${channel} — ${url} (video:${videoPort} audio:${audioPort}, encoder:${useHw ? 'h264_vaapi' : 'libx264'}, gop:${gopSize})`);
 
-  const teeOutput = [
-    `[select=v:f=rtp:ssrc=1111:payload_type=97]rtp://127.0.0.1:${videoPort}`,
-    `[select=a:f=rtp:ssrc=2222:payload_type=100]rtp://127.0.0.1:${audioPort}`,
-  ].join('|');
-
   // Build video filter chain based on probe results
   const vfFilters = [];
   if (useHw) {
@@ -249,19 +244,23 @@ async function startFfmpeg(channel) {
     '-thread_queue_size', '4096',
     ...(useHw ? ['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD128', '-hwaccel_output_format', 'vaapi'] : []),
     '-i', url,
-    '-map', '0:v:0', '-map', '0:a:0',
+    // Video output
+    '-map', '0:v:0',
     ...(vfFilters.length ? ['-vf', vfFilters.join(',')] : []),
     ...(useHw
-      ? ['-c:v', 'h264_vaapi',
-         '-b:v', '6M', '-maxrate', '6M', '-bufsize', '6M',
-         '-g', String(gopSize)]
-      : ['-c:v', 'libx264', '-preset', 'veryfast',
-         '-b:v', '6M', '-maxrate', '6M', '-bufsize', '6M',
-         '-g', String(gopSize)]),
+      ? ['-c:v', 'h264_vaapi']
+      : ['-c:v', 'libx264', '-preset', 'veryfast']),
+    '-b:v', '6M', '-maxrate', '6M', '-bufsize', '6M',
+    '-g', String(gopSize),
     '-bsf:v', 'dump_extra',
+    '-ssrc', '1111', '-payload_type', '97',
+    '-f', 'rtp', `rtp://127.0.0.1:${videoPort}`,
+    // Audio output
+    '-map', '0:a:0',
     '-c:a', 'libopus', '-b:a', '128k', '-ac', '2',
     '-af', 'aresample=async=1000',
-    '-f', 'tee', teeOutput,
+    '-ssrc', '2222', '-payload_type', '100',
+    '-f', 'rtp', `rtp://127.0.0.1:${audioPort}`,
   ];
 
   ffmpegProc = spawn('ffmpeg', args, { stdio: 'inherit' });
@@ -274,9 +273,15 @@ async function startFfmpeg(channel) {
   });
 }
 
+let switchLock = null;
 async function switchChannel(channel) {
   if (channel === currentChan && ffmpegProc) return;
-  await startFfmpeg(channel);
+  // Serialize — if a switch is already in progress, wait for it then check again
+  if (switchLock) await switchLock;
+  if (channel === currentChan && ffmpegProc) return;
+  switchLock = startFfmpeg(channel);
+  await switchLock;
+  switchLock = null;
 }
 
 function heartbeat() {
