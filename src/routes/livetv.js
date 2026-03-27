@@ -25,8 +25,11 @@ router.post('/channel', (req, res) => {
 // GET /api/livetv/webrtc/capabilities
 router.get('/webrtc/capabilities', (req, res) => {
   try {
-    res.json(livetv.getRouterCapabilities());
+    const caps = livetv.getRouterCapabilities();
+    console.log(`[LiveTV] capabilities → session ${req.session.id.slice(0, 8)}`);
+    res.json(caps);
   } catch (err) {
+    console.error('[LiveTV] capabilities error:', err.message);
     res.status(503).json({ error: err.message });
   }
 });
@@ -35,8 +38,10 @@ router.get('/webrtc/capabilities', (req, res) => {
 router.post('/webrtc/transport', async (req, res) => {
   try {
     const params = await livetv.createWebRtcTransport(req.session.id);
+    console.log(`[LiveTV] transport created → session ${req.session.id.slice(0, 8)} id=${params.id.slice(0, 8)}`);
     res.json(params);
   } catch (err) {
+    console.error('[LiveTV] transport error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -47,8 +52,10 @@ router.post('/webrtc/transport/connect', async (req, res) => {
   if (!dtlsParameters) return res.status(400).json({ error: 'dtlsParameters required' });
   try {
     await livetv.connectWebRtcTransport(req.session.id, dtlsParameters);
+    console.log(`[LiveTV] transport connected → session ${req.session.id.slice(0, 8)}`);
     res.json({ ok: true });
   } catch (err) {
+    console.error('[LiveTV] transport connect error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -59,8 +66,10 @@ router.post('/webrtc/consume', async (req, res) => {
   if (!rtpCapabilities) return res.status(400).json({ error: 'rtpCapabilities required' });
   try {
     const consumers = await livetv.createConsumers(req.session.id, rtpCapabilities);
+    console.log(`[LiveTV] consumers created → session ${req.session.id.slice(0, 8)} count=${consumers.length}`);
     res.json(consumers);
   } catch (err) {
+    console.error('[LiveTV] consume error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

@@ -184,9 +184,9 @@ async function startFfmpeg(channel) {
   });
 }
 
-function switchChannel(channel) {
+async function switchChannel(channel) {
   if (channel === currentChan && ffmpegProc) return;
-  startFfmpeg(channel);
+  await startFfmpeg(channel);
 }
 
 function heartbeat() {

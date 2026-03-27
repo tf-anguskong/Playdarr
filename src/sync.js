@@ -378,14 +378,14 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select live TV channel (host only, livetv rooms) ──
-    socket.on('select-livetv-channel', ({ channel, channelTitle }) => {
+    socket.on('select-livetv-channel', async ({ channel, channelTitle }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       room.liveTvChannel      = String(channel || '').slice(0, 20);
       room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
       room.playing    = true;
       room.lastUpdate = Date.now();
-      if (liveTvManager) liveTvManager.switchChannel(room.liveTvChannel);
+      if (liveTvManager) await liveTvManager.switchChannel(room.liveTvChannel);
       room.broadcastState(io);
       console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel}`);
     });
