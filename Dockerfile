@@ -2,7 +2,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg python3 make g++ linux-headers
+RUN apk add --no-cache ffmpeg python3 py3-pip make g++ linux-headers
 
 COPY package*.json ./
 RUN npm install --omit=dev
