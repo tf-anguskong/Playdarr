@@ -45,13 +45,38 @@ function stopFfmpeg() {
   }
 }
 
-// Channels confirmed to need software transcode (MPEG-2 or other non-H.264 codec)
-const transcodeChannels = new Set();
+// Cache probe results so subsequent switches to the same channel skip the probe
+const codecCache = new Map();
 
-function buildArgs(url, transcode) {
-  const videoArgs = transcode
-    ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23']
-    : ['-c:v', 'copy'];
+function probeVideoCodec(url) {
+  return new Promise((resolve) => {
+    const args = [
+      '-v', 'quiet', '-print_format', 'json',
+      '-select_streams', 'v:0', '-show_entries', 'stream=codec_name',
+      '-read_intervals', '%+2',
+      '-analyzeduration', '2000000', '-probesize', '2000000',
+      url,
+    ];
+    let stdout = '';
+    let settled = false;
+    const proc = spawn('ffprobe', args);
+    const timer = setTimeout(() => {
+      if (settled) return; settled = true;
+      proc.kill('SIGKILL'); resolve(null);
+    }, 4000);
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.on('close', () => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      try { resolve(JSON.parse(stdout).streams?.[0]?.codec_name || null); } catch { resolve(null); }
+    });
+    proc.on('error', () => { if (!settled) { settled = true; clearTimeout(timer); resolve(null); } });
+  });
+}
+
+function buildArgs(url, canCopy) {
+  const videoArgs = canCopy
+    ? ['-c:v', 'copy']
+    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23'];
   return [
     '-hide_banner', '-loglevel', 'warning',
     '-fflags', '+genpts+discardcorrupt',
@@ -69,31 +94,31 @@ function buildArgs(url, transcode) {
   ];
 }
 
-function startFfmpeg(channel) {
+async function startFfmpeg(channel) {
   stopFfmpeg();
   clearHls();
   currentChan = channel;
 
-  const url       = `http://${HDHR_IP}:${HDHR_PORT}/auto/v${channel}`;
-  const transcode = transcodeChannels.has(channel);
-  console.log(`[LiveTV] Starting ffmpeg for channel ${channel} (${transcode ? 'transcode' : 'copy'}) — ${url}`);
+  const url = `http://${HDHR_IP}:${HDHR_PORT}/auto/v${channel}`;
 
-  let stderr = '';
-  const args = buildArgs(url, transcode);
-  ffmpegProc = spawn('ffmpeg', args, { stdio: ['inherit', 'inherit', 'pipe'] });
+  // Quick probe: is this H.264? Cache result per channel.
+  let codec = codecCache.get(channel);
+  if (!codec) {
+    console.log(`[LiveTV] Probing channel ${channel}…`);
+    codec = await probeVideoCodec(url);
+    if (codec) codecCache.set(channel, codec);
+  }
 
-  ffmpegProc.stderr.on('data', d => { stderr += d.toString(); });
+  const canCopy = codec === 'h264';
+  console.log(`[LiveTV] Starting ffmpeg for channel ${channel} (codec=${codec || 'unknown'}, ${canCopy ? 'copy' : 'transcode'}) — ${url}`);
 
+  const args = buildArgs(url, canCopy);
+  ffmpegProc = spawn('ffmpeg', args, { stdio: 'inherit' });
   ffmpegProc.on('exit', (code) => {
     console.log(`[LiveTV] ffmpeg exited (code=${code})`);
     if (ffmpegProc) {
       ffmpegProc = null;
-      if (!transcode && /h264_mp4toannexb|not supported by the bitstream|mpeg2video/i.test(stderr)) {
-        // Copy failed due to non-H.264 codec — switch to transcode for this channel
-        console.log(`[LiveTV] Channel ${channel} needs transcode — retrying`);
-        transcodeChannels.add(channel);
-      }
-      setTimeout(() => { if (currentChan) startFfmpeg(currentChan); }, 1000);
+      setTimeout(() => { if (currentChan) startFfmpeg(currentChan); }, 3000);
     }
   });
 }
