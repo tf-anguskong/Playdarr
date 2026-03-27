@@ -194,8 +194,8 @@ async function startFfmpeg(channel) {
   });
 
   const url = `http://${HDHR_IP}:${HDHR_PORT}/auto/v${channel}`;
-  const useQsv = process.env.LIVETV_HW_ACCEL !== 'none';
-  console.log(`[LiveTV] Starting ffmpeg for channel ${channel} — ${url} (video:${videoPort} audio:${audioPort}, encoder:${useQsv ? 'h264_qsv' : 'libx264'})`);
+  const useHw = process.env.LIVETV_HW_ACCEL !== 'none';
+  console.log(`[LiveTV] Starting ffmpeg for channel ${channel} — ${url} (video:${videoPort} audio:${audioPort}, encoder:${useHw ? 'h264_vaapi' : 'libx264'})`);
 
   const teeOutput = [
     `[select=v:f=rtp:ssrc=1111:payload_type=97]rtp://127.0.0.1:${videoPort}`,
@@ -208,12 +208,11 @@ async function startFfmpeg(channel) {
     '-fflags', '+genpts+discardcorrupt',
     '-analyzeduration', '5M', '-probesize', '5M',
     '-thread_queue_size', '4096',
-    ...(useQsv ? ['-init_hw_device', 'qsv=hw', '-filter_hw_device', 'hw'] : []),
+    ...(useHw ? ['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD128', '-hwaccel_output_format', 'vaapi'] : []),
     '-i', url,
     '-map', '0:v:0', '-map', '0:a:0',
-    ...(useQsv
-      ? ['-vf', 'hwupload=extra_hw_frames=64,format=qsv',
-         '-c:v', 'h264_qsv', '-preset', 'fast',
+    ...(useHw
+      ? ['-c:v', 'h264_vaapi',
          '-b:v', '6M', '-maxrate', '6M', '-bufsize', '6M',
          '-g', '30']
       : ['-c:v', 'libx264', '-preset', 'veryfast',

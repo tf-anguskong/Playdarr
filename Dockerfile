@@ -6,7 +6,6 @@ RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.li
     && apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
       intel-media-va-driver-non-free \
-      libmfx1 \
       vainfo \
     && rm -rf /var/lib/apt/lists/*
 
