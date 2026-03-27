@@ -16,22 +16,33 @@ const PLEX_TOKEN       = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN
 const GUIDE_TTL_MS       = 300_000;
 const NOW_PLAYING_TTL_MS = 120_000;
 
-// Derive announced IP from WEBRTC_ANNOUNCED_IP or APP_URL
-function getAnnouncedIp() {
-  if (process.env.WEBRTC_ANNOUNCED_IP) return process.env.WEBRTC_ANNOUNCED_IP;
-  // mediasoup requires an IP address, not a hostname — warn if falling back
-  try {
-    const url = new URL(process.env.APP_URL || 'http://localhost');
-    const host = url.hostname;
-    // If it looks like a hostname rather than an IP, warn
-    if (!/^[\d.]+$/.test(host) && host !== 'localhost') {
-      console.warn(`[LiveTV] WEBRTC_ANNOUNCED_IP not set — falling back to "${host}" from APP_URL. ` +
-        'This must be the server\'s public IP. Set WEBRTC_ANNOUNCED_IP to avoid this warning.');
-    }
-    return host;
-  } catch {
-    return '127.0.0.1';
+// Resolved at initMediasoup time; used by createWebRtcTransport
+let resolvedAnnouncedIp = null;
+
+async function resolveAnnouncedIp() {
+  if (process.env.WEBRTC_ANNOUNCED_IP) {
+    resolvedAnnouncedIp = process.env.WEBRTC_ANNOUNCED_IP;
+    console.log(`[LiveTV] WebRTC announced IP: ${resolvedAnnouncedIp} (from WEBRTC_ANNOUNCED_IP)`);
+    return;
   }
+  try {
+    const res = await axios.get('https://api.ipify.org?format=json', { timeout: 5000 });
+    resolvedAnnouncedIp = res.data.ip;
+    console.log(`[LiveTV] WebRTC announced IP: ${resolvedAnnouncedIp} (auto-detected)`);
+  } catch {
+    // Last resort: pull hostname from APP_URL
+    try {
+      resolvedAnnouncedIp = new URL(process.env.APP_URL || 'http://localhost').hostname;
+    } catch {
+      resolvedAnnouncedIp = '127.0.0.1';
+    }
+    console.warn(`[LiveTV] Could not auto-detect public IP — falling back to "${resolvedAnnouncedIp}". ` +
+      'Set WEBRTC_ANNOUNCED_IP to your public IP if WebRTC fails for external viewers.');
+  }
+}
+
+function getAnnouncedIp() {
+  return resolvedAnnouncedIp || '127.0.0.1';
 }
 
 const MEDIA_CODECS = [
@@ -72,6 +83,7 @@ let nowPlayingFetchedAt = 0;
 // ── mediasoup init ──────────────────────────────────────────
 
 async function initMediasoup() {
+  await resolveAnnouncedIp();
   const rtcMinPort = parseInt(process.env.WEBRTC_PORT_MIN) || 40000;
   const rtcMaxPort = parseInt(process.env.WEBRTC_PORT_MAX) || 40100;
   worker = await mediasoup.createWorker({ logLevel: 'warn', rtcMinPort, rtcMaxPort });
