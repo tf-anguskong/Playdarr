@@ -612,6 +612,7 @@ function setupSync(io, enabledRoomTypes) {
       chatLimiter.delete(socket.id);
       reactionLimiter.delete(socket.id);
       seekLimiter.delete(socket.id);
+      if (liveTvManager) liveTvManager.closeConsumer(socket.id);
       const room = socketToRoom.get(socket.id);
       socketToRoom.delete(socket.id);
       if (!room) return;

@@ -1,15 +1,9 @@
 'use strict';
 
 const express  = require('express');
-const fs       = require('fs');
-const path     = require('path');
 const livetv   = require('../livetv-manager');
 
 const router = express.Router();
-const VALID_HLS_FILE = /^(index\.m3u8|seg\d+\.ts)$/;
-
-const DELAY_SEGMENTS  = 5;   // 10s behind live edge
-const WINDOW_SEGMENTS = 15;  // 30s rolling window served to clients
 
 // GET /api/livetv/guide
 router.get('/guide', async (req, res) => {
@@ -28,55 +22,47 @@ router.post('/channel', (req, res) => {
   res.json({ channel });
 });
 
-// GET /api/livetv/hls/index.m3u8 — rewritten sliding-window manifest
-router.get('/hls/index.m3u8', (req, res) => {
-  const manifestPath = path.join(livetv.getHlsDir(), 'index.m3u8');
-  let raw;
-  try { raw = fs.readFileSync(manifestPath, 'utf8'); }
-  catch { return res.status(503).json({ error: 'Stream not ready' }); }
-
-  const lines = raw.split('\n');
-  const seqMatch = raw.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/);
-  if (!seqMatch) return res.status(503).json({ error: 'Stream not ready' });
-  const baseSeq = parseInt(seqMatch[1], 10);
-
-  const segments = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith('#EXTINF:')) {
-      segments.push({ inf: lines[i], file: lines[i + 1] });
-    }
+// GET /api/livetv/webrtc/capabilities
+router.get('/webrtc/capabilities', (req, res) => {
+  try {
+    res.json(livetv.getRouterCapabilities());
+  } catch (err) {
+    res.status(503).json({ error: err.message });
   }
-
-  if (segments.length < DELAY_SEGMENTS + 3) {
-    return res.status(503).json({ error: 'Stream not ready' });
-  }
-
-  const end    = segments.length - DELAY_SEGMENTS;
-  const start  = Math.max(0, end - WINDOW_SEGMENTS);
-  const window = segments.slice(start, end);
-  const newSeq = baseSeq + start;
-
-  const header = lines
-    .filter(l => l.startsWith('#EXT') && !l.startsWith('#EXTINF') && !l.startsWith('#EXT-X-MEDIA-SEQUENCE'))
-    .join('\n');
-
-  const body     = window.map(s => `${s.inf}\n${s.file}`).join('\n');
-  const manifest = `#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:${newSeq}\n${header}\n${body}\n`;
-
-  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.send(manifest);
 });
 
-// GET /api/livetv/hls/:file — serve .ts segments directly
-router.get('/hls/:file', (req, res) => {
-  const file = req.params.file;
-  if (!VALID_HLS_FILE.test(file)) return res.status(400).json({ error: 'Invalid file' });
-  res.sendFile(path.join(livetv.getHlsDir(), file), (err) => {
-    if (err && !res.headersSent) {
-      res.status(err.code === 'ENOENT' ? 404 : 500).json({ error: 'File not found' });
-    }
-  });
+// POST /api/livetv/webrtc/transport
+router.post('/webrtc/transport', async (req, res) => {
+  try {
+    const params = await livetv.createWebRtcTransport(req.session.id);
+    res.json(params);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/livetv/webrtc/transport/connect
+router.post('/webrtc/transport/connect', async (req, res) => {
+  const { dtlsParameters } = req.body || {};
+  if (!dtlsParameters) return res.status(400).json({ error: 'dtlsParameters required' });
+  try {
+    await livetv.connectWebRtcTransport(req.session.id, dtlsParameters);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/livetv/webrtc/consume
+router.post('/webrtc/consume', async (req, res) => {
+  const { rtpCapabilities } = req.body || {};
+  if (!rtpCapabilities) return res.status(400).json({ error: 'rtpCapabilities required' });
+  try {
+    const consumers = await livetv.createConsumers(req.session.id, rtpCapabilities);
+    res.json(consumers);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
