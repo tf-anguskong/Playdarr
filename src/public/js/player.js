@@ -474,17 +474,14 @@ function applyLiveTvState(state) {
   // Drift correction — all viewers sync to server-computed target
   if (state.playing && !video.paused && state.liveTvTargetTime != null) {
     const drift = video.currentTime - state.liveTvTargetTime;
-    if (Math.abs(drift) > 1.0) {
+    if (Math.abs(drift) > 2.0) {
       // Too far off — hard snap
       isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
       video.currentTime = state.liveTvTargetTime;
       releaseSyncLock();
-    } else if (Math.abs(drift) > 0.08) {
-      // Gradual correction — scale rate by drift magnitude
-      const rate = Math.abs(drift) > 0.4 ? (drift > 0 ? 0.90 : 1.10)
-                 : Math.abs(drift) > 0.2 ? (drift > 0 ? 0.95 : 1.05)
-                 :                          (drift > 0 ? 0.98 : 1.02);
-      video.playbackRate = rate;
+    } else if (Math.abs(drift) > 0.5) {
+      // Gentle correction
+      video.playbackRate = drift > 0 ? 0.97 : 1.03;
     } else {
       if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
     }
