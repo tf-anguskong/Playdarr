@@ -5,9 +5,12 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm install
 
 COPY src/ ./src/
+
+# Bundle mediasoup-client into a browser-ready IIFE, then drop devDeps
+RUN npm run build && npm prune --omit=dev
 
 RUN mkdir -p /data
 
