@@ -478,14 +478,16 @@ function applyLiveTvState(state) {
     if (edge != null) {
       const targetTime = edge + state.liveTvEdgeOffset;
       const drift = video.currentTime - targetTime;
-      if (Math.abs(drift) > 1.5) {
+      if (Math.abs(drift) > 1.0) {
         // Too far off — hard snap
         isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
         video.currentTime = targetTime;
         releaseSyncLock();
-      } else if (Math.abs(drift) > 0.15) {
-        // Gradual correction via playback rate — stronger adjustment for larger drift
-        const rate = Math.abs(drift) > 0.5 ? (drift > 0 ? 0.93 : 1.07) : (drift > 0 ? 0.97 : 1.03);
+      } else if (Math.abs(drift) > 0.08) {
+        // Gradual correction — scale rate by drift magnitude
+        const rate = Math.abs(drift) > 0.4 ? (drift > 0 ? 0.90 : 1.10)
+                   : Math.abs(drift) > 0.2 ? (drift > 0 ? 0.95 : 1.05)
+                   :                          (drift > 0 ? 0.98 : 1.02);
         video.playbackRate = rate;
       } else {
         if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
@@ -632,7 +634,7 @@ setInterval(() => {
     }
     socket.emit('position-report', report);
   }
-}, 2000);
+}, 1000);
 
 // ── Buffering state reporting ──────────────────────────────
 video.addEventListener('waiting', () => socket.emit('buffering-state', { buffering: true }));
