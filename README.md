@@ -167,7 +167,11 @@ Copy `.env.example` to `.env` and fill in the values:
 | `LIVETV_PLEX_HOST` | Yes (if livetv) | Plex server URL used for EPG guide data — can be the same as `PLEX_URL` |
 | `LIVETV_PLEX_TOKEN` | No | Plex token for the EPG server. Falls back to `PLEX_TOKEN` if unset. |
 | `LIVETV_DEFAULT_CHANNEL` | No | Channel to start on when a Live TV room is first created |
-| `WEBRTC_ANNOUNCED_IP` | No | Public IP (or hostname) advertised in WebRTC ICE candidates. Required for viewers outside the LAN. Falls back to the hostname in `APP_URL`. |
+| `WEBRTC_ANNOUNCED_IP` | No | Public IP advertised in ICE candidates for external viewers. Auto-detected via `api.ipify.org` at startup and refreshed every 5 min. Override if auto-detection fails. |
+| `WEBRTC_LAN_IP` | No | LAN IP (e.g. `192.168.1.100`). When set, both LAN and public IPs appear as ICE candidates so internal and external viewers connect simultaneously. |
+| `WEBRTC_PORT_MIN` | No | Start of UDP port range for WebRTC media (default: `30000`). Must match `docker-compose.yml`. |
+| `WEBRTC_PORT_MAX` | No | End of UDP port range for WebRTC media (default: `30100`). Must match `docker-compose.yml`. |
+| `LIVETV_HW_ACCEL` | No | Set to `none` to disable Intel QSV and force software encoding (libx264). QSV is used by default when `/dev/dri` is available. |
 
 ---
 
@@ -191,11 +195,26 @@ Live TV rooms stream from an [HDHomeRun](https://www.silicondust.com/) tuner on 
 
 ### Network note
 
-WebRTC media (UDP) flows directly between the server and each browser — it does **not** pass through NGINX. If viewers are connecting from outside your LAN:
-- Set `WEBRTC_ANNOUNCED_IP` to your server's public IP
-- Ensure the ephemeral UDP port range your server uses is reachable from the internet (mediasoup defaults to a random high port per transport; you can constrain this range at the OS level if needed)
+WebRTC media (UDP) flows directly between the server and each browser — it does **not** pass through NGINX.
 
-TURN server support is not currently included. For a home LAN use case this is rarely needed.
+**For viewers outside your LAN:**
+- Forward UDP ports `30000–30100` on your router to the server (must match `WEBRTC_PORT_MIN`/`WEBRTC_PORT_MAX` and the range in `docker-compose.yml`)
+- The server auto-detects your public IP via `api.ipify.org` at startup and refreshes it every 5 minutes. Set `WEBRTC_ANNOUNCED_IP` manually if auto-detection fails.
+
+**For mixed internal + external viewers:**
+- Set `WEBRTC_LAN_IP` to the server's LAN address (e.g. `192.168.1.100`). Both LAN and public IPs will appear as ICE candidates — the browser picks the best route automatically.
+
+TURN server support is not currently included. Viewers behind strict symmetric NATs (some corporate firewalls, carrier-grade NAT) may fail to connect. For home LAN and standard residential internet this is rarely an issue.
+
+### Hardware encoding
+
+The HDHomeRun outputs MPEG-2 video, which must be transcoded to H.264 for WebRTC. By default, Playdarr uses **Intel Quick Sync (QSV)** for hardware-accelerated encoding — near-zero CPU usage and consistent frame pacing.
+
+**Requirements:**
+- Intel CPU with integrated graphics (most desktop/server Intel CPUs since ~2012)
+- `/dev/dri` must be accessible inside the container (handled by `docker-compose.yml`)
+
+If QSV isn't available or you want to force software encoding, set `LIVETV_HW_ACCEL=none` in your `.env`.
 
 ---
 
@@ -205,3 +224,16 @@ TURN server support is not currently included. For a home LAN use case this is r
 - **COOKIE_SECURE must match your protocol.** `true` behind HTTPS, `false` over plain HTTP. Getting this wrong will silently break all sessions.
 - Rooms and chat are **in-memory only** — everything is lost on server restart. This is intentional.
 - The stream proxy restricts forwarded requests to Plex transcode paths only (`/video/:/transcode/universal/` and `/library/parts/`). Arbitrary Plex API access through the proxy is blocked.
+
+## Proxmox iGPU passthrough
+
+If you're running Playdarr inside an **LXC container on Proxmox** and the host has an Intel iGPU, you need to pass the render device through to the container. Run this on the **Proxmox host**:
+
+```bash
+ctid=100  # ← change to your container ID
+renderid=$(pct exec $ctid getent group render | cut -d: -f3)
+pct set $ctid -dev0 /dev/dri/renderD128,gid=$renderid
+pct reboot $ctid
+```
+
+After reboot, verify the device is visible inside the container with `ls -l /dev/dri/`. Docker Compose will then pass it through to the Playdarr container via the `devices: [/dev/dri:/dev/dri]` mapping.
