@@ -79,36 +79,4 @@ router.get('/hls/:file', (req, res) => {
   });
 });
 
-/**
- * Compute the target currentTime that all clients should aim for.
- * Based on the same manifest sliding-window logic used by the HLS endpoint,
- * so the value is deterministic and consistent across all viewers.
- */
-function getLiveEdgeTime() {
-  const manifestPath = path.join(livetv.getHlsDir(), 'index.m3u8');
-  let raw;
-  try { raw = fs.readFileSync(manifestPath, 'utf8'); } catch { return null; }
-
-  const lines = raw.split('\n');
-  const seqMatch = raw.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/);
-  if (!seqMatch) return null;
-
-  const segments = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith('#EXTINF:')) {
-      segments.push(parseFloat(lines[i].split(':')[1]));
-    }
-  }
-
-  if (segments.length < DELAY_SEGMENTS + 3) return null;
-
-  const end = segments.length - DELAY_SEGMENTS;
-  // Cumulative duration up to the delayed live edge
-  let total = 0;
-  for (let i = 0; i < end; i++) total += segments[i];
-  // Subtract liveSyncDuration (2s) to match HLS.js target position
-  return total - 2;
-}
-
 module.exports = router;
-module.exports.getLiveEdgeTime = getLiveEdgeTime;

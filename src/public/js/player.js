@@ -471,17 +471,18 @@ function applyLiveTvState(state) {
     releaseSyncLock();
   }
 
-  // Drift correction — server-computed live edge is the shared reference point
-  if (state.playing && !video.paused && state.liveTvTargetTime != null) {
+  // Drift correction — guests sync to the host's reported position
+  if (state.playing && !video.paused && !isHost && state.liveTvTargetTime != null) {
     const drift = video.currentTime - state.liveTvTargetTime;
-    if (Math.abs(drift) > 3) {
+    if (Math.abs(drift) > 1.5) {
       // Too far off — hard snap
       isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
       video.currentTime = state.liveTvTargetTime;
       releaseSyncLock();
-    } else if (Math.abs(drift) > 0.5) {
-      // Gradual correction via playback rate
-      video.playbackRate = drift > 0 ? 0.97 : 1.03;
+    } else if (Math.abs(drift) > 0.15) {
+      // Gradual correction via playback rate — stronger adjustment for larger drift
+      const rate = Math.abs(drift) > 0.5 ? (drift > 0 ? 0.93 : 1.07) : (drift > 0 ? 0.97 : 1.03);
+      video.playbackRate = rate;
     } else {
       if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
     }

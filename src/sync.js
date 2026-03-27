@@ -179,20 +179,31 @@ function setupSync(io, enabledRoomTypes) {
   // without waiting for a play/pause/seek event to trigger a state broadcast.
   setInterval(() => {
     rooms.forEach(room => {
+      if (room.playing && room.viewers.size > 1 && room.roomType !== 'livetv') {
+        room.broadcastState(io);
+        room.broadcastViewers(io);
+      }
+    });
+  }, 5000);
+
+  // Faster heartbeat for live TV rooms — tighter sync tolerance needs more frequent updates
+  setInterval(() => {
+    rooms.forEach(room => {
+      if (room.roomType !== 'livetv') return;
+      if (room.viewers.size > 0 && liveTvManager) liveTvManager.heartbeat();
+      // Use host's reported playback position as the sync target
+      const hostViewer = room.viewers.get(room.hostSocketId);
+      if (hostViewer?.reportedTime != null && hostViewer.reportedAt != null) {
+        // Extrapolate host position to "now" based on elapsed time since last report
+        const elapsed = (Date.now() - hostViewer.reportedAt) / 1000;
+        room._liveTvTargetTime = hostViewer.reportedTime + (room.playing ? elapsed : 0);
+      }
       if (room.playing && room.viewers.size > 1) {
         room.broadcastState(io);
         room.broadcastViewers(io);
       }
-      // Ping streamer for live TV rooms with active viewers
-      if (room.roomType === 'livetv' && room.viewers.size > 0) {
-        if (liveTvManager) liveTvManager.heartbeat();
-        // Compute server-authoritative live edge target for inter-viewer sync
-        const livetvRoute = require('./routes/livetv');
-        const targetTime = livetvRoute.getLiveEdgeTime?.();
-        if (targetTime != null) room._liveTvTargetTime = targetTime;
-      }
     });
-  }, 5000);
+  }, 2000);
 
   io.on('connection', (socket) => {
     const user = socket.user;
