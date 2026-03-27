@@ -378,23 +378,16 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select live TV channel (host only, livetv rooms) ──
-    socket.on('select-livetv-channel', async ({ channel, channelTitle }) => {
+    socket.on('select-livetv-channel', ({ channel, channelTitle }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       room.liveTvChannel      = String(channel || '').slice(0, 20);
       room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
       room.playing    = true;
       room.lastUpdate = Date.now();
-      if (liveTvManager) await liveTvManager.switchChannel(room.liveTvChannel);
+      if (liveTvManager) liveTvManager.switchChannel(room.liveTvChannel);
       room.broadcastState(io);
       console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel}`);
-    });
-
-    // ── Join live TV stream (subscribe to fMP4 fragments) ──
-    socket.on('livetv-join', () => {
-      const room = socketToRoom.get(socket.id);
-      if (!room || room.roomType !== 'livetv') return;
-      if (liveTvManager) liveTvManager.addClient(socket);
     });
 
     // ── Playback (anyone in room, unless locked) ───────────
@@ -619,7 +612,6 @@ function setupSync(io, enabledRoomTypes) {
       chatLimiter.delete(socket.id);
       reactionLimiter.delete(socket.id);
       seekLimiter.delete(socket.id);
-      if (liveTvManager) liveTvManager.removeClient(socket);
       const room = socketToRoom.get(socket.id);
       socketToRoom.delete(socket.id);
       if (!room) return;

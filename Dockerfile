@@ -1,20 +1,13 @@
-FROM node:20-slim
+FROM node:20-alpine
 
 WORKDIR /app
 
-RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
-    && apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg \
-      intel-media-va-driver-non-free \
-      vainfo \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ffmpeg
 
 COPY package*.json ./
-RUN npm install
+RUN npm install --omit=dev
 
 COPY src/ ./src/
-
-RUN npm prune --omit=dev
 
 RUN mkdir -p /data
 

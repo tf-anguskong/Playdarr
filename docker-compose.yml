@@ -11,8 +11,6 @@ services:
       - .env
     volumes:
       - sessions:/data
-    devices:
-      - /dev/dri:/dev/dri
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

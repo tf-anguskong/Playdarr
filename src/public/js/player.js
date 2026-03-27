@@ -16,10 +16,6 @@ let isSyncing        = false;
 let syncTimer        = null;
 let currentKey       = null;
 let hlsInstance      = null;
-let liveTvMediaSource = null;
-let liveTvSourceBuf   = null;
-let liveTvQueue       = [];
-let liveTvActive      = false;
 let isHost           = false;
 let roomType         = 'movie';
 let roomSettings     = { playbackLocked: false, reactionsEnabled: true };
@@ -356,108 +352,35 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
   }
 }
 
-// ── Live TV player (fMP4 over Socket.io + MSE) ──────────────
-
-function cleanupLiveTv() {
-  liveTvActive = false;
-  liveTvQueue = [];
-  socket.off('livetv-init');
-  socket.off('livetv-fragment');
-  socket.off('livetv-reset');
-  if (liveTvSourceBuf) {
-    try { liveTvSourceBuf.abort(); } catch {}
-    liveTvSourceBuf = null;
-  }
-  if (liveTvMediaSource && liveTvMediaSource.readyState === 'open') {
-    try { liveTvMediaSource.endOfStream(); } catch {}
-  }
-  if (video.src && video.src.startsWith('blob:')) {
-    URL.revokeObjectURL(video.src);
-  }
-  video.src = '';
-  video.srcObject = null;
-  liveTvMediaSource = null;
-}
-
-function liveTvDrainQueue() {
-  if (!liveTvActive || !liveTvSourceBuf || !liveTvMediaSource || liveTvMediaSource.readyState !== 'open') return;
-  if (liveTvSourceBuf.updating || !liveTvQueue.length) return;
-  try {
-    liveTvSourceBuf.appendBuffer(liveTvQueue.shift());
-  } catch (err) {
-    if (err.name === 'QuotaExceededError') {
-      // Buffer full — trim and retry
-      liveTvTrimBuffer();
-      return;
-    }
-    console.error('[LiveTV] appendBuffer error:', err);
-    cleanupLiveTv();
-    if (currentKey) setTimeout(() => loadLiveTv(currentKey), 2000);
-  }
-}
-
-function liveTvTrimBuffer() {
-  if (!liveTvSourceBuf || liveTvSourceBuf.updating) return;
-  try {
-    if (liveTvSourceBuf.buffered.length > 0) {
-      const start = liveTvSourceBuf.buffered.start(0);
-      const end   = liveTvSourceBuf.buffered.end(0);
-      if (end - start > 30) {
-        liveTvSourceBuf.remove(start, end - 15);
-      }
-    }
-  } catch {}
-}
-
+// ── Live TV player ─────────────────────────────────────────
 function loadLiveTv(channel) {
-  cleanupLiveTv();
+  if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   hidePlayOverlay();
   document.getElementById('yt-player-container').style.display = 'none';
-  liveTvActive = true;
-
-  liveTvMediaSource = new MediaSource();
-  video.src = URL.createObjectURL(liveTvMediaSource);
-
-  liveTvMediaSource.addEventListener('sourceopen', () => {
-    try {
-      liveTvSourceBuf = liveTvMediaSource.addSourceBuffer('video/mp4; codecs="avc1.640029, mp4a.40.2"');
-      liveTvSourceBuf.mode = 'segments';
-      liveTvSourceBuf.addEventListener('updateend', () => {
-        liveTvTrimBuffer();
-        liveTvDrainQueue();
-      });
-    } catch (err) {
-      console.error('[LiveTV] addSourceBuffer error:', err);
-      return;
-    }
-    // Tell server we're ready
-    socket.emit('livetv-join');
-  });
-
-  socket.on('livetv-init', (data) => {
-    if (!liveTvActive) return;
-    const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer || data);
-    liveTvQueue.push(buf);
-    liveTvDrainQueue();
-  });
-
-  socket.on('livetv-fragment', (data) => {
-    if (!liveTvActive) return;
-    const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer || data);
-    liveTvQueue.push(buf);
-    liveTvDrainQueue();
-    // Auto-play once we have some data
-    if (video.paused && liveTvSourceBuf && liveTvSourceBuf.buffered.length > 0) {
+  const src = '/api/livetv/hls/index.m3u8';
+  if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+    hlsInstance = new Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+      liveSyncDuration: 1,        // stay close to the server-delayed live edge
+      liveMaxLatencyDuration: 5,  // resync if >5s behind delayed edge
+      liveBackBufferLength: 30,   // retain 30s back-buffer so pause/resume doesn't lose data
+    });
+    hlsInstance.loadSource(src);
+    hlsInstance.attachMedia(video);
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
       video.play().catch(() => showPlayOverlay());
-    }
-  });
-
-  socket.on('livetv-reset', () => {
-    if (!liveTvActive) return;
-    console.log('[LiveTV] Channel changed — resetting MSE');
-    cleanupLiveTv();
-    setTimeout(() => loadLiveTv(channel), 500);
-  });
+    });
+    hlsInstance.on(Hls.Events.ERROR, (_, d) => {
+      if (!d.fatal) return;
+      currentKey = null; // allow retry on next state event
+      console.error('[LiveTV] Fatal HLS error:', d.details);
+      setTimeout(() => { if (currentKey === null) loadLiveTv(channel); }, 5000);
+    });
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = src;
+    video.play().catch(() => showPlayOverlay());
+  }
 }
 
 function applyLiveTvState(state) {
@@ -496,11 +419,34 @@ function applyLiveTvState(state) {
     loadLiveTv(state.liveTvChannel);
   }
 
-  // Sync play/pause state — WebRTC is structurally synced; just mirror play/pause
+  // Sync play/pause state — on resume, snap to live edge so all viewers react together
   if (state.playing && video.paused) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    if (hlsInstance?.liveSyncPosition) video.currentTime = hlsInstance.liveSyncPosition;
     video.play().catch(() => showPlayOverlay());
+    releaseSyncLock();
   } else if (!state.playing && !video.paused) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
     video.pause();
+    releaseSyncLock();
+  }
+
+  // Drift correction — manifest is the source of truth; nudge toward the delayed live edge
+  if (state.playing && !video.paused) {
+    const liveEdge = hlsInstance?.liveSyncPosition ?? null;
+    if (liveEdge !== null) {
+      const drift = video.currentTime - liveEdge;
+      if (drift < -2) {
+        // Too far behind the delayed live edge — snap forward
+        isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+        video.currentTime = liveEdge;
+        releaseSyncLock();
+      } else if (Math.abs(drift) > 0.2) {
+        video.playbackRate = drift > 0 ? 0.97 : 1.03;
+      } else {
+        if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
+      }
+    }
   }
 
   if (guideOpen) renderGuide(); // re-highlight active channel
@@ -627,7 +573,7 @@ function showNotif(text) {
 // ── Position reporting (for drift indicator) ───────────────
 setInterval(() => {
   let pos = null;
-  if ((roomType === 'movie' || roomType === 'tv') && currentKey && !video.paused && !video.ended) {
+  if ((roomType === 'movie' || roomType === 'tv' || roomType === 'livetv') && currentKey && !video.paused && !video.ended) {
     pos = video.currentTime;
   } else if (roomType === 'youtube' && ytPlayer && ytVideoId) {
     if (ytPlayer.getPlayerState?.() === YT.PlayerState.PLAYING) {
@@ -810,7 +756,7 @@ let lastViewers = [];
 
 function renderViewers(viewers) {
   viewersList.innerHTML = viewers.map(v => {
-    const driftHtml = (v.drift != null && roomType !== 'livetv')
+    const driftHtml = v.drift != null
       ? (() => {
           const abs = Math.abs(v.drift);
           const cls = abs < 1 ? 'drift-ok' : abs < 3 ? 'drift-warn' : 'drift-bad';

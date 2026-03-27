@@ -2,4 +2,3 @@ node_modules/
 .env
 sessions/
 *.db
-src/public/vendor/
