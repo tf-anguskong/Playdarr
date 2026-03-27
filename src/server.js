@@ -46,7 +46,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", 'cdn.jsdelivr.net', 'https://www.youtube.com', 'https://s.ytimg.com'],
+      scriptSrc: ["'self'", 'https://www.youtube.com', 'https://s.ytimg.com'],
+      workerSrc: ["'self'", 'blob:'],
       styleSrc: ["'self'", "'unsafe-inline'"],
       mediaSrc: ["'self'", 'blob:'],
       connectSrc: ["'self'", ...(process.env.APP_URL ? [`wss://${new URL(process.env.APP_URL).host}`, `ws://${new URL(process.env.APP_URL).host}`] : ['wss:', 'ws:'])],
