@@ -130,6 +130,33 @@ function stopFfmpeg() {
   }
 }
 
+// Probe a channel URL and return { interlaced, width, height, fps }
+function probeChannel(url) {
+  return new Promise((resolve) => {
+    const args = [
+      '-hide_banner', '-i', url,
+      '-frames:v', '1', '-f', 'null', '/dev/null',
+    ];
+    let stderr = '';
+    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.on('close', () => {
+      const info = { interlaced: false, width: 0, height: 0, fps: 30 };
+      // Parse resolution: e.g. "1920x1080" or "1280x720"
+      const resMatch = stderr.match(/(\d{3,4})x(\d{3,4})/);
+      if (resMatch) { info.width = parseInt(resMatch[1]); info.height = parseInt(resMatch[2]); }
+      // Parse fps: e.g. "29.97 fps" or "59.94 fps"
+      const fpsMatch = stderr.match(/([\d.]+)\s*fps/);
+      if (fpsMatch) info.fps = parseFloat(fpsMatch[1]);
+      // Detect interlaced: "top first" or "bottom first" in stream info
+      info.interlaced = /top first|bottom first|tff|bff/i.test(stderr);
+      resolve(info);
+    });
+    // Timeout after 10 seconds
+    setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 10000);
+  });
+}
+
 async function startFfmpeg(channel) {
   stopFfmpeg();
   currentChan = channel;
@@ -195,29 +222,42 @@ async function startFfmpeg(channel) {
 
   const url = `http://${HDHR_IP}:${HDHR_PORT}/auto/v${channel}`;
   const useHw = process.env.LIVETV_HW_ACCEL !== 'none';
-  console.log(`[LiveTV] Starting ffmpeg for channel ${channel} — ${url} (video:${videoPort} audio:${audioPort}, encoder:${useHw ? 'h264_vaapi' : 'libx264'})`);
+
+  // Probe stream to detect interlacing, resolution, framerate
+  const probe = await probeChannel(url);
+  const gopSize = Math.round(probe.fps) || 30; // ~1 keyframe per second
+  console.log(`[LiveTV] Probe: ${probe.width}x${probe.height} ${probe.fps}fps ${probe.interlaced ? 'interlaced' : 'progressive'}`);
+  console.log(`[LiveTV] Starting ffmpeg for channel ${channel} — ${url} (video:${videoPort} audio:${audioPort}, encoder:${useHw ? 'h264_vaapi' : 'libx264'}, gop:${gopSize})`);
 
   const teeOutput = [
     `[select=v:f=rtp:ssrc=1111:payload_type=97]rtp://127.0.0.1:${videoPort}`,
     `[select=a:f=rtp:ssrc=2222:payload_type=100]rtp://127.0.0.1:${audioPort}`,
   ].join('|');
 
+  // Build video filter chain based on probe results
+  const vfFilters = [];
+  if (useHw) {
+    if (probe.interlaced) vfFilters.push('deinterlace_vaapi');
+  } else {
+    if (probe.interlaced) vfFilters.push('yadif');
+  }
+
   const args = [
     '-hide_banner', '-loglevel', 'warning',
-    // Buffer HDHomeRun input to absorb MPEG-TS discontinuities
     '-fflags', '+genpts+discardcorrupt',
     '-analyzeduration', '5M', '-probesize', '5M',
     '-thread_queue_size', '4096',
     ...(useHw ? ['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD128', '-hwaccel_output_format', 'vaapi'] : []),
     '-i', url,
     '-map', '0:v:0', '-map', '0:a:0',
+    ...(vfFilters.length ? ['-vf', vfFilters.join(',')] : []),
     ...(useHw
       ? ['-c:v', 'h264_vaapi',
          '-b:v', '6M', '-maxrate', '6M', '-bufsize', '6M',
-         '-g', '60']
+         '-g', String(gopSize)]
       : ['-c:v', 'libx264', '-preset', 'veryfast',
          '-b:v', '6M', '-maxrate', '6M', '-bufsize', '6M',
-         '-g', '30']),
+         '-g', String(gopSize)]),
     '-bsf:v', 'dump_extra',
     '-c:a', 'libopus', '-b:a', '128k', '-ac', '2',
     '-af', 'aresample=async=1000',
