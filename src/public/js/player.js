@@ -196,7 +196,7 @@ function applyState(state) {
   // Sync play/pause state
   if (state.playing && video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    video.play().catch(err => { console.warn('[Player] Autoplay blocked:', err.message); showPlayOverlay(); });
+    tryPlay();
     releaseSyncLock();
   } else if (!state.playing && !video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
@@ -256,9 +256,18 @@ document.getElementById('play-overlay')?.addEventListener('click', () => {
 function tryPlay() {
   return video.play().then(() => {
     hidePlayOverlay();
-  }).catch(err => {
-    console.warn('[Player] Autoplay blocked — showing overlay:', err.message);
-    showPlayOverlay();
+  }).catch(() => {
+    // Autoplay blocked — retry muted (browsers always allow muted autoplay)
+    video.muted = true;
+    return video.play().then(() => {
+      hidePlayOverlay();
+      // Unmute on first user interaction
+      const unmute = () => { video.muted = false; document.removeEventListener('click', unmute); document.removeEventListener('keydown', unmute); };
+      document.addEventListener('click', unmute, { once: false });
+      document.addEventListener('keydown', unmute, { once: false });
+    }).catch(() => {
+      showPlayOverlay();
+    });
   });
 }
 
@@ -379,7 +388,7 @@ function loadLiveTv(channel) {
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         startupDone = true;
-        video.play().catch(() => showPlayOverlay());
+        tryPlay();
       });
 
       hls.on(Hls.Events.ERROR, (_, d) => {
@@ -418,7 +427,7 @@ function loadLiveTv(channel) {
     hlsInstance = makeHlsInstance();
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
     video.src = src;
-    video.play().catch(() => showPlayOverlay());
+    tryPlay();
   }
 }
 
@@ -461,7 +470,7 @@ function applyLiveTvState(state) {
   // Sync play/pause state (no seeking — just play/pause)
   if (state.playing && video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    video.play().catch(() => showPlayOverlay());
+    tryPlay();
     releaseSyncLock();
   } else if (!state.playing && !video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
