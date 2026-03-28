@@ -476,12 +476,13 @@ function applyLiveTvState(state) {
     const hostNow = state.liveTvHostTime + (Date.now() - state.liveTvHostAt) / 1000;
     const behind = hostNow - video.currentTime; // positive = guest is behind host
 
-    if (behind > 8)       video.playbackRate = 1.20;  // very behind — aggressive catchup
-    else if (behind > 4)  video.playbackRate = 1.10;
-    else if (behind > 1)  video.playbackRate = 1.05;
-    else if (behind > 0.3) video.playbackRate = 1.02;
+    if (behind > 8)        video.playbackRate = 1.30;
+    else if (behind > 4)   video.playbackRate = 1.20;
+    else if (behind > 2)   video.playbackRate = 1.12;
+    else if (behind > 1)   video.playbackRate = 1.08;
+    else if (behind > 0.5) video.playbackRate = 1.04;
     else if (behind < -0.5) video.playbackRate = 0.90; // ahead of host — slow down
-    else                   video.playbackRate = 1.0;   // in sync
+    else                    video.playbackRate = 1.0;   // in sync
   }
 
   if (guideOpen) renderGuide(); // re-highlight active channel
