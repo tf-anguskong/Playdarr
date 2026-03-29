@@ -125,8 +125,8 @@ function rewriteM3u8(content, baseDir) {
 // ── HLS transcode start ────────────────────────────────────
 router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const { roomId, ratingKey } = req.params;
-  if (!/^\d+$/.test(ratingKey)) return res.status(400).send('Invalid ratingKey');
-  const sessionId = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey}`;
+  if (!/^[\w-]+$/.test(ratingKey)) return res.status(400).send('Invalid ratingKey');
+  const sessionId = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey.slice(0, 24)}`;
   const cacheKey  = `${roomId}-${ratingKey}`;
 
   // ?bust=1 signals that the client detected a broken stream and needs a fresh
