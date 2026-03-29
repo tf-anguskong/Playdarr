@@ -19,6 +19,7 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **Plex HLS proxy** — transcodes via your local Plex server and routes all HLS traffic through the app server, so your Plex token is never exposed to clients
 - **Movie browser** — searchable, filterable (genre, rating, year) grid of your Plex library, host-only
 - **YouTube rooms** — create a YouTube room instead of a movie room; the host pastes any `youtube.com` or `youtu.be` URL and the video embeds for all viewers via the YouTube IFrame API, fully synchronised; the video title is fetched automatically and shown in the sidebar and room list
+- **Live TV rooms** — watch live television together using Plex DVR; the host picks a channel from an EPG guide (with now-playing programme info), Plex tunes and transcodes via your HDHomeRun or other DVR device, and the HLS stream is proxied through the app server; guests sync to the host's position
 - **Multi-room** — multiple watch parties can run simultaneously, each with their own state
 
 ### Rooms & Access
@@ -68,6 +69,7 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 ### Prerequisites
 - A running Plex Media Server accessible on your LAN
 - Docker (recommended) or Node.js 18+
+- For Live TV: a Plex DVR setup (e.g. HDHomeRun) with channels configured in Plex
 
 ### 1. Clone and configure
 
@@ -153,6 +155,12 @@ Copy `.env.example` to `.env` and fill in the values:
 | `PLEX_CLIENT_ID` | No | Identifier sent to Plex — any stable string (default: `movienight-app`) |
 | `DEFAULT_TIMEZONE` | No | IANA timezone used as the default when scheduling rooms (e.g. `America/New_York`). Falls back to `UTC`. |
 | `PORT` | No | Port to listen on (default: `3000`) |
+| `ROOM_TYPE_MOVIE` | No | Set `false` to hide movie rooms from the lobby (default: `true`) |
+| `ROOM_TYPE_TV` | No | Set `false` to hide TV show rooms from the lobby (default: `true`) |
+| `ROOM_TYPE_YOUTUBE` | No | Set `false` to hide YouTube rooms from the lobby (default: `true`) |
+| `ROOM_TYPE_LIVETV` | No | Set `true` to enable Live TV rooms (default: `false`) |
+| `LIVETV_PLEX_HOST` | No | LAN address of the Plex server used for Live TV / DVR (e.g. `http://192.168.1.100:32400`). Required when `ROOM_TYPE_LIVETV=true`. Falls back to `PLEX_URL` if unset — only needed when your DVR is on a different Plex server. |
+| `LIVETV_PLEX_TOKEN` | No | Plex token for the Live TV server. Falls back to `PLEX_TOKEN` if unset. |
 
 ---
 
@@ -162,3 +170,4 @@ Copy `.env.example` to `.env` and fill in the values:
 - **COOKIE_SECURE must match your protocol.** `true` behind HTTPS, `false` over plain HTTP. Getting this wrong will silently break all sessions.
 - Rooms and chat are **in-memory only** — everything is lost on server restart. This is intentional.
 - The stream proxy restricts forwarded requests to Plex transcode paths only (`/video/:/transcode/universal/` and `/library/parts/`). Arbitrary Plex API access through the proxy is blocked.
+- **Live TV requires a Plex DVR.** `ROOM_TYPE_LIVETV=true` does nothing without a Plex server that has a DVR device (e.g. HDHomeRun) configured with channels. `LIVETV_PLEX_HOST` must be a LAN address for the same reason as `PLEX_URL` — live TV sessions are ephemeral and only accessible locally.
