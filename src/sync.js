@@ -11,9 +11,6 @@ const socketToRoom = new Map(); // socketId -> Room
 let _io = null; // set in setupSync, used by createScheduledRoom
 let _enabledRoomTypes = { movie: true, tv: true, youtube: true, livetv: false };
 
-// Loaded lazily when livetv is enabled
-let liveTvManager = null;
-
 async function fetchYoutubeTitle(videoId) {
   try {
     const res = await axios.get('https://www.youtube.com/oembed', {
@@ -138,6 +135,7 @@ function broadcastRoomList(io) {
   io.emit('room-list', Array.from(rooms.values()).map(r => r.summary()));
 }
 
+
 // Per-socket rate limiter — sliding window
 function makeSocketRateLimiter(maxCalls, windowMs) {
   const history = new Map(); // socketId -> timestamp[]
@@ -172,22 +170,37 @@ function formatEpisodeTitle(showTitle, ep) {
 function setupSync(io, enabledRoomTypes) {
   _io = io;
   if (enabledRoomTypes) _enabledRoomTypes = enabledRoomTypes;
-  if (_enabledRoomTypes.livetv) liveTvManager = require('./livetv-manager');
 
   // Periodic sync heartbeat — keeps clients corrected during normal playback
   // without waiting for a play/pause/seek event to trigger a state broadcast.
   setInterval(() => {
     rooms.forEach(room => {
+      if (room.playing && room.viewers.size > 1 && room.roomType !== 'livetv') {
+        room.broadcastState(io);
+        room.broadcastViewers(io);
+      }
+    });
+  }, 5000);
+
+  // Faster heartbeat for live TV rooms — tighter sync tolerance needs more frequent updates.
+  // Plex session keepalives are handled by stream.js; this just calibrates position + broadcasts.
+  setInterval(() => {
+    rooms.forEach(room => {
+      if (room.roomType !== 'livetv') return;
+      // Calibrate room position from host's reported playback time.
+      // This makes currentPosition() return a smooth, deterministic value
+      // that advances at real-time speed — same as movie/TV sync.
+      const hostViewer = room.viewers.get(room.hostSocketId);
+      if (hostViewer?.reportedTime != null && hostViewer.reportedAt != null) {
+        room.position   = hostViewer.reportedTime;
+        room.lastUpdate = hostViewer.reportedAt;
+      }
       if (room.playing && room.viewers.size > 1) {
         room.broadcastState(io);
         room.broadcastViewers(io);
       }
-      // Ping streamer for live TV rooms with active viewers
-      if (room.roomType === 'livetv' && room.viewers.size > 0) {
-        if (liveTvManager) liveTvManager.heartbeat();
-      }
     });
-  }, 5000);
+  }, 2000);
 
   io.on('connection', (socket) => {
     const user = socket.user;
@@ -378,16 +391,26 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select live TV channel (host only, livetv rooms) ──
-    socket.on('select-livetv-channel', ({ channel, channelTitle }) => {
+    socket.on('select-livetv-channel', async ({ channel, channelTitle, channelId }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
-      room.liveTvChannel      = String(channel || '').slice(0, 20);
-      room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
-      room.playing    = true;
-      room.lastUpdate = Date.now();
-      if (liveTvManager) liveTvManager.switchChannel(room.liveTvChannel);
-      room.broadcastState(io);
-      console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel}`);
+      if (!channelId) return;
+      clearRoomManifest(room.id); // stop any existing Plex transcode session
+      try {
+        const liveTvManager = require('./livetv-manager');
+        const ratingKey = await liveTvManager.tuneChannel(channelId);
+        room.liveTvChannel      = String(channel || '').slice(0, 20);
+        room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
+        room.movieKey   = ratingKey;
+        room.playing    = true;
+        room.position   = 0;
+        room.lastUpdate = Date.now();
+        room.broadcastState(io);
+        console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey})`);
+      } catch (err) {
+        console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
+        socket.emit('error-message', `Failed to tune channel: ${err.message}`);
+      }
     });
 
     // ── Playback (anyone in room, unless locked) ───────────
@@ -671,7 +694,7 @@ function setupSync(io, enabledRoomTypes) {
             inviteTokens.delete(room.inviteToken);
             rooms.delete(room.id);
             broadcastRoomList(io);
-          }, 30000);
+            }, 30000);
         }
       } else {
         room.broadcastViewers(io);

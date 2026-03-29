@@ -15,6 +15,7 @@ const syncText    = document.getElementById('sync-text');
 let isSyncing        = false;
 let syncTimer        = null;
 let currentKey       = null;
+let activeLiveTvChannel = null; // channel number for guide highlighting
 let hlsInstance      = null;
 let isHost           = false;
 let roomType         = 'movie';
@@ -196,7 +197,7 @@ function applyState(state) {
   // Sync play/pause state
   if (state.playing && video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    video.play().catch(err => { console.warn('[Player] Autoplay blocked:', err.message); showPlayOverlay(); });
+    tryPlay();
     releaseSyncLock();
   } else if (!state.playing && !video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
@@ -256,9 +257,18 @@ document.getElementById('play-overlay')?.addEventListener('click', () => {
 function tryPlay() {
   return video.play().then(() => {
     hidePlayOverlay();
-  }).catch(err => {
-    console.warn('[Player] Autoplay blocked — showing overlay:', err.message);
-    showPlayOverlay();
+  }).catch(() => {
+    // Autoplay blocked — retry muted (browsers always allow muted autoplay)
+    video.muted = true;
+    return video.play().then(() => {
+      hidePlayOverlay();
+      // Unmute on first user interaction
+      const unmute = () => { video.muted = false; document.removeEventListener('click', unmute); document.removeEventListener('keydown', unmute); };
+      document.addEventListener('click', unmute, { once: false });
+      document.addEventListener('keydown', unmute, { once: false });
+    }).catch(() => {
+      showPlayOverlay();
+    });
   });
 }
 
@@ -352,75 +362,60 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
   }
 }
 
-// ── Live TV player ─────────────────────────────────────────
-function loadLiveTv(channel) {
+// ── Live TV player (HLS via Plex transcode proxy) ────────────
+function loadLiveTvHls(ratingKey) {
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   hidePlayOverlay();
   document.getElementById('yt-player-container').style.display = 'none';
 
-  const src = '/api/livetv/hls/index.m3u8';
+  const src = `/api/stream/hls/${roomId}/${ratingKey}/master.m3u8?live=1`;
+
   if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-    const STARTUP_RETRY_BUDGET_MS = 30_000;
-    const startedAt = Date.now();
-    let startupDone = false;
-
-    function makeHlsInstance() {
-      const hls = new Hls({
-        enableWorker:               true,
-        lowLatencyMode:             true,
-        liveSyncDuration:           2,
-        liveMaxLatencyDuration:     8,
-        liveBackBufferLength:       30,
-        manifestLoadingMaxRetry:    0,  // we handle retries ourselves
-        manifestLoadingRetryDelay:  0,
-      });
-      hls.loadSource(src);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        startupDone = true;
-        video.play().catch(() => showPlayOverlay());
-      });
-
-      hls.on(Hls.Events.ERROR, (_, d) => {
-        const isManifest503 =
-          !startupDone &&
-          d.type === Hls.ErrorTypes.NETWORK_ERROR &&
-          d.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR &&
-          d.response?.code === 503;
-
-        if (isManifest503) {
-          if (Date.now() - startedAt < STARTUP_RETRY_BUDGET_MS) {
-            hls.destroy();
-            setTimeout(() => {
-              if (currentKey === channel) { hlsInstance = makeHlsInstance(); }
-            }, 2000);
-            return;
-          }
-        }
-
-        if (!d.fatal) return;
-        if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          console.warn('[LiveTV] Media error, recovering:', d.details);
-          hls.recoverMediaError();
-        } else {
-          currentKey = null;
-          console.error('[LiveTV] Fatal HLS error:', d.details);
-          setTimeout(() => {
-            if (currentKey === null) { hlsInstance = makeHlsInstance(); currentKey = channel; }
-          }, 5000);
-        }
-      });
-
-      return hls;
-    }
-
-    hlsInstance = makeHlsInstance();
+    hlsInstance = new Hls({ enableWorker: true });
+    hlsInstance.loadSource(src);
+    hlsInstance.attachMedia(video);
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+      tryPlay();
+      releaseSyncLock();
+    });
+    let networkRetried = false;
+    hlsInstance.on(Hls.Events.ERROR, (_, d) => {
+      if (!d.fatal) return;
+      if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        console.warn('[LiveTV] Media error, recovering:', d.details);
+        hlsInstance.recoverMediaError();
+      } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !networkRetried) {
+        networkRetried = true;
+        console.warn('[LiveTV] Network error, busting manifest:', d.details);
+        const bustSrc = `${src}&bust=1`;
+        setTimeout(() => {
+          if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+          hlsInstance = new Hls({ enableWorker: true });
+          hlsInstance.loadSource(bustSrc);
+          hlsInstance.attachMedia(video);
+          hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => tryPlay());
+          hlsInstance.on(Hls.Events.ERROR, (__, d2) => {
+            if (!d2.fatal) return;
+            noMovieText.textContent = `Stream error: ${d2.details} — try refreshing.`;
+            noMovie.style.display = 'block';
+            video.style.display = 'none';
+            currentKey = null;
+          });
+        }, 2000);
+      } else {
+        console.error('[LiveTV] Fatal:', d.type, d.details);
+        noMovieText.textContent = `Stream error: ${d.details} — try refreshing.`;
+        noMovie.style.display = 'block';
+        video.style.display = 'none';
+        currentKey = null;
+      }
+    });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
     video.src = src;
-    video.play().catch(() => showPlayOverlay());
+    tryPlay();
   }
 }
+
 
 function applyLiveTvState(state) {
   document.getElementById('yt-player-container').style.display = 'none';
@@ -428,7 +423,7 @@ function applyLiveTvState(state) {
   const guideBtn = document.getElementById('guide-toggle-btn');
   if (guideBtn) guideBtn.style.display = 'block';
 
-  if (!state.liveTvChannel) {
+  if (!state.movieKey) {
     video.style.display = 'none';
     noMovie.style.display = 'block';
     noMovieText.textContent = 'Waiting for host to choose a channel…';
@@ -452,17 +447,23 @@ function applyLiveTvState(state) {
   if (liveTvInfo) liveTvInfo.style.display = 'block';
   if (liveTvChannelTitle) liveTvChannelTitle.textContent = state.liveTvChannelTitle || '';
 
-  // Channel change → reload stream
-  if (state.liveTvChannel !== currentKey) {
-    currentKey = state.liveTvChannel;
-    loadLiveTv(state.liveTvChannel);
+  // Track the active channel number for guide highlighting
+  activeLiveTvChannel = state.liveTvChannel || null;
+
+  // Channel change → reload stream via Plex transcode proxy
+  if (state.movieKey && state.movieKey !== currentKey) {
+    currentKey = state.movieKey;
+    loadLiveTvHls(state.movieKey);
   }
 
-  // Sync play/pause state — on resume, snap to live edge so all viewers react together
+  // Compute target from server state — same smooth extrapolation as movie sync
+  const elapsed    = (Date.now() - state.lastUpdate) / 1000;
+  const targetTime = state.playing ? state.position + elapsed : state.position;
+
+  // Sync play/pause state
   if (state.playing && video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    if (hlsInstance?.liveSyncPosition) video.currentTime = hlsInstance.liveSyncPosition;
-    video.play().catch(() => showPlayOverlay());
+    tryPlay();
     releaseSyncLock();
   } else if (!state.playing && !video.paused) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
@@ -470,21 +471,21 @@ function applyLiveTvState(state) {
     releaseSyncLock();
   }
 
-  // Drift correction — manifest is the source of truth; nudge toward the delayed live edge
-  if (state.playing && !video.paused) {
-    const liveEdge = hlsInstance?.liveSyncPosition ?? null;
-    if (liveEdge !== null) {
-      const drift = video.currentTime - liveEdge;
-      if (drift < -2) {
-        // Too far behind the delayed live edge — snap forward
-        isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-        video.currentTime = liveEdge;
-        releaseSyncLock();
-      } else if (Math.abs(drift) > 0.2) {
-        video.playbackRate = drift > 0 ? 0.97 : 1.03;
-      } else {
-        if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
-      }
+  // Drift correction — guests only, same logic as movie/TV sync.
+  // Host's reported position calibrates room.position on the server,
+  // so targetTime is a smooth, deterministic value all clients share.
+  if (!isHost && state.playing && !video.paused) {
+    const drift    = video.currentTime - targetTime;
+    const absDrift = Math.abs(drift);
+
+    if (absDrift > 5) {
+      isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+      video.currentTime = targetTime;
+      releaseSyncLock();
+    } else if (absDrift > 0.5) {
+      video.playbackRate = drift > 0 ? 0.95 : 1.05;
+    } else {
+      if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
     }
   }
 
@@ -540,11 +541,11 @@ function renderGuide() {
     return;
   }
   list.innerHTML = guideChannels.map(ch => {
-    const isActive  = ch.number === currentKey;
+    const isActive  = ch.number === activeLiveTvChannel;
     const clickable = isHost;
     return `
       <div class="guide-channel-item${isActive ? ' active' : ''}${clickable ? ' clickable' : ''}"
-           data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}">
+           data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" data-channelid="${esc(ch.channelId || '')}">
         <span class="guide-channel-num">${esc(ch.number)}</span>
         <div class="guide-channel-info">
           <span class="guide-channel-name">${esc(ch.title || ch.number)}</span>
@@ -559,7 +560,8 @@ function renderGuide() {
       item.addEventListener('click', () => {
         socket.emit('select-livetv-channel', {
           channel:      item.dataset.channel,
-          channelTitle: item.dataset.title
+          channelTitle: item.dataset.title,
+          channelId:    item.dataset.channelid
         });
         closeGuide();
       });
@@ -620,7 +622,7 @@ setInterval(() => {
     }
   }
   if (pos != null && isFinite(pos)) socket.emit('position-report', { position: pos });
-}, 2000);
+}, 1000);
 
 // ── Buffering state reporting ──────────────────────────────
 video.addEventListener('waiting', () => socket.emit('buffering-state', { buffering: true }));
@@ -794,8 +796,14 @@ function setYoutubeUrl() {
 let lastViewers = [];
 
 function renderViewers(viewers) {
+  // For live TV, log drift to console instead of showing in UI
+  if (roomType === 'livetv') {
+    const drifts = viewers.filter(v => v.drift != null).map(v => `${v.name}: ${v.drift > 0 ? '+' : ''}${v.drift.toFixed(1)}s`);
+    if (drifts.length) console.log('[LiveTV sync]', drifts.join(', '));
+  }
+
   viewersList.innerHTML = viewers.map(v => {
-    const driftHtml = v.drift != null
+    const driftHtml = (roomType !== 'livetv' && v.drift != null)
       ? (() => {
           const abs = Math.abs(v.drift);
           const cls = abs < 1 ? 'drift-ok' : abs < 3 ? 'drift-warn' : 'drift-bad';
@@ -1151,7 +1159,7 @@ async function loadChannels() {
       return;
     }
     list.innerHTML = channels.map(ch => `
-      <div class="episode-item" data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" style="cursor:pointer">
+      <div class="episode-item" data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" data-channelid="${esc(ch.channelId || '')}" style="cursor:pointer">
         <div class="episode-info">
           <span class="episode-title">${esc(ch.number)} ${esc(ch.title || '')}</span>
         </div>
@@ -1160,8 +1168,9 @@ async function loadChannels() {
     list.querySelectorAll('.episode-item').forEach(item => {
       item.addEventListener('click', () => {
         socket.emit('select-livetv-channel', {
-          channel: item.dataset.channel,
-          channelTitle: item.dataset.title
+          channel:      item.dataset.channel,
+          channelTitle: item.dataset.title,
+          channelId:    item.dataset.channelid
         });
         document.getElementById('channel-modal').style.display = 'none';
       });
