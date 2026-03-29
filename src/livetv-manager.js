@@ -15,6 +15,14 @@ let cachedDvrKey      = null;
 let nowPlayingCache     = null;
 let nowPlayingFetchedAt = 0;
 
+// Mutex locks to prevent race conditions when cache expires
+let dvrLockResolve = null;
+let dvrLockPromise = null;
+let channelsLockResolve = null;
+let channelsLockPromise = null;
+let nowPlayingLockResolve = null;
+let nowPlayingLockPromise = null;
+
 function buildHeaders() {
   const headers = { Accept: 'application/json' };
   if (PLEX_TOKEN) headers['X-Plex-Token'] = PLEX_TOKEN;
@@ -22,11 +30,29 @@ function buildHeaders() {
 }
 
 async function fetchDvrInfo(headers) {
-  const { data } = await axios.get(`${PLEX_HOST}/livetv/dvrs`, { headers, timeout: 10000 });
-  const dvr = data?.MediaContainer?.Dvr?.[0];
-  if (!dvr) throw new Error('No DVR found');
-  cachedEpgId  = dvr.epgIdentifier;
-  cachedDvrKey = dvr.key;
+  // If already fetching, wait for that promise to resolve
+  if (dvrLockPromise) {
+    await dvrLockPromise;
+    return; // DVR info should now be populated
+  }
+
+  // Acquire lock
+  dvrLockPromise = new Promise(resolve => { dvrLockResolve = resolve; });
+
+  try {
+    // Check again after acquiring lock (another request may have fetched)
+    if (cachedEpgId && cachedDvrKey) return;
+
+    const { data } = await axios.get(`${PLEX_HOST}/livetv/dvrs`, { headers, timeout: 10000 });
+    const dvr = data?.MediaContainer?.Dvr?.[0];
+    if (!dvr) throw new Error('No DVR found');
+    cachedEpgId  = dvr.epgIdentifier;
+    cachedDvrKey = dvr.key;
+  } finally {
+    dvrLockResolve();
+    dvrLockPromise = null;
+    dvrLockResolve = null;
+  }
 }
 
 async function fetchChannels(headers) {
@@ -77,6 +103,11 @@ async function stopSubscription(subKey) {
 
 // Tune a live TV channel via Plex DVR — returns { ratingKey, subKey }
 async function tuneChannel(channelId) {
+  // Validate channelId is numeric
+  if (!channelId || !/^\d+$/.test(String(channelId))) {
+    throw new Error('Invalid channelId: must be a numeric string');
+  }
+
   const headers = buildHeaders();
   if (!cachedDvrKey) await fetchDvrInfo(headers);
 
@@ -100,24 +131,72 @@ async function getGuide() {
   const now     = Date.now();
   const headers = buildHeaders();
 
+  // Channels cache with lock to prevent duplicate fetches
   if (!channelsCache || now - channelsFetchedAt >= GUIDE_TTL_MS) {
-    try {
-      channelsCache     = await fetchChannels(headers);
-      channelsFetchedAt = now;
-      nowPlayingCache   = null;
-    } catch (err) {
-      console.error('[LiveTV] guide fetch error:', err.message);
-      if (!channelsCache) return { channels: [] };
+    // Wait for any in-progress fetch
+    if (channelsLockPromise) {
+      await channelsLockPromise;
+    } else if (!channelsCache) {
+      // Acquire lock and fetch
+      channelsLockPromise = new Promise(resolve => { channelsLockResolve = resolve; });
+      try {
+        // Check again after acquiring lock
+        if (channelsCache && now - channelsFetchedAt < GUIDE_TTL_MS) return {
+          channels: channelsCache.map(ch => {
+            const prog   = nowPlayingCache?.[ch.callSign] || nowPlayingCache?.[ch.number];
+            const result = { channelId: ch.channelId, number: ch.number, title: ch.title, thumb: ch.thumb };
+            if (prog) result.nowPlaying = prog;
+            return result;
+          }),
+        };
+
+        channelsCache     = await fetchChannels(headers);
+        channelsFetchedAt = now;
+        nowPlayingCache   = null;
+      } catch (err) {
+        console.error('[LiveTV] guide fetch error:', err.message);
+        if (!channelsCache) return { channels: [] };
+      } finally {
+        if (channelsLockResolve) {
+          channelsLockResolve();
+          channelsLockPromise = null;
+          channelsLockResolve = null;
+        }
+      }
     }
   }
 
+  // Now playing cache with lock to prevent duplicate fetches
   if (!nowPlayingCache || now - nowPlayingFetchedAt >= NOW_PLAYING_TTL_MS) {
-    try {
-      nowPlayingCache     = await fetchNowPlaying(headers);
-      nowPlayingFetchedAt = now;
-    } catch (err) {
-      console.error('[LiveTV] now-playing fetch error:', err.message);
-      nowPlayingCache = nowPlayingCache || {};
+    // Wait for any in-progress fetch
+    if (nowPlayingLockPromise) {
+      await nowPlayingLockPromise;
+    } else if (!nowPlayingCache) {
+      // Acquire lock and fetch
+      nowPlayingLockPromise = new Promise(resolve => { nowPlayingLockResolve = resolve; });
+      try {
+        // Check again after acquiring lock
+        if (nowPlayingCache && now - nowPlayingFetchedAt < NOW_PLAYING_TTL_MS) return {
+          channels: channelsCache.map(ch => {
+            const prog   = nowPlayingCache?.[ch.callSign] || nowPlayingCache?.[ch.number];
+            const result = { channelId: ch.channelId, number: ch.number, title: ch.title, thumb: ch.thumb };
+            if (prog) result.nowPlaying = prog;
+            return result;
+          }),
+        };
+
+        nowPlayingCache     = await fetchNowPlaying(headers);
+        nowPlayingFetchedAt = now;
+      } catch (err) {
+        console.error('[LiveTV] now-playing fetch error:', err.message);
+        nowPlayingCache = nowPlayingCache || {};
+      } finally {
+        if (nowPlayingLockResolve) {
+          nowPlayingLockResolve();
+          nowPlayingLockPromise = null;
+          nowPlayingLockResolve = null;
+        }
+      }
     }
   }
 

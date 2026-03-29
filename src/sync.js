@@ -433,6 +433,18 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!channelId) return;
+
+      // Validate channelId is numeric
+      if (!/^\d+$/.test(String(channelId))) {
+        return socket.emit('error-message', 'Invalid channelId: must be numeric');
+      }
+
+      // Prevent concurrent tune requests (rate limit on channel switching)
+      if (room._tuningInProgress) {
+        return socket.emit('error-message', 'Channel change in progress');
+      }
+      room._tuningInProgress = true;
+
       clearRoomManifest(room.id); // stop any existing Plex transcode session
       try {
         const liveTvManager = require('./livetv-manager');
@@ -450,6 +462,8 @@ function setupSync(io, enabledRoomTypes) {
       } catch (err) {
         console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
         socket.emit('error-message', `Failed to tune channel: ${err.message}`);
+      } finally {
+        room._tuningInProgress = false;
       }
     });
 
@@ -468,6 +482,10 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
+      // LiveTV intentionally bypasses playback lock — the stream is shared across
+      // all viewers and cannot be independently paused/resumed by guests. Only the
+      // host can retune to a different channel, but playback state (play/pause)
+      // must stay in sync for everyone watching the same stream.
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
       room.position = position ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
@@ -484,6 +502,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
+      // LiveTV intentionally bypasses playback lock — see play handler for explanation.
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
       room.position = position ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
