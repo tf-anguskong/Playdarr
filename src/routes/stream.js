@@ -14,7 +14,7 @@ const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
 // Plex call rather than racing to start.m3u8 simultaneously.
 const manifestCache    = new Map(); // cacheKey → { manifest: string, cachedAt: number }
 const manifestPending  = new Map(); // cacheKey → Promise<string>
-const activeSessions   = new Map(); // cacheKey → { sessionId, ratingKey }
+const activeSessions   = new Map(); // cacheKey → { sessionId, ratingKey, isLive }
 const keepaliveTimers  = new Map(); // cacheKey → intervalId
 const MANIFEST_TTL_MS  = 4 * 60 * 60 * 1000; // 4 hours — evict stale manifests
 const KEEPALIVE_MS     = 8000; // ping Plex every 8s to prevent session cleanup
@@ -34,7 +34,7 @@ setInterval(() => {
 // Send periodic timeline pings so Plex doesn't clean up the transcode session.
 // Without these, Plex kills the session after ~60s of perceived inactivity,
 // causing 404s on segment requests and forcing a full session restart.
-function startKeepalive(cacheKey, sessionId, ratingKey) {
+function startKeepalive(cacheKey, sessionId, ratingKey, isLive) {
   stopKeepalive(cacheKey);
   const timer = setInterval(() => {
     axios.get(`${PLEX_URL}/:/timeline`, {
@@ -43,7 +43,7 @@ function startKeepalive(cacheKey, sessionId, ratingKey) {
         'X-Plex-Client-Identifier': CLIENT_ID,
         'X-Plex-Session-Identifier': sessionId,
         ratingKey,
-        key: `/library/metadata/${ratingKey}`,
+        key: isLive ? `/livetv/sessions/${ratingKey}` : `/library/metadata/${ratingKey}`,
         state: 'playing',
         time: 0,
         duration: 0,
@@ -134,6 +134,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   // ?offset=<ms> tells Plex where to begin transcoding so the client can seek
   // straight to the current playback position after reconnecting.
   const bust     = !!req.query.bust;
+  const isLive   = req.query.live === '1';
   const offsetMs = Math.max(0, parseInt(req.query.offset, 10) || 0);
   if (bust) {
     stopKeepalive(cacheKey);
@@ -181,7 +182,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       'X-Plex-Device-Name': 'Movie Night',
       'X-Plex-Version': '1.0.0',
       hasMDE: '1',
-      path: `/library/metadata/${ratingKey}`,
+      path: isLive ? `/livetv/sessions/${ratingKey}` : `/library/metadata/${ratingKey}`,
       videoResolution: '1920x1080',
       maxVideoBitrate: '8000',
       videoCodec: 'h264',
@@ -191,7 +192,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       mediaIndex: '0',
       partIndex: '0',
       fastSeek: '1',
-      ...(offsetMs > 0 ? { offset: offsetMs } : {})
+      ...(!isLive && offsetMs > 0 ? { offset: offsetMs } : {})
     };
 
     // Build query string manually — axios encodes '/' as '%2F' in param values,
@@ -226,8 +227,8 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   try {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
-    activeSessions.set(cacheKey, { sessionId, ratingKey });
-    startKeepalive(cacheKey, sessionId, ratingKey);
+    activeSessions.set(cacheKey, { sessionId, ratingKey, isLive });
+    startKeepalive(cacheKey, sessionId, ratingKey, isLive);
     manifestPending.delete(cacheKey);
     res.send(manifest);
   } catch (err) {

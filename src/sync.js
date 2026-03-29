@@ -11,9 +11,6 @@ const socketToRoom = new Map(); // socketId -> Room
 let _io = null; // set in setupSync, used by createScheduledRoom
 let _enabledRoomTypes = { movie: true, tv: true, youtube: true, livetv: false };
 
-// Loaded lazily when livetv is enabled
-let liveTvManager = null;
-
 async function fetchYoutubeTitle(videoId) {
   try {
     const res = await axios.get('https://www.youtube.com/oembed', {
@@ -138,15 +135,6 @@ function broadcastRoomList(io) {
   io.emit('room-list', Array.from(rooms.values()).map(r => r.summary()));
 }
 
-// Stop ffmpeg when no live TV rooms remain
-function checkLiveTvCleanup() {
-  if (!liveTvManager) return;
-  const hasLiveTvRoom = Array.from(rooms.values()).some(r => r.roomType === 'livetv');
-  if (!hasLiveTvRoom) {
-    console.log('[LiveTV] No live TV rooms remaining — stopping stream');
-    liveTvManager.stopFfmpeg();
-  }
-}
 
 // Per-socket rate limiter — sliding window
 function makeSocketRateLimiter(maxCalls, windowMs) {
@@ -182,7 +170,6 @@ function formatEpisodeTitle(showTitle, ep) {
 function setupSync(io, enabledRoomTypes) {
   _io = io;
   if (enabledRoomTypes) _enabledRoomTypes = enabledRoomTypes;
-  if (_enabledRoomTypes.livetv) liveTvManager = require('./livetv-manager');
 
   // Periodic sync heartbeat — keeps clients corrected during normal playback
   // without waiting for a play/pause/seek event to trigger a state broadcast.
@@ -195,11 +182,11 @@ function setupSync(io, enabledRoomTypes) {
     });
   }, 5000);
 
-  // Faster heartbeat for live TV rooms — tighter sync tolerance needs more frequent updates
+  // Faster heartbeat for live TV rooms — tighter sync tolerance needs more frequent updates.
+  // Plex session keepalives are handled by stream.js; this just calibrates position + broadcasts.
   setInterval(() => {
     rooms.forEach(room => {
       if (room.roomType !== 'livetv') return;
-      if (room.viewers.size > 0 && liveTvManager) liveTvManager.heartbeat();
       // Calibrate room position from host's reported playback time.
       // This makes currentPosition() return a smooth, deterministic value
       // that advances at real-time speed — same as movie/TV sync.
@@ -404,16 +391,19 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select live TV channel (host only, livetv rooms) ──
-    socket.on('select-livetv-channel', ({ channel, channelTitle }) => {
+    socket.on('select-livetv-channel', ({ channel, channelTitle, ratingKey }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      if (!ratingKey) return;
+      clearRoomManifest(room.id); // stop any existing Plex transcode session
       room.liveTvChannel      = String(channel || '').slice(0, 20);
       room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
+      room.movieKey   = String(ratingKey);
       room.playing    = true;
+      room.position   = 0;
       room.lastUpdate = Date.now();
-      if (liveTvManager) liveTvManager.switchChannel(room.liveTvChannel);
       room.broadcastState(io);
-      console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel}`);
+      console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey})`);
     });
 
     // ── Playback (anyone in room, unless locked) ───────────
@@ -686,7 +676,6 @@ function setupSync(io, enabledRoomTypes) {
           inviteTokens.delete(room.inviteToken);
           rooms.delete(room.id);
           broadcastRoomList(io);
-          checkLiveTvCleanup();
         } else {
           // Give the Plex host a grace window to reconnect (e.g. lobby → watch navigation).
           // If they rejoin before the timer fires it will be cancelled.
@@ -698,8 +687,7 @@ function setupSync(io, enabledRoomTypes) {
             inviteTokens.delete(room.inviteToken);
             rooms.delete(room.id);
             broadcastRoomList(io);
-            checkLiveTvCleanup();
-          }, 30000);
+            }, 30000);
         }
       } else {
         room.broadcastViewers(io);
