@@ -42,17 +42,22 @@ async function fetchChannels(headers) {
 }
 
 async function fetchNowPlaying(headers) {
+  if (!cachedEpgId) await fetchDvrInfo(headers);
   const nowSec = Math.floor(Date.now() / 1000);
-  const { data } = await axios.get(`${PLEX_HOST}/livetv/grid`, {
+  const { data } = await axios.get(`${PLEX_HOST}/${cachedEpgId}/grid`, {
     headers,
-    params: { type: 1, begintime: nowSec, endtime: nowSec + 1 },
+    params: { type: 1, begintime: nowSec, endtime: nowSec + 3600 },
     timeout: 10000,
   });
   const programs = {};
-  for (const v of (data?.MediaContainer?.Video || [])) {
-    const key = v.channelCallSign || v.channelID;
-    if (!key) continue;
-    programs[key] = v.grandparentTitle ? `${v.grandparentTitle}: ${v.title}` : (v.title || '');
+  for (const v of (data?.MediaContainer?.Metadata || [])) {
+    const prog = v.grandparentTitle ? `${v.grandparentTitle}: ${v.title}` : (v.title || '');
+    for (const ch of (v.Channel || [])) {
+      // tag = "4.1 KOMODT (ABC)" — index by both vcn (4.1) and callSign (KOMODT)
+      const parts = (ch.tag || '').split(' ');
+      if (parts[0]) programs[parts[0]] = prog; // vcn
+      if (parts[1]) programs[parts[1]] = prog; // callSign
+    }
   }
   return programs;
 }
