@@ -135,6 +135,54 @@ function rewriteM3u8(content, baseDir, proxyPrefix = '/api/stream/proxy') {
     .join('\n');
 }
 
+// ── Shared Plex transcode helper ───────────────────────────
+// Extracted so the route handler and prewarmManifest share the same logic.
+async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix, offsetMs = 0 }) {
+  const params = {
+    'X-Plex-Token': plexToken,
+    'X-Plex-Client-Identifier': CLIENT_ID,
+    'X-Plex-Session-Identifier': sessionId,
+    'X-Plex-Product': 'Movie Night',
+    'X-Plex-Platform': 'Chrome',
+    'X-Plex-Platform-Version': '120.0',
+    'X-Plex-Device': 'Windows',
+    'X-Plex-Device-Name': 'Movie Night',
+    'X-Plex-Version': '1.0.0',
+    hasMDE: '1',
+    path: `/library/metadata/${ratingKey}`,
+    videoResolution: '1920x1080',
+    maxVideoBitrate: '8000',
+    videoCodec: 'h264',
+    audioCodec: 'aac',
+    protocol: 'hls',
+    copyts: '1',
+    mediaIndex: '0',
+    partIndex: '0',
+    fastSeek: '1',
+    ...(offsetMs > 0 ? { offset: offsetMs } : {})
+  };
+  // Build query string manually — axios encodes '/' as '%2F' in param values,
+  // but Plex requires literal slashes in the 'path' parameter.
+  const qs = Object.entries(params)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${k === 'path' ? v : encodeURIComponent(v)}`)
+    .join('&');
+  const transcodeUrl = `${plexBaseUrl}/video/:/transcode/universal/start.m3u8?${qs}`;
+  console.log('[HLS] Starting session:', transcodeUrl.replace(
+    new RegExp(plexToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), 'REDACTED'
+  ));
+  const plexRes = await axios.get(transcodeUrl, {
+    headers: {
+      Accept: 'application/x-mpegURL',
+      'X-Plex-Client-Identifier': CLIENT_ID,
+      'X-Plex-Product': 'Movie Night',
+      'X-Plex-Platform': 'Chrome',
+      'X-Plex-Device-Name': 'Movie Night',
+      'X-Plex-Token': plexToken
+    }
+  });
+  return rewriteM3u8(plexRes.data, '/video/:/transcode/universal/', proxyPrefix);
+}
+
 // ── HLS transcode start ────────────────────────────────────
 router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const { roomId, ratingKey } = req.params;
@@ -187,56 +235,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     }
   }
 
-  const fetchManifest = async () => {
-    const params = {
-      'X-Plex-Token': plexToken,
-      'X-Plex-Client-Identifier': CLIENT_ID,
-      'X-Plex-Session-Identifier': sessionId,
-      'X-Plex-Product': 'Movie Night',
-      'X-Plex-Platform': 'Chrome',
-      'X-Plex-Platform-Version': '120.0',
-      'X-Plex-Device': 'Windows',
-      'X-Plex-Device-Name': 'Movie Night',
-      'X-Plex-Version': '1.0.0',
-      hasMDE: '1',
-      path: `/library/metadata/${ratingKey}`,
-      videoResolution: '1920x1080',
-      maxVideoBitrate: '8000',
-      videoCodec: 'h264',
-      audioCodec: 'aac',
-      protocol: 'hls',
-      copyts: '1',
-      mediaIndex: '0',
-      partIndex: '0',
-      fastSeek: '1',
-      ...(offsetMs > 0 ? { offset: offsetMs } : {})
-    };
-
-    // Build query string manually — axios encodes '/' as '%2F' in param values,
-    // but Plex requires literal slashes in the 'path' parameter.
-    const qs = Object.entries(params)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${k === 'path' ? v : encodeURIComponent(v)}`)
-      .join('&');
-
-    const transcodeUrl = `${plexBaseUrl}/video/:/transcode/universal/start.m3u8?${qs}`;
-    console.log('[HLS] Starting session:', transcodeUrl.replace(
-      new RegExp(plexToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), 'REDACTED'
-    ));
-
-    const plexRes = await axios.get(transcodeUrl, {
-      headers: {
-        Accept: 'application/x-mpegURL',
-        'X-Plex-Client-Identifier': CLIENT_ID,
-        'X-Plex-Product': 'Movie Night',
-        'X-Plex-Platform': 'Chrome',
-        'X-Plex-Device-Name': 'Movie Night',
-        'X-Plex-Token': plexToken
-      }
-    });
-
-    const baseDir = '/video/:/transcode/universal/';
-    return rewriteM3u8(plexRes.data, baseDir, proxyPrefix);
-  };
+  const fetchManifest = () => callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix, offsetMs });
 
   const promise = fetchManifest();
   manifestPending.set(cacheKey, promise);
@@ -254,6 +253,30 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     res.status(500).send('HLS error');
   }
 });
+
+// Pre-start a Plex transcode session and cache its manifest server-side.
+// Called by doRetune in sync.js so the manifest is already cached by the time
+// clients receive livetv-reload — reducing black-screen time on retune from ~7s to ~2s.
+async function prewarmManifest(roomId, ratingKey, isLive) {
+  const cacheKey    = `${roomId}-${ratingKey}`;
+  if (manifestCache.has(cacheKey) || manifestPending.has(cacheKey)) return;
+  const plexBaseUrl = isLive ? LIVETV_PLEX_URL   : PLEX_URL;
+  const plexToken   = isLive ? LIVETV_PLEX_TOKEN  : PLEX_TOKEN;
+  const proxyPrefix = isLive ? '/api/stream/proxy-live' : '/api/stream/proxy';
+  const sessionId   = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey.slice(0, 24)}`;
+  const promise     = callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix });
+  manifestPending.set(cacheKey, promise);
+  try {
+    const manifest = await promise;
+    manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
+    activeSessions.set(cacheKey, { sessionId, ratingKey, isLive, plexBaseUrl, plexToken });
+    startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken);
+    manifestPending.delete(cacheKey);
+  } catch (err) {
+    manifestPending.delete(cacheKey);
+    throw err;
+  }
+}
 
 // Only transcode segments/manifests and direct-play part files are valid proxy targets.
 const ALLOWED_PROXY_PATH = /^\/(video\/:\/transcode\/universal\/|library\/parts\/)/;
@@ -354,4 +377,4 @@ router.get('/thumb/:ratingKey', async (req, res) => {
   }
 });
 
-module.exports = { router, clearRoomManifest };
+module.exports = { router, clearRoomManifest, prewarmManifest };

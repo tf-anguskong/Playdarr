@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
-const { clearRoomManifest } = require('./routes/stream');
+const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 
@@ -54,7 +54,6 @@ class Room {
     this.liveTvChannelTitle = null;  // e.g. 'KIRO/CBS'
     this.liveTvChannelId    = null;  // DVR channel ID for re-tuning
     this.liveTvSubKey       = null;  // Plex MediaSubscription key for current tune
-    this.liveTvRetuneTimer  = null;  // proactive retune interval handle
     this.movieKey       = null;
     this.movieTitle     = null;
     this.partId         = null;
@@ -170,19 +169,7 @@ function formatEpisodeTitle(showTitle, ep) {
   return `${showTitle ? showTitle + ' · ' : ''}${se}${ep.title || ''}`;
 }
 
-// ── Live TV proactive retune ───────────────────────────────
-// Plex DVR sessions expire after ~3-4 minutes. We retune every 2 minutes
-// to get a fresh ratingKey before the old session dies, preventing the
-// 400/404 failure that would otherwise interrupt the stream.
-const LIVETV_RETUNE_MS = 2 * 60 * 1000;
-
-function stopLiveTvRetuneTimer(room) {
-  if (room.liveTvRetuneTimer) {
-    clearInterval(room.liveTvRetuneTimer);
-    room.liveTvRetuneTimer = null;
-  }
-}
-
+// ── Live TV retune (reactive only — called when HLS stream fails) ─────────
 async function doRetune(room, io) {
   if (!room.liveTvChannelId) return;
   const liveTvManager = require('./livetv-manager');
@@ -191,16 +178,23 @@ async function doRetune(room, io) {
     // Without this, retune returns the same ratingKey and the dying session continues.
     if (room.liveTvSubKey) {
       await liveTvManager.stopSubscription(room.liveTvSubKey).catch(() => {});
-      await new Promise(r => setTimeout(r, 200));
     }
     clearRoomManifest(room.id);
     const { ratingKey, subKey } = await liveTvManager.tuneChannel(room.liveTvChannelId);
-    const keyChanged   = ratingKey !== room.movieKey;
-    room.liveTvSubKey  = subKey;
-    room.movieKey      = ratingKey;
-    room.playing       = true;
-    room.position      = 0;
-    room.lastUpdate    = Date.now();
+    room.liveTvSubKey = subKey;
+
+    // Pre-warm: start the new Plex transcode session and cache its manifest
+    // before telling clients to switch. Clients get an instant cache hit when
+    // they request the new manifest, and Plex has had ~1.5s to buffer the first
+    // segments — cutting black-screen time from ~7s to ~2s.
+    await prewarmManifest(room.id, ratingKey, true).catch(() => {});
+    await new Promise(r => setTimeout(r, 1500));
+
+    const keyChanged = ratingKey !== room.movieKey;
+    room.movieKey    = ratingKey;
+    room.playing     = true;
+    room.position    = 0;
+    room.lastUpdate  = Date.now();
     // If ratingKey is unchanged the clients won't detect the new session from state
     // alone — force them to reload the HLS manifest explicitly.
     if (!keyChanged) room.broadcast(io, 'livetv-reload');
@@ -209,11 +203,6 @@ async function doRetune(room, io) {
   } catch (err) {
     console.error(`[Room] Retune failed for ${room.liveTvChannel}:`, err.message);
   }
-}
-
-function startLiveTvRetuneTimer(room, io) {
-  stopLiveTvRetuneTimer(room);
-  room.liveTvRetuneTimer = setInterval(() => doRetune(room, io), LIVETV_RETUNE_MS);
 }
 
 function setupSync(io, enabledRoomTypes) {
@@ -445,7 +434,6 @@ function setupSync(io, enabledRoomTypes) {
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!channelId) return;
       clearRoomManifest(room.id); // stop any existing Plex transcode session
-      stopLiveTvRetuneTimer(room); // clear any retune timer from previous channel
       try {
         const liveTvManager = require('./livetv-manager');
         const { ratingKey, subKey } = await liveTvManager.tuneChannel(channelId);
@@ -458,7 +446,6 @@ function setupSync(io, enabledRoomTypes) {
         room.position   = 0;
         room.lastUpdate = Date.now();
         room.broadcastState(io);
-        startLiveTvRetuneTimer(room, io); // proactively retune every 2 min
         console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey}, sub ${subKey})`);
       } catch (err) {
         console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
@@ -474,7 +461,6 @@ function setupSync(io, enabledRoomTypes) {
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!room.liveTvChannelId) return;
       await doRetune(room, io);
-      startLiveTvRetuneTimer(room, io); // reset the 2-min clock after a manual retune
     });
 
     // ── Playback (anyone in room, unless locked) ───────────
@@ -714,7 +700,6 @@ function setupSync(io, enabledRoomTypes) {
           clearTimeout(room.intermissionTimer); room.intermissionTimer = null;
           room.intermissionEndsAt = null;
         }
-        stopLiveTvRetuneTimer(room);
 
         // If viewers remain, auto-migrate host rather than closing the room.
         if (room.viewers.size > 0) {
