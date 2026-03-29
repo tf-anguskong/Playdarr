@@ -26,8 +26,13 @@ async function fetchChannels(headers) {
     if (!cachedEpgId) throw new Error('No DVR/EPG identifier found');
   }
   const { data } = await axios.get(`${PLEX_HOST}/${cachedEpgId}/lineups/dvr/channels`, { headers, timeout: 10000 });
-  return (data?.MediaContainer?.Channel || []).map(ch => ({
+  const channels = data?.MediaContainer?.Channel || [];
+  // Log first channel object to discover the correct key/path format for transcoding
+  if (channels.length) console.log('[LiveTV] Sample channel object keys:', JSON.stringify(Object.keys(channels[0])));
+  if (channels.length) console.log('[LiveTV] Sample channel:', JSON.stringify({ key: channels[0].key, ratingKey: channels[0].ratingKey, id: channels[0].id, slug: channels[0].slug, guid: channels[0].guid }));
+  return channels.map(ch => ({
     ratingKey: String(ch.ratingKey || ch.id || ''),
+    key:       ch.key || '',
     number:    ch.vcn || '',
     title:     ch.title || ch.callSign || '',
     thumb:     ch.thumb || null,
