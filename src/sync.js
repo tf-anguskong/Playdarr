@@ -53,6 +53,7 @@ class Room {
     this.liveTvChannel      = null;  // e.g. '7.1'
     this.liveTvChannelTitle = null;  // e.g. 'KIRO/CBS'
     this.liveTvChannelId    = null;  // DVR channel ID for re-tuning
+    this.liveTvRetuneTimer  = null;  // proactive retune interval handle
     this.movieKey       = null;
     this.movieTitle     = null;
     this.partId         = null;
@@ -166,6 +167,41 @@ function formatEpisodeTitle(showTitle, ep) {
   const e = ep.index != null ? `E${String(ep.index).padStart(2, '0')}` : '';
   const se = (s || e) ? `${s}${e} · ` : '';
   return `${showTitle ? showTitle + ' · ' : ''}${se}${ep.title || ''}`;
+}
+
+// ── Live TV proactive retune ───────────────────────────────
+// Plex DVR sessions expire after ~3-4 minutes. We retune every 2 minutes
+// to get a fresh ratingKey before the old session dies, preventing the
+// 400/404 failure that would otherwise interrupt the stream.
+const LIVETV_RETUNE_MS = 2 * 60 * 1000;
+
+function stopLiveTvRetuneTimer(room) {
+  if (room.liveTvRetuneTimer) {
+    clearInterval(room.liveTvRetuneTimer);
+    room.liveTvRetuneTimer = null;
+  }
+}
+
+async function doRetune(room, io) {
+  if (!room.liveTvChannelId) return;
+  try {
+    clearRoomManifest(room.id);
+    const liveTvManager = require('./livetv-manager');
+    const ratingKey = await liveTvManager.tuneChannel(room.liveTvChannelId);
+    room.movieKey   = ratingKey;
+    room.playing    = true;
+    room.position   = 0;
+    room.lastUpdate = Date.now();
+    room.broadcastState(io);
+    console.log(`[Room] "${room.name}" → Retuned ${room.liveTvChannel} → ratingKey=${ratingKey}`);
+  } catch (err) {
+    console.error(`[Room] Retune failed for ${room.liveTvChannel}:`, err.message);
+  }
+}
+
+function startLiveTvRetuneTimer(room, io) {
+  stopLiveTvRetuneTimer(room);
+  room.liveTvRetuneTimer = setInterval(() => doRetune(room, io), LIVETV_RETUNE_MS);
 }
 
 function setupSync(io, enabledRoomTypes) {
@@ -397,6 +433,7 @@ function setupSync(io, enabledRoomTypes) {
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!channelId) return;
       clearRoomManifest(room.id); // stop any existing Plex transcode session
+      stopLiveTvRetuneTimer(room); // clear any retune timer from previous channel
       try {
         const liveTvManager = require('./livetv-manager');
         const ratingKey = await liveTvManager.tuneChannel(channelId);
@@ -408,6 +445,7 @@ function setupSync(io, enabledRoomTypes) {
         room.position   = 0;
         room.lastUpdate = Date.now();
         room.broadcastState(io);
+        startLiveTvRetuneTimer(room, io); // proactively retune every 2 min
         console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey})`);
       } catch (err) {
         console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
@@ -422,20 +460,8 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!room.liveTvChannelId) return;
-      try {
-        clearRoomManifest(room.id);
-        const liveTvManager = require('./livetv-manager');
-        const ratingKey = await liveTvManager.tuneChannel(room.liveTvChannelId);
-        room.movieKey   = ratingKey;
-        room.playing    = true;
-        room.position   = 0;
-        room.lastUpdate = Date.now();
-        room.broadcastState(io);
-        console.log(`[Room] "${room.name}" → Retuned ${room.liveTvChannel} → ratingKey=${ratingKey}`);
-      } catch (err) {
-        console.error(`[Room] Retune failed for ${room.liveTvChannel}:`, err.message);
-        socket.emit('error-message', `Failed to retune channel: ${err.message}`);
-      }
+      await doRetune(room, io);
+      startLiveTvRetuneTimer(room, io); // reset the 2-min clock after a manual retune
     });
 
     // ── Playback (anyone in room, unless locked) ───────────
@@ -675,6 +701,7 @@ function setupSync(io, enabledRoomTypes) {
           clearTimeout(room.intermissionTimer); room.intermissionTimer = null;
           room.intermissionEndsAt = null;
         }
+        stopLiveTvRetuneTimer(room);
 
         // If viewers remain, auto-migrate host rather than closing the room.
         if (room.viewers.size > 0) {
