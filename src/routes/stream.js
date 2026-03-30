@@ -81,17 +81,34 @@ function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, ple
   // Plex from killing it (~4 min timeout). This creates a new session BEFORE
   // the old one dies, making the transition seamless to clients.
   if (isLive) {
-    const PROACTIVE_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
+    const PROACTIVE_REFRESH_MS = 2.5 * 60 * 1000; // 2.5 minutes - before Plex kills it
     const proactiveTimer = setTimeout(async () => {
-      console.log(`[HLS] Proactive session refresh for ${cacheKey} (3 min mark)`);
+      console.log(`[HLS] Proactive session refresh for ${cacheKey} (2.5 min mark)`);
       // cacheKey is ${roomId}-${ratingKey}, but roomId contains dashes
       // So extract roomId by finding the last dash (ratingKey is numeric)
       const lastDash = cacheKey.lastIndexOf('-');
       const roomId = cacheKey.substring(0, lastDash);
       console.log(`[HLS] Proactive: roomId=${roomId}, cacheKey=${cacheKey}`);
-      const channelId = livetvChannelIds.get(roomId);
+      console.log(`[HLS] Proactive: All channelIds stored:`, [...livetvChannelIds.entries()].map(e => e[0].substring(0,20)+'...').join(', '));
+      let channelId = livetvChannelIds.get(roomId);
+      console.log(`[HLS] Proactive: channelId found:`, channelId ? channelId.substring(0,30)+'...' : 'NOT FOUND');
+
+      // Fallback: search for matching roomId if exact match fails
+      if (!channelId) {
+        console.log(`[HLS] Proactive: trying fuzzy match for roomId`);
+        for (const [storedRoomId, chId] of livetvChannelIds.entries()) {
+          if (storedRoomId.includes(roomId) || roomId.includes(storedRoomId)) {
+            console.log(`[HLS] Proactive: found fuzzy match ${storedRoomId.substring(0,20)}...`);
+            channelId = chId;
+            break;
+          }
+        }
+      }
+
       if (!channelId) {
         console.log(`[HLS] No channelId for proactive refresh, skipping`);
+        return;
+      }
         return;
       }
 
