@@ -93,9 +93,9 @@ async function stopSubscription(subKey) {
 
 // Tune a live TV channel via Plex DVR — returns { ratingKey, subKey }
 async function tuneChannel(channelId) {
-  // Validate channelId is numeric
-  if (!channelId || !/^\d+$/.test(String(channelId))) {
-    throw new Error('Invalid channelId: must be a numeric string');
+  // Validate channelId is not empty (Plex may return numeric or string IDs)
+  if (!channelId || typeof String(channelId).trim() !== 'string' || !String(channelId).trim()) {
+    throw new Error('Invalid channelId: must be a non-empty string');
   }
 
   const headers = buildHeaders();

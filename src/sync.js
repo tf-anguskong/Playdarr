@@ -434,9 +434,9 @@ function setupSync(io, enabledRoomTypes) {
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!channelId) return;
 
-      // Validate channelId is numeric
-      if (!/^\d+$/.test(String(channelId))) {
-        return socket.emit('error-message', 'Invalid channelId: must be numeric');
+      // Validate channelId is not empty (Plex may return numeric or string IDs)
+      if (!channelId || typeof String(channelId).trim() !== 'string' || !String(channelId).trim()) {
+        return socket.emit('error-message', 'Invalid channelId');
       }
 
       // Prevent concurrent tune requests (rate limit on channel switching)
