@@ -344,6 +344,23 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
 // Called by doRetune in sync.js so the manifest is already cached by the time
 // clients receive livetv-reload — reducing black-screen time on retune from ~7s to ~2s.
 async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subKey = null) {
+  const cacheKey    = `${roomId}-${ratingKey}`;
+
+  // Early return if already cached/pending - but still store channel/sub info first
+  if (manifestCache.has(cacheKey) || manifestPending.has(cacheKey)) {
+    // Still store LiveTV metadata even if manifest is cached
+    if (isLive && channelId) {
+      livetvChannelIds.set(roomId, channelId);
+    }
+    if (isLive && subKey) {
+      livetvSubKeys.set(roomId, subKey);
+    }
+    if (isLive) {
+      livetvCurrentRatingKeys.set(roomId, ratingKey);
+    }
+    return;
+  }
+
   // Store channelId for LiveTV so we can retune on bust=1
   if (isLive && channelId) {
     livetvChannelIds.set(roomId, channelId);
@@ -356,8 +373,7 @@ async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subK
   if (isLive) {
     livetvCurrentRatingKeys.set(roomId, ratingKey);
   }
-  const cacheKey    = `${roomId}-${ratingKey}`;
-  if (manifestCache.has(cacheKey) || manifestPending.has(cacheKey)) return;
+
   const plexBaseUrl = isLive ? LIVETV_PLEX_URL   : PLEX_URL;
   const plexToken   = isLive ? LIVETV_PLEX_TOKEN  : PLEX_TOKEN;
   const proxyPrefix = isLive ? '/api/stream/proxy-live' : '/api/stream/proxy';
