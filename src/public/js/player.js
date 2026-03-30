@@ -115,6 +115,13 @@ socket.on('kicked', () => {
 
 socket.on('state', applyState);
 
+// Server-side retune produced the same ratingKey — HLS manifest cache won't
+// detect a change, so the server broadcasts this to force a fresh manifest fetch.
+socket.on('livetv-reload', () => {
+  if (roomType !== 'livetv' || !currentKey) return;
+  loadLiveTvHls(currentKey);
+});
+
 socket.on('room-error', (msg) => {
   alert(msg + '\n\nRedirecting to lobby.');
   window.location.href = '/';
@@ -378,15 +385,18 @@ function loadLiveTvHls(ratingKey) {
       tryPlay();
       releaseSyncLock();
     });
-    let networkRetried = false;
+    let liveTvRetryCount = 0;
+    const LIVE_TV_MAX_RETRIES = 4;
     hlsInstance.on(Hls.Events.ERROR, (_, d) => {
       if (!d.fatal) return;
       if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
         console.warn('[LiveTV] Media error, recovering:', d.details);
         hlsInstance.recoverMediaError();
-      } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !networkRetried) {
-        networkRetried = true;
-        console.warn('[LiveTV] Network error, busting manifest:', d.details);
+      } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR && liveTvRetryCount < LIVE_TV_MAX_RETRIES) {
+        liveTvRetryCount++;
+        // For LiveTV, retry immediately (no delay) - exponential backoff is too slow
+        const delay = 0;
+        console.warn(`[LiveTV] Network error, retry ${liveTvRetryCount}/${LIVE_TV_MAX_RETRIES} immediately:`, d.details);
         const bustSrc = `${src}&bust=1`;
         setTimeout(() => {
           if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
@@ -396,18 +406,36 @@ function loadLiveTvHls(ratingKey) {
           hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => tryPlay());
           hlsInstance.on(Hls.Events.ERROR, (__, d2) => {
             if (!d2.fatal) return;
-            noMovieText.textContent = `Stream error: ${d2.details} — try refreshing.`;
-            noMovie.style.display = 'block';
-            video.style.display = 'none';
-            currentKey = null;
+            // Retries exhausted — the DVR ratingKey is dead.
+            // Host requests a retune; guests wait for the rebroadcast.
+            if (isHost) {
+              noMovieText.textContent = 'Reconnecting to channel…';
+              noMovie.style.display = 'block';
+              video.style.display = 'none';
+              currentKey = null;
+              socket.emit('retune-livetv');
+            } else {
+              noMovieText.textContent = 'Stream interrupted — reconnecting…';
+              noMovie.style.display = 'block';
+              video.style.display = 'none';
+              currentKey = null;
+            }
           });
-        }, 2000);
+        }, delay);
       } else {
         console.error('[LiveTV] Fatal:', d.type, d.details);
-        noMovieText.textContent = `Stream error: ${d.details} — try refreshing.`;
-        noMovie.style.display = 'block';
-        video.style.display = 'none';
-        currentKey = null;
+        if (isHost) {
+          noMovieText.textContent = 'Reconnecting to channel…';
+          noMovie.style.display = 'block';
+          video.style.display = 'none';
+          currentKey = null;
+          socket.emit('retune-livetv');
+        } else {
+          noMovieText.textContent = 'Stream interrupted — reconnecting…';
+          noMovie.style.display = 'block';
+          video.style.display = 'none';
+          currentKey = null;
+        }
       }
     });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
