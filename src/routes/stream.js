@@ -176,12 +176,7 @@ function rewriteM3u8(content, baseDir, proxyPrefix = '/api/stream/proxy') {
 
 // ── Shared Plex transcode helper ───────────────────────────
 // Extracted so the route handler and prewarmManifest share the same logic.
-async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix, offsetMs = 0, liveSessionPath = null }) {
-  // For live TV, native Plex passes path=/livetv/sessions/{uuid} (from the tune response).
-  // Using /library/metadata/{ratingKey} instead causes Plex to not link the transcode
-  // session to the DVR subscription, so the DVR subscription expires at ~4 min regardless
-  // of keepalive calls.
-  const path = liveSessionPath || `/library/metadata/${ratingKey}`;
+async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix, offsetMs = 0 }) {
   const params = {
     'X-Plex-Token': plexToken,
     'X-Plex-Client-Identifier': CLIENT_ID,
@@ -193,7 +188,7 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
     'X-Plex-Device-Name': 'Movie Night',
     'X-Plex-Version': '1.0.0',
     hasMDE: '1',
-    path,
+    path: `/library/metadata/${ratingKey}`,
     videoResolution: '1920x1080',
     maxVideoBitrate: '8000',
     videoCodec: 'h264',
@@ -203,7 +198,6 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
     mediaIndex: '0',
     partIndex: '0',
     fastSeek: '1',
-    ...(liveSessionPath ? { 'X-Plex-Incomplete-Segments': '1' } : {}),
     ...(offsetMs > 0 ? { offset: offsetMs } : {})
   };
   // Build query string manually — axios encodes '/' as '%2F' in param values,
@@ -232,8 +226,8 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
 router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const { roomId, ratingKey } = req.params;
   if (!/^[\w-]+$/.test(ratingKey)) return res.status(400).send('Invalid ratingKey');
-  const sessionId = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey.slice(0, 24)}`;
-  let cacheKey    = `${roomId}-${ratingKey}`;
+  let actualRatingKey = ratingKey; // may be updated by bust+retune below
+  let cacheKey        = `${roomId}-${ratingKey}`;
 
   // ?bust=1 signals that the client detected a broken stream and needs a fresh
   // Plex session. Evict the stale manifest so we start over below.
@@ -258,7 +252,6 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
 
   // For LiveTV with bust=1, we need to retune to get a fresh Plex session
   // because the old session has expired (~3-4 min for LiveTV)
-  let actualRatingKey = ratingKey;
   if (bust && isLive) {
     const channelId = livetvChannelIds.get(roomId);
     if (channelId) {
@@ -323,8 +316,11 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     }
   }
 
-  const liveSessionPath = isLive ? liveTvSessionKeys.get(cacheKey) : null;
-  const fetchManifest = () => callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey: actualRatingKey, proxyPrefix, offsetMs, liveSessionPath });
+  // Recompute sessionId from actualRatingKey — after a bust+retune, actualRatingKey
+  // may differ from the URL param ratingKey, and using a stale sessionId causes Plex
+  // to reject the new transcode start with 400.
+  const sessionId     = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${actualRatingKey.slice(0, 24)}`;
+  const fetchManifest = () => callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey: actualRatingKey, proxyPrefix, offsetMs });
 
   const promise = fetchManifest();
   manifestPending.set(cacheKey, promise);
@@ -346,7 +342,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
 // Pre-start a Plex transcode session and cache its manifest server-side.
 // Called by doRetune in sync.js so the manifest is already cached by the time
 // clients receive livetv-reload — reducing black-screen time on retune from ~7s to ~2s.
-async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subKey = null, liveSessionPath = null) {
+async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subKey = null) {
   const cacheKey    = `${roomId}-${ratingKey}`;
 
   // Early return if already cached/pending - but still store channel/sub info first
@@ -381,7 +377,7 @@ async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subK
   const plexToken   = isLive ? LIVETV_PLEX_TOKEN  : PLEX_TOKEN;
   const proxyPrefix = isLive ? '/api/stream/proxy-live' : '/api/stream/proxy';
   const sessionId   = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey.slice(0, 24)}`;
-  const promise     = callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix, liveSessionPath });
+  const promise     = callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix });
   manifestPending.set(cacheKey, promise);
   try {
     const manifest = await promise;
