@@ -52,7 +52,7 @@ setInterval(() => {
 //      heartbeat that prevents DVR session cleanup at ~4 minutes
 // The /video/:/transcode/universal/ping endpoint requires the internal transcode UUID
 // (not our session identifier) and is NOT used by the native client.
-function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken) {
+function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken, roomId) {
   stopKeepalive(cacheKey);
   const startedAt = Date.now();
   // Reuse the same UUIDs that were sent in the start.m3u8 request so Plex can
@@ -100,11 +100,38 @@ function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, ple
     }
   }, KEEPALIVE_MS);
   keepaliveTimers.set(cacheKey, timer);
+
+  // For live TV, periodically re-tune WITHOUT stopping the subscription first.
+  // Plex deduplicates the call and returns the same session, but calling tune
+  // again may reset the DVR subscription's TTL — preventing the ~4 min expiry.
+  if (isLive && roomId) {
+    const SOFT_RETUNE_MS = 3 * 60 * 1000; // 3 min — before the ~4 min natural TTL
+    const retuneTimer = setInterval(async () => {
+      const channelId = livetvChannelIds.get(roomId);
+      if (!channelId) return;
+      try {
+        const result = await liveTvManager.tuneChannel(channelId);
+        if (result.ratingKey !== ratingKey) {
+          // Plex issued a new session — update maps so stale requests get redirected
+          console.log(`[HLS] Soft retune: new session ratingKey=${result.ratingKey} (was ${ratingKey})`);
+          livetvCurrentRatingKeys.set(roomId, result.ratingKey);
+          livetvSubKeys.set(roomId, result.subKey);
+        } else {
+          console.log(`[HLS] Soft retune: same session ratingKey=${ratingKey}, TTL refreshed`);
+        }
+      } catch (err) {
+        console.error(`[HLS] Soft retune failed:`, err.message);
+      }
+    }, SOFT_RETUNE_MS);
+    keepaliveTimers.set(cacheKey + '-retune', retuneTimer);
+  }
 }
 
 function stopKeepalive(cacheKey) {
   const timer = keepaliveTimers.get(cacheKey);
   if (timer) { clearInterval(timer); keepaliveTimers.delete(cacheKey); }
+  const retuneTimer = keepaliveTimers.get(cacheKey + '-retune');
+  if (retuneTimer) { clearInterval(retuneTimer); keepaliveTimers.delete(cacheKey + '-retune'); }
 }
 
 // Called by sync.js after a successful tune so keepalive knows the
@@ -338,7 +365,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
     activeSessions.set(cacheKey, { sessionId, ratingKey: actualRatingKey, isLive, plexBaseUrl, plexToken, playbackSessionId, bgSessionId });
-    startKeepalive(cacheKey, sessionId, actualRatingKey, isLive, plexBaseUrl, plexToken);
+    startKeepalive(cacheKey, sessionId, actualRatingKey, isLive, plexBaseUrl, plexToken, roomId);
     manifestPending.delete(cacheKey);
     res.send(manifest);
   } catch (err) {
@@ -394,7 +421,7 @@ async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subK
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
     activeSessions.set(cacheKey, { sessionId, ratingKey, isLive, plexBaseUrl, plexToken, playbackSessionId, bgSessionId });
-    startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken);
+    startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken, roomId);
     manifestPending.delete(cacheKey);
   } catch (err) {
     manifestPending.delete(cacheKey);
