@@ -12,6 +12,12 @@ const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
 // Map to track LiveTV channelId per room (needed for retune on bust)
 const livetvChannelIds = new Map(); // roomId → channelId
 
+// Map to track LiveTV subKey per room (needed to stop subscription on retune)
+const livetvSubKeys = new Map(); // roomId → subKey
+
+// Map to track the current LiveTV ratingKey per room (for redirecting stale requests)
+const livetvCurrentRatingKeys = new Map(); // roomId → currentRatingKey
+
 // Cache the master manifest per room+movie so only the first viewer
 // calls start.m3u8. Latecomers get the cached manifest and share
 // the already-running Plex session — no restart, no 400 errors.
@@ -240,6 +246,16 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const plexToken   = isLive ? LIVETV_PLEX_TOKEN  : PLEX_TOKEN;
   const proxyPrefix = isLive ? '/api/stream/proxy-live' : '/api/stream/proxy';
 
+  // For LiveTV: check if client is using a stale ratingKey (e.g., after retune).
+  // If so, redirect them to the current one to avoid 400 errors from Plex.
+  if (isLive && !bust) {
+    const currentRatingKey = livetvCurrentRatingKeys.get(roomId);
+    if (currentRatingKey && currentRatingKey !== ratingKey) {
+      console.log(`[HLS] Redirecting stale ratingKey ${ratingKey} → ${currentRatingKey} for room ${roomId}`);
+      return res.redirect(`/api/stream/hls/${roomId}/${currentRatingKey}/master.m3u8?live=1`);
+    }
+  }
+
   // For LiveTV with bust=1, we need to retune to get a fresh Plex session
   // because the old session has expired (~3-4 min for LiveTV)
   let actualRatingKey = ratingKey;
@@ -248,13 +264,19 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     if (channelId) {
       console.log(`[HLS] LiveTV bust - retuning to channel ${channelId}`);
       // Delete old subscription first to force a fresh session
-      const oldSubKey = activeSessions.get(cacheKey)?.subKey;
+      // Get subKey from our map (set by prewarmManifest or select-livetv-channel)
+      const oldSubKey = livetvSubKeys.get(roomId);
       if (oldSubKey) {
+        console.log(`[HLS] Stopping old subscription ${oldSubKey}`);
         await liveTvManager.stopSubscription(oldSubKey).catch(() => {});
       }
       // Tune to get fresh ratingKey
       const tuneResult = await liveTvManager.tuneChannel(channelId);
       actualRatingKey = tuneResult.ratingKey;
+      // Update the subKey map with the new subscription key
+      livetvSubKeys.set(roomId, tuneResult.subKey);
+      // Track the current ratingKey so stale requests get redirected
+      livetvCurrentRatingKeys.set(roomId, actualRatingKey);
       // Update cache key with new ratingKey
       const newCacheKey = `${roomId}-${actualRatingKey}`;
       // Clear old keys
@@ -263,7 +285,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       activeSessions.delete(cacheKey);
       // Update for new session
       cacheKey = newCacheKey;
-      console.log(`[HLS] LiveTV retuned to ratingKey=${actualRatingKey}`);
+      console.log(`[HLS] LiveTV retuned to ratingKey=${actualRatingKey}, sub=${tuneResult.subKey}`);
     }
   } else if (bust) {
     stopKeepalive(cacheKey);
@@ -307,8 +329,8 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   try {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
-    activeSessions.set(cacheKey, { sessionId, ratingKey, isLive, plexBaseUrl, plexToken });
-    startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken);
+    activeSessions.set(cacheKey, { sessionId, ratingKey: actualRatingKey, isLive, plexBaseUrl, plexToken });
+    startKeepalive(cacheKey, sessionId, actualRatingKey, isLive, plexBaseUrl, plexToken);
     manifestPending.delete(cacheKey);
     res.send(manifest);
   } catch (err) {
@@ -321,10 +343,18 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
 // Pre-start a Plex transcode session and cache its manifest server-side.
 // Called by doRetune in sync.js so the manifest is already cached by the time
 // clients receive livetv-reload — reducing black-screen time on retune from ~7s to ~2s.
-async function prewarmManifest(roomId, ratingKey, isLive, channelId = null) {
+async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subKey = null) {
   // Store channelId for LiveTV so we can retune on bust=1
   if (isLive && channelId) {
     livetvChannelIds.set(roomId, channelId);
+  }
+  // Store subKey for LiveTV so we can stop the subscription on retune
+  if (isLive && subKey) {
+    livetvSubKeys.set(roomId, subKey);
+  }
+  // Track the current ratingKey for LiveTV rooms
+  if (isLive) {
+    livetvCurrentRatingKeys.set(roomId, ratingKey);
   }
   const cacheKey    = `${roomId}-${ratingKey}`;
   if (manifestCache.has(cacheKey) || manifestPending.has(cacheKey)) return;
