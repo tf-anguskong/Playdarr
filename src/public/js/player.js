@@ -97,6 +97,13 @@ socket.on('room-state', (state) => {
   isHost = state.isHost;
   roomType = state.roomType || 'movie';
   roomNameEl.textContent = state.name || '';
+
+  // For LiveTV, reset currentKey to ensure fresh stream load from Playdarr proxy
+  // This prevents stale connections from previous rooms/sessions
+  if (roomType === 'livetv') {
+    currentKey = null;
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+  }
   setHostUI(isHost, state.inviteToken);
   if (state.settings) applyRoomSettings(state.settings);
   applyState(state);
