@@ -64,7 +64,8 @@ function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, ple
       }).catch(() => {});
     }
   }, KEEPALIVE_MS);
-  keepaliveTimers.set(cacheKey, timer);
+  // Use distinct keys to avoid overwriting - one for main timer, one for live timer
+  keepaliveTimers.set(cacheKey + '-main', timer);
 
   // For LiveTV, use a separate more aggressive keepalive timer (every 1.5s)
   // to ensure Plex doesn't kill the session due to inactivity
@@ -95,14 +96,15 @@ function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, ple
 }
 
 function stopKeepalive(cacheKey) {
-  const timer = keepaliveTimers.get(cacheKey);
-  if (timer) { clearInterval(timer); keepaliveTimers.delete(cacheKey); }
-  // Clear refresh timer too
-  const refreshTimer = keepaliveTimers.get(cacheKey + '-refresh');
-  if (refreshTimer) { clearInterval(refreshTimer); keepaliveTimers.delete(cacheKey + '-refresh'); }
-  // Clear LiveTV keepalive timer
+  // Clear main keepalive timer
+  const timer = keepaliveTimers.get(cacheKey + '-main');
+  if (timer) { clearInterval(timer); keepaliveTimers.delete(cacheKey + '-main'); }
+  // Clear LiveTV keepalive timer (both old '-live' key and legacy keys for backward compat)
   const liveTimer = keepaliveTimers.get(cacheKey + '-live');
   if (liveTimer) { clearInterval(liveTimer); keepaliveTimers.delete(cacheKey + '-live'); }
+  // Clear any remaining timer at the base key (legacy, shouldn't happen but safe to clear)
+  const legacyTimer = keepaliveTimers.get(cacheKey);
+  if (legacyTimer) { clearInterval(legacyTimer); keepaliveTimers.delete(cacheKey); }
 }
 
 function clearRoomManifest(roomId) {

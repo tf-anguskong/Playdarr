@@ -16,9 +16,12 @@ let nowPlayingCache     = null;
 let nowPlayingFetchedAt = 0;
 
 // Simple flags to prevent concurrent fetches
-let isFetchingDvr = false;
-let isFetchingChannels = false;
-let isFetchingNowPlaying = false;
+// Use Promises instead of boolean flags to avoid TOCTOU race conditions.
+// This ensures only one fetch runs and concurrent callers await the same promise.
+let fetchDvrPromise = null;
+let fetchChannelsPromise = null;
+let fetchNowPlayingPromise = null;
+const MAX_WAIT_ATTEMPTS = 20; // Max retries before giving up (20 * 500ms = 10s)
 
 function buildHeaders() {
   const headers = { Accept: 'application/json' };
@@ -28,20 +31,33 @@ function buildHeaders() {
 
 async function fetchDvrInfo(headers) {
   if (cachedEpgId && cachedDvrKey) return; // Already have it
-  if (isFetchingDvr) {
-    // Wait and retry
-    await new Promise(r => setTimeout(r, 500));
-    return fetchDvrInfo(headers);
+
+  // If already fetching, await the existing promise instead of starting another fetch
+  if (fetchDvrPromise) {
+    let attempts = 0;
+    while (fetchDvrPromise && attempts < MAX_WAIT_ATTEMPTS) {
+      await new Promise(r => setTimeout(r, 500));
+      attempts++;
+    }
+    if (cachedEpgId && cachedDvrKey) return; // Check again after waiting
+    // If still no data after waiting, proceed to try fetching ourselves
   }
-  isFetchingDvr = true;
-  try {
+
+  // Create the fetch promise and store it immediately to prevent races
+  const doFetch = async () => {
     const { data } = await axios.get(`${PLEX_HOST}/livetv/dvrs`, { headers, timeout: 10000 });
     const dvr = data?.MediaContainer?.Dvr?.[0];
     if (!dvr) throw new Error('No DVR found');
     cachedEpgId  = dvr.epgIdentifier;
     cachedDvrKey = dvr.key;
+    return { cachedEpgId, cachedDvrKey };
+  };
+
+  fetchDvrPromise = doFetch();
+  try {
+    await fetchDvrPromise;
   } finally {
-    isFetchingDvr = false;
+    fetchDvrPromise = null;
   }
 }
 
@@ -121,71 +137,88 @@ async function getGuide() {
   const now     = Date.now();
   const headers = buildHeaders();
 
-  // Channels cache with flag to prevent duplicate fetches
+  // Channels cache with promise-based lock to prevent duplicate fetches
   if (!channelsCache || now - channelsFetchedAt >= GUIDE_TTL_MS) {
-    if (isFetchingChannels) {
-      await new Promise(r => setTimeout(r, 500));
-      return getGuide(); // Retry after waiting
+    // If already fetching, await the existing promise instead of starting another fetch
+    if (fetchChannelsPromise) {
+      let attempts = 0;
+      while (fetchChannelsPromise && attempts < MAX_WAIT_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, 500));
+        attempts++;
+      }
+      // Check cache again after waiting - may have been populated by another request
+      if (channelsCache && now - channelsFetchedAt < GUIDE_TTL_MS) {
+        return formatChannelResponse();
+      }
+      // If still stale after waiting, proceed to try fetching ourselves
     }
-    isFetchingChannels = true;
-    try {
-      // Check again after acquiring lock
-      if (channelsCache && now - channelsFetchedAt < GUIDE_TTL_MS) return {
-        channels: channelsCache.map(ch => {
-          const prog   = nowPlayingCache?.[ch.callSign] || nowPlayingCache?.[ch.number];
-          const result = { channelId: ch.channelId, number: ch.number, title: ch.title, thumb: ch.thumb };
-          if (prog) result.nowPlaying = prog;
-          return result;
-        }),
-      };
 
-      channelsCache     = await fetchChannels(headers);
-      channelsFetchedAt = now;
-      nowPlayingCache   = null;
+    // Create the fetch promise and store it immediately to prevent races
+    const doFetch = async () => {
+      const channels = await fetchChannels(headers);
+      channelsCache     = channels;
+      channelsFetchedAt = Date.now();
+      nowPlayingCache   = null; // Invalidate now-playing when channels change
+      return channels;
+    };
+
+    fetchChannelsPromise = doFetch();
+    try {
+      await fetchChannelsPromise;
     } catch (err) {
       console.error('[LiveTV] guide fetch error:', err.message);
       if (!channelsCache) return { channels: [] };
     } finally {
-      isFetchingChannels = false;
+      fetchChannelsPromise = null;
     }
   }
 
-  // Now playing cache with flag to prevent duplicate fetches
+  // Now playing cache with promise-based lock to prevent duplicate fetches
   if (!nowPlayingCache || now - nowPlayingFetchedAt >= NOW_PLAYING_TTL_MS) {
-    if (isFetchingNowPlaying) {
-      await new Promise(r => setTimeout(r, 500));
-      return getGuide(); // Retry after waiting
+    // If already fetching, await the existing promise
+    if (fetchNowPlayingPromise) {
+      let attempts = 0;
+      while (fetchNowPlayingPromise && attempts < MAX_WAIT_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, 500));
+        attempts++;
+      }
+      // Check cache again after waiting
+      if (nowPlayingCache && now - nowPlayingFetchedAt < NOW_PLAYING_TTL_MS) {
+        return formatChannelResponse();
+      }
     }
-    isFetchingNowPlaying = true;
-    try {
-      // Check again after acquiring lock
-      if (nowPlayingCache && now - nowPlayingFetchedAt < NOW_PLAYING_TTL_MS) return {
-        channels: channelsCache.map(ch => {
-          const prog   = nowPlayingCache?.[ch.callSign] || nowPlayingCache?.[ch.number];
-          const result = { channelId: ch.channelId, number: ch.number, title: ch.title, thumb: ch.thumb };
-          if (prog) result.nowPlaying = prog;
-          return result;
-        }),
-      };
 
-      nowPlayingCache     = await fetchNowPlaying(headers);
-      nowPlayingFetchedAt = now;
+    // Create the fetch promise
+    const doFetch = async () => {
+      const programs = await fetchNowPlaying(headers);
+      nowPlayingCache     = programs;
+      nowPlayingFetchedAt = Date.now();
+      return programs;
+    };
+
+    fetchNowPlayingPromise = doFetch();
+    try {
+      await fetchNowPlayingPromise;
     } catch (err) {
       console.error('[LiveTV] now-playing fetch error:', err.message);
       nowPlayingCache = nowPlayingCache || {};
     } finally {
-      isFetchingNowPlaying = false;
+      fetchNowPlayingPromise = null;
     }
   }
 
-  return {
-    channels: channelsCache.map(ch => {
-      const prog   = nowPlayingCache?.[ch.callSign] || nowPlayingCache?.[ch.number];
-      const result = { channelId: ch.channelId, number: ch.number, title: ch.title, thumb: ch.thumb };
-      if (prog) result.nowPlaying = prog;
-      return result;
-    }),
-  };
+  return formatChannelResponse();
+
+  function formatChannelResponse() {
+    return {
+      channels: channelsCache.map(ch => {
+        const prog   = nowPlayingCache?.[ch.callSign] || nowPlayingCache?.[ch.number];
+        const result = { channelId: ch.channelId, number: ch.number, title: ch.title, thumb: ch.thumb };
+        if (prog) result.nowPlaying = prog;
+        return result;
+      }),
+    };
+  }
 }
 
 module.exports = { getGuide, tuneChannel, stopSubscription };
