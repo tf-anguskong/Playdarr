@@ -122,11 +122,11 @@ socket.on('kicked', () => {
 
 socket.on('state', applyState);
 
-// Server-side retune produced the same ratingKey — HLS manifest cache won't
+// Server-side retune produced the same ratingKey — DASH manifest cache won't
 // detect a change, so the server broadcasts this to force a fresh manifest fetch.
 socket.on('livetv-reload', () => {
   if (roomType !== 'livetv' || !currentKey) return;
-  loadLiveTvHls(currentKey);
+  loadLiveTvDash(currentKey);
 });
 
 socket.on('room-error', (msg) => {
@@ -377,6 +377,42 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
 }
 
 // ── Live TV player (HLS via Plex transcode proxy) ────────────
+let dashPlayer = null;
+
+function loadLiveTvDash(ratingKey) {
+  if (dashPlayer) { dashPlayer.destroy(); dashPlayer = null; }
+  if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+  hidePlayOverlay();
+  document.getElementById('yt-player-container').style.display = 'none';
+
+  // Use DASH endpoint instead of HLS for LiveTV
+  // DASH is the only transcode path where Plex accepts path=/livetv/sessions/{uuid}
+  // which properly links the transcode to the DVR subscription and prevents timeout
+  const src = `/api/stream/dash/${roomId}/${ratingKey}/manifest.mpd`;
+
+  if (typeof dashjs !== 'undefined' || typeof Dash !== 'undefined') {
+    const DashPlayer = typeof dashjs !== 'undefined' ? dashjs.MediaPlayer : Dash.MediaPlayer;
+    dashPlayer = DashPlayer.create();
+    dashPlayer.initialize(video, src, true);
+    dashPlayer.on('manifestLoaded', () => {
+      console.log('[LiveTV DASH] Manifest loaded');
+      releaseSyncLock();
+    });
+    dashPlayer.on('error', (e) => {
+      console.error('[LiveTV DASH] Error:', e);
+    });
+    // Try to play after a short delay to let the player initialize
+    setTimeout(() => {
+      tryPlay();
+    }, 500);
+  } else {
+    console.error('[LiveTV] dash.js not loaded, falling back to native playback');
+    video.src = src;
+    tryPlay();
+  }
+}
+
+// Legacy HLS loader kept for backwards compatibility but not used for LiveTV
 function loadLiveTvHls(ratingKey) {
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   hidePlayOverlay();
@@ -485,10 +521,10 @@ function applyLiveTvState(state) {
   // Track the active channel number for guide highlighting
   activeLiveTvChannel = state.liveTvChannel || null;
 
-  // Channel change → reload stream via Plex transcode proxy
+  // Channel change → reload stream via Plex transcode proxy (using DASH for LiveTV)
   if (state.movieKey && state.movieKey !== currentKey) {
     currentKey = state.movieKey;
-    loadLiveTvHls(state.movieKey);
+    loadLiveTvDash(state.movieKey);
   }
 
   // Compute target from server state — same smooth extrapolation as movie sync
