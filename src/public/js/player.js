@@ -394,9 +394,9 @@ function loadLiveTvHls(ratingKey) {
         hlsInstance.recoverMediaError();
       } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR && liveTvRetryCount < LIVE_TV_MAX_RETRIES) {
         liveTvRetryCount++;
-        // Exponential backoff: 1s, 2s, 4s, 8s
-        const delay = Math.pow(2, liveTvRetryCount - 1) * 1000;
-        console.warn(`[LiveTV] Network error, retry ${liveTvRetryCount}/${LIVE_TV_MAX_RETRIES} in ${delay}ms:`, d.details);
+        // For LiveTV, retry immediately (no delay) - exponential backoff is too slow
+        const delay = 0;
+        console.warn(`[LiveTV] Network error, retry ${liveTvRetryCount}/${LIVE_TV_MAX_RETRIES} immediately:`, d.details);
         const bustSrc = `${src}&bust=1`;
         setTimeout(() => {
           if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
