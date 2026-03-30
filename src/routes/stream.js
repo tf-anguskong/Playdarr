@@ -84,27 +84,47 @@ function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, ple
     const PROACTIVE_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
     const proactiveTimer = setTimeout(async () => {
       console.log(`[HLS] Proactive session refresh for ${cacheKey} (3 min mark)`);
-      // Get the subKey for this room to stop old subscription
       const roomId = cacheKey.split('-')[0];
-      const subKey = livetvSubKeys.get(roomId);
-      const oldSubKey = subKey;
+      const channelId = livetvChannelIds.get(roomId);
+      if (!channelId) {
+        console.log(`[HLS] No channelId for proactive refresh, skipping`);
+        return;
+      }
 
-      // Stop old subscription and clean stale sessions
+      const liveTvManager = require('../livetv-manager');
+
+      // FIRST: Create a new session by tuning (while old one is still alive)
+      let newRatingKey, newSubKey;
+      try {
+        const tuneResult = await liveTvManager.tuneChannel(channelId);
+        newRatingKey = tuneResult.ratingKey;
+        newSubKey = tuneResult.subKey;
+        console.log(`[HLS] Proactive: new session ratingKey=${newRatingKey}, subKey=${newSubKey}`);
+      } catch (err) {
+        console.error(`[HLS] Proactive tune failed:`, err.message);
+        // Continue anyway - let the client-triggered retune handle it
+      }
+
+      // THEN: Stop old subscription
+      const oldSubKey = livetvSubKeys.get(roomId);
       if (oldSubKey) {
-        const liveTvManager = require('../livetv-manager');
+        console.log(`[HLS] Proactive: stopping old subscription ${oldSubKey}`);
         await liveTvManager.stopSubscription(oldSubKey).catch(() => {});
       }
 
-      // Clear caches so next request creates fresh session
+      // Update maps with new session info
+      if (newRatingKey && newSubKey && roomId) {
+        const newCacheKey = `${roomId}-${newRatingKey}`;
+        livetvSubKeys.set(roomId, newSubKey);
+        livetvCurrentRatingKeys.set(roomId, newRatingKey);
+        // Pre-warm the new manifest
+        await prewarmManifest(roomId, newRatingKey, true, channelId, newSubKey).catch(() => {});
+      }
+
+      // Clean up old caches
       stopKeepalive(cacheKey);
       manifestCache.delete(cacheKey);
       activeSessions.delete(cacheKey);
-
-      // Clear the subKey so next tune gets a fresh one
-      if (roomId) {
-        livetvSubKeys.delete(roomId);
-        livetvCurrentRatingKeys.delete(roomId);
-      }
 
       console.log(`[HLS] Proactive refresh complete for ${cacheKey}`);
     }, PROACTIVE_REFRESH_MS);

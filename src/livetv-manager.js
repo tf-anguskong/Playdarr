@@ -151,7 +151,24 @@ async function tuneChannel(channelId) {
   // The tune response nests metadata under MediaSubscription[0].MediaGrabOperation[0].Metadata
   const sub  = data?.MediaContainer?.MediaSubscription?.[0];
   const meta = sub?.MediaGrabOperation?.[0]?.Metadata;
-  if (!meta?.ratingKey) throw new Error('Tune response missing ratingKey');
+
+  // If no ratingKey, wait and retry once (Plex may be slow to provision)
+  if (!meta?.ratingKey) {
+    console.log(`[LiveTV] Tune response missing ratingKey, waiting and retrying...`);
+    await new Promise(r => setTimeout(r, 2000));
+    const retry = await axios.post(url, null, {
+      headers,
+      params: { 'X-Plex-Client-Identifier': CLIENT_ID },
+      timeout: 15000,
+    });
+    const sub2 = retry.data?.MediaContainer?.MediaSubscription?.[0];
+    const meta2 = sub2?.MediaGrabOperation?.[0]?.Metadata;
+    if (!meta2?.ratingKey) {
+      throw new Error('Tune response missing ratingKey (after retry)');
+    }
+    console.log(`[LiveTV] Retuned channel ${channelId} → ratingKey ${meta2.ratingKey} (sub ${sub2.key})`);
+    return { ratingKey: meta2.ratingKey, subKey: sub2.key };
+  }
 
   console.log(`[LiveTV] Tuned channel ${channelId} → ratingKey ${meta.ratingKey} (sub ${sub.key})`);
   return { ratingKey: meta.ratingKey, subKey: sub.key };
