@@ -84,7 +84,11 @@ function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, ple
     const PROACTIVE_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
     const proactiveTimer = setTimeout(async () => {
       console.log(`[HLS] Proactive session refresh for ${cacheKey} (3 min mark)`);
-      const roomId = cacheKey.split('-')[0];
+      // cacheKey is ${roomId}-${ratingKey}, but roomId contains dashes
+      // So extract roomId by finding the last dash (ratingKey is numeric)
+      const lastDash = cacheKey.lastIndexOf('-');
+      const roomId = cacheKey.substring(0, lastDash);
+      console.log(`[HLS] Proactive: roomId=${roomId}, cacheKey=${cacheKey}`);
       const channelId = livetvChannelIds.get(roomId);
       if (!channelId) {
         console.log(`[HLS] No channelId for proactive refresh, skipping`);
