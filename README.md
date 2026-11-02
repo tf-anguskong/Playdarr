@@ -198,6 +198,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `HDHR_IP` | No | LAN address of your HDHomeRun tuner. When set, Live TV video is pulled directly from it via ffmpeg and Plex is used only for the guide. If unset, Live TV tunes through Plex's DVR instead. |
 | `HDHR_PORT` | No | HDHomeRun streaming port (default: `5004`) |
 | `LIVETV_MAX_ROOMS` | No | Most Live TV rooms that may be **streaming** at once (default: `2`). Each holds a tuner and an encoder, so keep it at or below your tuner count and what your CPU/GPU can encode. A third room is turned away with "Live TV is full right now". Idle rooms (e.g. an empty always-on room) don't count, and the lobby shows "N of M rooms in use". |
+| `LIVETV_PAUSE_COOLDOWN_SEC` | No | Seconds that must pass between pauses in a Live TV room (default: `10`, `0` turns it off). Rapid play/pause thrashes the recording and can break the stream, so a pause that comes too soon is undone with "You can pause again in Ns". Movie and TV rooms are not limited. |
 | `LIVETV_SOURCE` | No | `hdhr` (default when `HDHR_IP` is set) or `plex` to force the Plex DVR path |
 | `LIVETV_BUFFER_SEC` | No | Live TV playback buffer in seconds (default: `10`, range 4–60). Rooms play this far behind the newest recorded video, so larger values ride out hiccups but add delay and lengthen start-up |
 | `LIVETV_X264_PRESET` | No | x264 speed/quality preset for the software encode (default: `veryfast`) |

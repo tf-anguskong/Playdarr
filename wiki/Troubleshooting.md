@@ -76,6 +76,7 @@ See [Always-On Rooms](Always-On-Rooms#troubleshooting).
 
 | Symptom | Cause and fix |
 |---|---|
+| "You can pause again in Ns" (Live TV) | The pause cooldown (default 10 s between pauses) stopped a too-quick second pause. Wait the few seconds, or change or turn it off under Admin → Settings → Live TV pause cooldown |
 | "Live TV is full right now" | You've reached `LIVETV_MAX_ROOMS` (default 2). Wait for a room to end, or raise it in `.env` (up to your tuner count and what your CPU/GPU can encode) |
 | High CPU during Live TV | Software encoding is about one core per room — use [GPU encoding](Live-TV-Administration#hardware-encoding-intel-or-amd-igpu) |
 | Disk filling | Live TV recordings are ~3–4 GB per room-hour; close idle Live TV rooms; they're deleted on close and at startup |

@@ -26,7 +26,7 @@ const GROUPS = [
   { id: 'rooms', title: 'Room types', blurb: 'Which kinds of rooms people can start from the lobby. Rooms that are already open keep running.' },
   { id: 'scheduling', title: 'Scheduling' },
   { id: 'tuner', title: 'Live TV · source', blurb: 'Where Live TV video and the channel guide come from.' },
-  { id: 'capacity', title: 'Live TV · capacity', blurb: 'Keep Live TV within what your tuners and server can handle.' },
+  { id: 'capacity', title: 'Live TV · capacity & playback', blurb: 'Keep Live TV within what your tuners and server can handle.' },
   { id: 'quality', title: 'Live TV · picture quality' },
   { id: 'hardware', title: 'Live TV · hardware encoding', blurb: 'Encode on a graphics chip instead of the CPU (Linux only).' },
   { id: 'server', title: 'Server connection', blurb: 'These are read-only here. Change them in your .env file, then recreate the container.', readOnly: true },
@@ -62,6 +62,8 @@ const DEFS = [
   // ── Capacity ──
   { id: 'maxLiveTvRooms', group: 'capacity', env: 'LIVETV_MAX_ROOMS', type: 'int', default: 2, min: 1, max: 32,
     label: 'Most Live TV rooms at once', description: 'How many Live TV rooms can stream at the same time. Each one uses a tuner and an encoder, so keep this at or below your tuner count.' },
+  { id: 'pauseCooldown', group: 'capacity', env: 'LIVETV_PAUSE_COOLDOWN_SEC', type: 'int', default: 10, min: 0, max: 120, unit: 'seconds',
+    label: 'Live TV pause cooldown', description: 'How long to wait before a Live TV room can be paused again. Stops rapid play/pause from disrupting the stream. 0 turns it off.' },
   { id: 'bufferSec', group: 'capacity', env: 'LIVETV_BUFFER_SEC', type: 'int', default: 10, min: 4, max: 60, unit: 'seconds',
     label: 'Live TV playback buffer', description: 'How far behind live each room plays. Higher is smoother but adds delay and a longer start-up.' },
 

@@ -1019,10 +1019,29 @@ video.addEventListener('play', () => {
   const pos = playbackPos();
   if (pos != null) socket.emit('play', { position: pos });
 });
+// Live TV: pauses can't be spammed (the server enforces a cooldown between them). If the host pauses again too
+// soon, keep playing and say why — undone straight away here rather than waiting for the server to refuse it.
+let lastPauseSentAt = -1e9;
+const pauseCooldownMsLeft = () => Math.max(0, lastPauseSentAt + (liveState?.pauseCooldownSec ?? 10) * 1000 - performance.now());
+function undoPause(waitSec) {
+  isSyncing = true; video.play().catch(() => {}); releaseSyncLock();
+  showNotif(`⏸ You can pause again in ${waitSec}s`);
+}
+socket.on('pause-denied', ({ waitSec } = {}) => {   // the server's word wins if the clocks disagree
+  if (roomType !== 'livetv') return;
+  lastPauseSentAt = performance.now() + (waitSec || 1) * 1000 - (liveState?.pauseCooldownSec ?? 10) * 1000;
+  undoPause(waitSec || 1);
+});
+
 video.addEventListener('pause',  () => {
   if (isSyncing) return;
   if (livetvGuest()) return;
   if (roomSettings.playbackLocked && !isHost) return;
+  if (roomType === 'livetv' && liveState && liveState.playing) {
+    const left = pauseCooldownMsLeft();
+    if (left > 0) { undoPause(Math.ceil(left / 1000)); return; }
+    lastPauseSentAt = performance.now();
+  }
   const pos = playbackPos();
   if (pos != null) socket.emit('pause', { position: pos });
 });

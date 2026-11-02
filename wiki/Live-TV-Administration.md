@@ -54,6 +54,14 @@ LIVETV_MAX_ROOMS=3
 - **In the lobby**, the *Live TV · on now* row shows how many rooms are in use ("1 of 2 rooms in use"), and its cards are greyed out and disabled while it's full. People can still join Live TV rooms that are already open.
 - **Pick a sensible number:** at most your tuner count (a 4-tuner HDHomeRun means 4), and fewer if your CPU can't encode that many at once. See the capacity table below.
 
+## Pause cooldown: `LIVETV_PAUSE_COOLDOWN_SEC`
+
+Pausing and resuming over and over disrupts a Live TV stream, so Playdarr enforces a gap between pauses: **by default, 10 seconds** after one pause, the next pause is refused. The host's player undoes it immediately and shows *"You can pause again in 9s"*; the room carries on playing and nobody else sees a thing. Resuming is never blocked, and the first pause is instant.
+
+- Set it in `.env` or under **Admin → Settings → Live TV pause cooldown**. `0` turns it off, and the maximum is 120 seconds. It applies immediately.
+- It applies to **Live TV rooms only**. Movie, TV and YouTube rooms can be paused as often as people like.
+- It's enforced on the server, so it can't be bypassed, and a fresh channel tune starts with a clean slate.
+
 ## Capacity planning
 
 | Resource | What to expect |

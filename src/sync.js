@@ -94,6 +94,7 @@ class Room {
       liveTvProgram: this.roomType === 'livetv' ? (this.liveTvProgram || null) : null,
       liveDvr: this.roomType === 'livetv' ? (getDvr(this.id)?.info() || null) : null,
       liveBufferSec: this.roomType === 'livetv' ? (this.liveTvSource === 'hdhr' ? HDHR_START_BEHIND_SEC : LIVE_START_BEHIND_SEC) : null,
+      pauseCooldownSec: this.roomType === 'livetv' ? pauseCooldownMs() / 1000 : 0,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -196,6 +197,7 @@ function resetPersistentRoom(io, room) {
   room.vote = null;
   room.bannedIds = null;
   room._tuneGen = (room._tuneGen || 0) + 1;   // any tune still in flight belongs to the previous occupants
+  room.lastPauseAt = 0;
   room.settings = { playbackLocked: false, reactionsEnabled: true };
   room.hostId = null; room.hostName = 'always on'; room.hostPicture = null;
   room.hostIsGuest = false; room.hostSocketId = null; room.awaitingHost = true;
@@ -355,6 +357,13 @@ settings.onChange('maxLiveTvRooms', () => {
  * so it doesn't count. `except` leaves one room out, so a channel change in a room that's already
  * streaming isn't treated as taking a second slot.
  */
+// Live TV: how long must pass between pauses (rapid play/pause thrashes the recording and breaks the stream).
+// LIVETV_PAUSE_COOLDOWN_SEC, default 10, 0 = off. Read on use so the admin Settings page applies it immediately.
+const pauseCooldownMs = () => {
+  const n = parseInt(process.env.LIVETV_PAUSE_COOLDOWN_SEC, 10);
+  return (Number.isFinite(n) ? Math.max(0, Math.min(120, n)) : 10) * 1000;
+};
+
 function liveTvInUse(except = null) {
   let n = 0;
   for (const r of rooms.values()) {
@@ -442,6 +451,7 @@ async function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
     return message;
   }
   room._tuningInProgress = true;
+  room.lastPauseAt = 0;
   const gen = room._tuneGen || 0;
   // True once the room was closed, or reset (always-on) while we were still tuning
   const stale = () => rooms.get(room.id) !== room || (room._tuneGen || 0) !== gen;
@@ -964,6 +974,13 @@ function setupSync(io, enabledRoomTypes) {
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      // Live TV: no pause spam. A pause that comes too soon after the last one is refused and the pauser's
+      // player resumes (the room never actually paused, so nothing changes for anyone else).
+      if (room.roomType === 'livetv' && room.playing) {
+        const wait = (room.lastPauseAt || 0) + pauseCooldownMs() - Date.now();
+        if (wait > 0) { socket.emit('pause-denied', { waitSec: Math.ceil(wait / 1000) }); return; }
+      }
+      if (room.roomType === 'livetv') room.lastPauseAt = Date.now();
       room.position = position ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
