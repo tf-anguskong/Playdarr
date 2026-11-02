@@ -199,7 +199,7 @@
       <div id="show-browser-shows" class="show-browser-panel">
         <div class="browser-toolbar" style="margin-bottom:1rem;flex-shrink:0">
           <input type="text" id="show-search-input" class="search-input" placeholder="Search shows…" autocomplete="off">
-          <span id="show-count" class="movie-count"></span>
+          <span id="show-count" class="movie-count"></span><div class="view-toggle"><button type="button" class="view-toggle-btn active" data-view="grid">grid</button><button type="button" class="view-toggle-btn" data-view="list">list</button></div>
         </div>
         <div id="shows-grid" class="movies-grid modal-grid"></div>
       </div>
@@ -231,7 +231,7 @@
             <option value="rating">Rating</option>
           </select>
         </div>
-        <span id="movie-count" class="movie-count"></span>
+        <span id="movie-count" class="movie-count"></span><div class="view-toggle"><button type="button" class="view-toggle-btn active" data-view="grid">grid</button><button type="button" class="view-toggle-btn" data-view="list">list</button></div>
       </div>
       <div id="movies-grid" class="movies-grid modal-grid"></div>
     </div>
@@ -253,5 +253,6 @@
   <script src="/js/hls.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="/js/player.js"></script>
+  <script src="/js/viewtoggle.js"></script>
 </body>
 </html>

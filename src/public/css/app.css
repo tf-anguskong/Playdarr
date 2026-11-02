@@ -1242,13 +1242,13 @@ body {
 .header { background: var(--pd-bg-elevated); border-bottom: 1px solid var(--pd-border); padding: 0.85rem 1.4rem; }
 .header-logo, .login-card h1 {
   font: 700 15px/1 var(--pd-font-mono); letter-spacing: -.02em; color: var(--pd-text);
-  display: inline-flex; align-items: center; gap: 9px;
+  display: inline-flex; align-items: center; gap: 0;
 }
 .header-logo::before {
-  content: "B8"; width: 26px; height: 26px; border-radius: 6px; background: var(--pd-accent);
-  color: var(--pd-accent-ink); display: inline-grid; place-items: center; font: 700 14px/1 var(--pd-font-mono);
+  content: ""; width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; margin-right: 9px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M8 5.5v13l11-6.5z' fill='%231a1209'/%3E%3C/svg%3E") center/18px no-repeat, var(--pd-accent);
 }
-.login-logo { background: var(--pd-accent); color: var(--pd-accent-ink); border-radius: 8px; display: grid; place-items: center; font-family: var(--pd-font-mono); font-weight: 700; width: 44px; height: 44px; font-size: 24px; margin: 0 auto 1rem; }
+.login-logo { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M8 5.5v13l11-6.5z' fill='%231a1209'/%3E%3C/svg%3E") center/30px no-repeat, var(--pd-accent); border-radius: 8px; width: 44px; height: 44px; margin: 0 auto 1rem; font-size: 0; }
 .login-card h1 { font-size: 1.6rem; display: block; }
 .login-card h1 .dk, .header-logo .dk { color: var(--pd-accent); }
 .login-card, .room-card, .movie-card, .modal, .sidebar { box-shadow: none; }
@@ -1278,3 +1278,21 @@ body {
 /* filter chips / segmented controls */
 .btn-room-type { border-radius: 5px; font-size: 10.5px; }
 .btn-room-type.active { background: var(--pd-accent); color: var(--pd-accent-ink); border-color: transparent; }
+
+/* ── PICKER FIXES + LIST VIEW ────────────────────────────── */
+
+/* Without this the implicit rows collapse to the card borders and posters overlap */
+.movies-grid { grid-auto-rows: max-content; }
+
+.view-toggle { display: inline-flex; border: 1px solid var(--pd-border-strong); border-radius: 6px; overflow: hidden; margin-left: 0.75rem; }
+.view-toggle-btn { background: transparent; border: none; color: var(--pd-text-faint); padding: 0.4rem 0.7rem; font: 500 11px/1 var(--pd-font-mono); cursor: pointer; }
+.view-toggle-btn.active { background: var(--pd-accent-tint-2); color: var(--pd-accent); }
+.browser-toolbar { align-items: center; }
+
+.modal-grid.movies-grid.view-list { grid-template-columns: 1fr; gap: 0; }
+.view-list .movie-card { display: flex; align-items: center; gap: 0.85rem; border-radius: 0; border-width: 0 0 1px 0; border-color: var(--pd-border-faint); background: transparent; padding: 0.35rem 0.5rem; }
+.view-list .movie-card:hover { background: var(--pd-accent-tint); border-color: var(--pd-border-faint); }
+.view-list .movie-poster, .view-list .movie-poster-placeholder { width: 34px; height: 51px; aspect-ratio: auto; flex-shrink: 0; border-radius: 3px; font-size: 1rem; object-fit: cover; }
+.view-list .movie-info { padding: 0; display: flex; align-items: baseline; gap: 0.75rem; flex: 1; min-width: 0; }
+.view-list .movie-info h3 { font-size: 13px; margin: 0; flex: 1; min-width: 0; }
+.view-list .movie-info span { font-family: var(--pd-font-mono); flex-shrink: 0; }
