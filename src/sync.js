@@ -1100,4 +1100,11 @@ function adminCloseRoom(roomId, reason = 'Closed by the server owner') {
   return true;
 }
 
-module.exports = { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, adminCloseRoom };
+/** Plex user ids with at least one open socket (lobby or room) right now. */
+function onlineUserIds() {
+  const ids = new Set();
+  if (_io) for (const s of _io.sockets.sockets.values()) if (s.user && !s.user.isGuest) ids.add(String(s.user.id));
+  return ids;
+}
+
+module.exports = { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, adminCloseRoom, onlineUserIds };

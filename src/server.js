@@ -27,6 +27,7 @@ const scheduleRouter = require('./routes/schedule');
 const adminRouter = require('./routes/admin');
 const recentRouter = require('./routes/recent');
 const notifier = require('./notifier');
+const users = require('./users');
 const { buildIcs, googleCalendarUrl } = require('./ical');
 
 const enabledRoomTypes = {
@@ -95,6 +96,10 @@ io.use((socket, next) => {
 });
 io.use((socket, next) => {
   const user = socket.request.session?.user;
+  if (user && !user.isGuest) {
+    // The registry owns nicknames, so a reset by the owner (or a change from another device) applies here
+    user.displayName = users.touch(user).nickname || undefined;
+  }
   if (user) { socket.user = user; next(); }
   else next(new Error('Unauthorized'));
 });
@@ -161,12 +166,15 @@ app.get('/api/me', (req, res) => {
     const user = req.session?.user || null;
     if (!user) return res.json({ user: null });
     const { plexToken, ...safeUser } = user;
+    if (!user.isGuest) safeUser.displayName = users.touch(user).nickname || undefined;
     res.json({ user: safeUser });
 });
 
 app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
   const name = sanitizeText((req.body?.name || '').trim().slice(0, 40));
   if (!name) return res.status(400).json({ error: 'Name required' });
+  users.touch(req.session.user);
+  users.setNickname(req.session.user.id, name);    // remembered across sign-ins
   req.session.user.displayName = name;
   req.session.save(err => {
     if (err) return res.status(500).json({ error: 'Session error' });

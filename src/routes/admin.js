@@ -3,6 +3,8 @@
 const express  = require('express');
 const router   = express.Router();
 const notifier = require('../notifier');
+const users    = require('../users');
+const { onlineUserIds } = require('../sync');
 
 // Mounted at /api/admin behind requireAdmin (the Plex server owner) in server.js.
 
@@ -46,6 +48,20 @@ router.post('/webhooks/:id/test', async (req, res) => {
   const status = await notifier.test(req.params.id);
   if (!status) return res.status(404).json({ error: 'Webhook not found' });
   res.json({ status });
+});
+
+// Everyone who has signed in with Plex, with the nickname they chose (most recently seen first)
+router.get('/users', (req, res) => {
+  const online = onlineUserIds();
+  res.json({ users: users.list().map(u => ({ ...u, online: online.has(u.id) })) });
+});
+
+// Clear a nickname (e.g. an inappropriate one). They can set a new one; it takes effect on their next page load.
+router.delete('/users/:id/nickname', (req, res) => {
+  const u = users.setNickname(req.params.id, null);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  console.log(`[Admin] ${req.session.user.name} cleared the nickname of ${u.name}`);
+  res.json({ ok: true });
 });
 
 module.exports = router;

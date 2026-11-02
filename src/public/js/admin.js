@@ -162,6 +162,53 @@ $('rooms-list').addEventListener('click', (e) => {
 });
 socket.on('error-msg', msg => alert(msg));
 
+// ── People ─────────────────────────────────────────────────
+let people = [];
+
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  const d = Math.round(s / 86400);
+  return d < 60 ? `${d} d ago` : new Date(iso).toLocaleDateString();
+}
+
+function renderPeople() {
+  const q = $('people-search').value.trim().toLowerCase();
+  const list = people.filter(p => !q || `${p.name} ${p.nickname || ''}`.toLowerCase().includes(q));
+  if (!people.length) { $('people-list').innerHTML = '<div class="loading">Nobody has signed in yet.</div>'; return; }
+  if (!list.length)   { $('people-list').innerHTML = '<div class="loading">No one matches that search.</div>'; return; }
+  $('people-list').innerHTML = list.map(p => `
+    <div class="admin-row">
+      ${p.picture ? `<img class="admin-avatar" src="${esc(p.picture)}" alt="">` : `<div class="admin-avatar admin-avatar-none">${esc((p.nickname || p.name || '?')[0].toUpperCase())}</div>`}
+      <div class="admin-row-main">
+        <div class="admin-row-title">${esc(p.nickname || p.name)}${p.online ? ' <span class="admin-online" title="Connected now"></span>' : ''}</div>
+        <div class="admin-row-sub">${p.nickname ? `Plex name: ${esc(p.name)} · ` : 'No nickname set · '}${p.online ? 'online now' : `last seen ${esc(ago(p.lastSeen))}`}${p.logins ? ` · ${p.logins} sign-in${p.logins === 1 ? '' : 's'}` : ''} · first seen ${esc(new Date(p.firstSeen).toLocaleDateString())}</div>
+      </div>
+      <div class="admin-row-actions">
+        ${p.nickname ? `<button class="btn-kick" data-clear="${esc(p.id)}" data-name="${esc(p.nickname)}">Reset nickname</button>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+async function loadPeople() {
+  try {
+    people = (await api('GET', '/api/admin/users')).users;
+    renderPeople();
+  } catch (err) {
+    $('people-list').innerHTML = `<div class="loading">${esc(err.message)}</div>`;
+  }
+}
+
+$('people-search').addEventListener('input', renderPeople);
+$('people-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-clear]');
+  if (!btn || !confirm(`Clear the nickname "${btn.dataset.name}"? They can pick a new one.`)) return;
+  try { await api('DELETE', `/api/admin/users/${encodeURIComponent(btn.dataset.clear)}/nickname`); loadPeople(); }
+  catch (err) { alert(err.message); }
+});
+
 // ── Scheduled & recurring ──────────────────────────────────
 async function loadScheduled() {
   try {
@@ -216,4 +263,6 @@ $('sched-list').addEventListener('click', async (e) => {
 
 loadWebhooks();
 loadScheduled();
+loadPeople();
 setInterval(loadScheduled, 60000);
+setInterval(loadPeople, 30000);

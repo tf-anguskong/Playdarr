@@ -1480,3 +1480,8 @@ body {
 .recent-modal-sub { font: 400 11px var(--pd-font-mono); color: var(--pd-text-muted); margin: 0.2rem 0 0.8rem; }
 .recent-modal-text { font-size: 0.85rem; color: var(--pd-text-2); margin-bottom: 1rem; }
 @media (max-width: 480px) { .recent-modal { flex-direction: column; } .recent-modal-poster { width: 100px; } }
+
+.admin-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.admin-avatar-none { display: flex; align-items: center; justify-content: center; background: var(--pd-accent); color: #111; font: 700 14px var(--pd-font-mono); }
+.admin-online { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #5fb878; vertical-align: middle; margin-left: 0.3rem; }
+#people-list .admin-row { align-items: center; }
