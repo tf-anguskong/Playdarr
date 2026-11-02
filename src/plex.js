@@ -87,4 +87,20 @@ async function getShowChildren(ratingKey) {
   return res.data.MediaContainer.Metadata || [];
 }
 
-module.exports = { getMovieSections, getMovies, getMovieDetails, getShowSections, getShows, getShowChildren };
+// Newest items first. Movies are listed per movie library (3D / 4K / HD are separate sections in many setups).
+async function getRecentMovies(sectionId, limit) {
+  const res = await plexAxios.get(`/library/sections/${sectionId}/all`, {
+    params: { ...token(), type: 1, sort: 'addedAt:desc', 'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': limit }
+  });
+  return res.data.MediaContainer.Metadata || [];
+}
+
+// Recently added *episodes* (so a show that just got new episodes shows up, not only brand-new shows)
+async function getRecentEpisodes(sectionId, limit) {
+  const res = await plexAxios.get(`/library/sections/${sectionId}/recentlyAdded`, {
+    params: { ...token(), type: 4, 'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': limit }
+  });
+  return res.data.MediaContainer.Metadata || [];
+}
+
+module.exports = { getMovieSections, getMovies, getMovieDetails, getShowSections, getShows, getShowChildren, getRecentMovies, getRecentEpisodes };

@@ -31,7 +31,7 @@ let guideOpen        = false;
 let guideExpanded    = false;
 let guideChannels    = [];
 let guideFetchedAt   = 0;
-const GUIDE_CLIENT_TTL = 120_000; // re-fetch guide (incl. now-playing) every 2 min
+const GUIDE_CLIENT_TTL = 10_000;  // don't re-ask the server more than every 10s
 
 // ── YouTube state ──────────────────────────────────────────
 let ytApiLoaded   = false;
@@ -640,7 +640,10 @@ async function loadGuide() {
   const list = document.getElementById('guide-channel-list');
   if (!list) return;
   const now = Date.now();
-  if (guideChannels.length && now - guideFetchedAt < GUIDE_CLIENT_TTL) { renderGuide(); return; }
+  // Show what we have straight away, but re-ask the server each time the picker opens (it caches
+  // and expires programs itself), so "now playing" is never stale for long.
+  if (guideChannels.length) renderGuide();
+  if (guideChannels.length && now - guideFetchedAt < GUIDE_CLIENT_TTL) return;
   if (!guideChannels.length) list.innerHTML = '<div class="loading" style="padding:1rem">Loading guide…</div>';
   try {
     const { channels } = await fetch('/api/livetv/guide').then(r => r.json());

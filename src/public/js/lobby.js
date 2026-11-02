@@ -19,6 +19,7 @@ async function loadUser() {
   currentUserId = user.id || null;
   isAdmin = !!user.isAdmin;
   if (isAdmin) {
+    document.getElementById('admin-link').style.display = 'inline';
     document.getElementById('user-name').insertAdjacentHTML('afterend', ' <span class="admin-badge" title="You own the Plex server Playdarr is connected to">admin</span>');
     renderRooms(lastRooms);
   }
@@ -32,6 +33,7 @@ async function loadUser() {
     document.getElementById('schedule-room-btn').style.display = 'inline-flex';
     document.getElementById('edit-name-btn').style.display = 'inline';
     loadScheduled();
+    loadRecent();
   }
 }
 
@@ -131,6 +133,79 @@ function renderRooms(rooms) {
     if (confirm(`Close "${btn.dataset.name}" for everyone in it?`)) socket.emit('admin-close-room', { roomId: btn.dataset.close });
   }));
 }
+
+// ── Recently added ─────────────────────────────────────────
+// A short strip of the newest movies and shows; click one to be asked whether to start a room for it.
+function timeAgo(unixSec) {
+  const d = Math.floor((Date.now() / 1000 - unixSec) / 86400);
+  if (d < 1) return 'today';
+  if (d === 1) return '1d ago';
+  if (d < 14) return `${d}d ago`;
+  if (d < 60) return `${Math.floor(d / 7)}w ago`;
+  return `${Math.floor(d / 30)}mo ago`;
+}
+
+function recentCard(kind, item) {
+  const sub = kind === 'movie'
+    ? [item.year, timeAgo(item.addedAt)].filter(Boolean).join(' · ')
+    : [item.episode.split(' · ')[0], timeAgo(item.addedAt)].filter(Boolean).join(' · ');
+  return `
+    <button type="button" class="recent-card" data-kind="${kind}" data-key="${esc(item.ratingKey)}"
+            data-title="${esc(item.title)}" data-sub="${esc(kind === 'movie' ? String(item.year || '') : item.episode)}"
+            data-thumb="${esc(item.thumb || '')}" title="${esc(item.title)}">
+      ${item.thumb ? `<img src="${esc(item.thumb)}" alt="" loading="lazy" draggable="false">` : '<div class="recent-noimg">🎬</div>'}
+      ${kind === 'tv' && item.newCount > 1 ? `<span class="recent-new">${item.newCount} new</span>` : ''}
+      <span class="recent-title">${esc(item.title)}</span>
+      <span class="recent-sub">${esc(sub)}</span>
+    </button>`;
+}
+
+async function loadRecent() {
+  try {
+    const [{ enabledRoomTypes = {} }, data] = await Promise.all([
+      fetch('/api/config').then(r => r.json()),
+      fetch('/api/recent').then(r => r.json()),
+    ]);
+    const fill = (id, kind, list, enabled) => {
+      const wrap = document.getElementById(id);
+      wrap.style.display = enabled && list && list.length ? 'block' : 'none';
+      wrap.querySelector('.recent-row').innerHTML = (list || []).map(i => recentCard(kind, i)).join('');
+      return wrap.style.display !== 'none';
+    };
+    const anyMovies = fill('recent-movies', 'movie', data.movies, enabledRoomTypes.movie !== false);
+    const anyShows  = fill('recent-shows', 'tv', data.shows, enabledRoomTypes.tv !== false);
+    document.getElementById('recent-section').style.display = anyMovies || anyShows ? 'block' : 'none';
+  } catch { /* Plex unreachable — the strip just stays hidden */ }
+}
+
+let recentPick = null;
+document.getElementById('recent-section').addEventListener('click', (e) => {
+  const card = e.target.closest('.recent-card');
+  if (!card) return;
+  recentPick = { kind: card.dataset.kind, ratingKey: card.dataset.key };
+  document.getElementById('recent-modal-title').textContent = card.dataset.title;
+  document.getElementById('recent-modal-sub').textContent = card.dataset.sub;
+  const poster = document.getElementById('recent-modal-poster');
+  poster.src = card.dataset.thumb;
+  poster.style.display = card.dataset.thumb ? 'block' : 'none';
+  const go = document.getElementById('recent-confirm');
+  go.disabled = false; go.textContent = 'Create room';
+  document.getElementById('recent-modal').style.display = 'flex';
+});
+const closeRecentModal = () => { document.getElementById('recent-modal').style.display = 'none'; recentPick = null; };
+document.getElementById('recent-cancel').addEventListener('click', closeRecentModal);
+document.getElementById('recent-modal').addEventListener('click', e => { if (e.target.id === 'recent-modal') closeRecentModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeRecentModal(); });
+document.getElementById('recent-confirm').addEventListener('click', () => {
+  if (!recentPick) return;
+  const go = document.getElementById('recent-confirm');
+  go.disabled = true; go.textContent = 'Creating…';
+  socket.emit('create-room', { preload: recentPick });   // 'room-created' then sends us to the room
+});
+socket.on('error-msg', () => {   // e.g. Plex couldn't load the title — let them try again
+  const go = document.getElementById('recent-confirm');
+  go.disabled = false; go.textContent = 'Create room';
+});
 
 // ── Create room ────────────────────────────────────────────
 let selectedRoomType = 'movie';
@@ -247,6 +322,7 @@ function openScheduleModal() {
   document.getElementById('sched-movie-partid').value = '';
   document.getElementById('sched-movie-clear').style.display = 'none';
   document.getElementById('sched-error').style.display = 'none';
+  document.getElementById('sched-repeat').value = '';
   document.getElementById('schedule-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('sched-name').focus(), 50);
 }
@@ -381,7 +457,8 @@ async function submitSchedule() {
     const res  = await fetch('/api/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name || 'Watch Party', scheduledFor, timezone, movieKey, movieTitle, partId })
+      body: JSON.stringify({ name: name || 'Watch Party', scheduledFor, timezone, movieKey, movieTitle, partId,
+        recurrence: document.getElementById('sched-repeat').value || null })
     });
     const data = await res.json();
     if (!res.ok) {
@@ -438,7 +515,7 @@ function renderScheduled(list) {
       <div class="room-card scheduled-card">
         <div class="room-card-header">
           <span class="room-card-name">${esc(s.name)}</span>
-          <span class="sched-badge">Scheduled</span>
+          <span class="sched-badge">${s.recurrence ? (s.recurrence === 'biweekly' ? 'Every 2 weeks' : 'Weekly') : 'Scheduled'}</span>
         </div>
         <div class="room-card-movie">
           ${s.movieTitle ? `<span class="room-now-playing">🎬 ${esc(s.movieTitle)}</span><br>` : ''}
@@ -448,7 +525,10 @@ function renderScheduled(list) {
           <span class="room-viewers">by ${esc(s.createdBy ? s.createdBy.name : 'unknown')}</span>
           <div style="display:flex;gap:0.4rem;align-items:center">
             <button class="btn-copy-link" data-url="${esc(inviteUrl)}" title="Copy invite link">Copy Link</button>
-            ${isOwner ? `<button class="btn-cancel-sched" data-id="${esc(s.id)}">Cancel</button>` : ''}
+            ${s.calendar ? `<a class="btn-copy-link" href="${esc(s.calendar.ics)}" title="Download a calendar file (Apple, Outlook…)" style="text-decoration:none">.ics</a>
+            <a class="btn-copy-link" href="${esc(s.calendar.google)}" target="_blank" rel="noopener" title="Add to Google Calendar" style="text-decoration:none">Google</a>` : ''}
+            ${isOwner && s.recurrence ? `<button class="btn-copy-link" data-skip="${esc(s.id)}" title="Skip the next night">Skip next</button>` : ''}
+            ${isOwner ? `<button class="btn-cancel-sched" data-id="${esc(s.id)}">${s.recurrence ? 'Cancel series' : 'Cancel'}</button>` : ''}
           </div>
         </div>
       </div>
@@ -466,10 +546,18 @@ function renderScheduled(list) {
     });
   });
 
+  grid.querySelectorAll('[data-skip]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Skip the next occurrence of this night?')) return;
+      const res = await fetch('/api/schedule/' + btn.dataset.skip + '/skip', { method: 'POST' }).catch(() => null);
+      if (res && res.ok) loadScheduled(); else alert('Failed to skip.');
+    });
+  });
+
   // Wire up cancel buttons
   grid.querySelectorAll('.btn-cancel-sched').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Cancel this scheduled room?')) return;
+      if (!confirm(btn.textContent.includes('series') ? 'Cancel this whole recurring series?' : 'Cancel this scheduled room?')) return;
       try {
         const res = await fetch('/api/schedule/' + btn.dataset.id, { method: 'DELETE' });
         if (res.ok) {

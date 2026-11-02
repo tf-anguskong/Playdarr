@@ -467,6 +467,22 @@ function vaapiDevice() {
 function vaapiRequested() { return ['vaapi', 'intel', 'amd'].includes((process.env.LIVETV_HWACCEL || '').toLowerCase()); }
 function vaapiAvailable() { return vaapiRequested() && !!vaapiDevice(); }
 
+// Video filter chain: deinterlace, then (optionally) upscale low-resolution channels, then (for VAAPI) upload.
+// LIVETV_UPSCALE=720|1080 raises any source shorter than that to that height (HD channels are left alone)
+// with Lanczos scaling, followed by a light sharpen (LIVETV_SHARPEN, default 0.5, 0 = off).
+// It can't add real detail, but it looks cleaner than the browser stretching a 480-line picture.
+function videoFilter(hw) {
+  const chain = ['yadif=mode=0:parity=-1:deint=1'];
+  const target = parseInt(process.env.LIVETV_UPSCALE, 10);
+  if (target >= 480 && target <= 2160) {
+    chain.push(`scale=-2:'max(ih,${target})':flags=lanczos`);
+    const sharpen = process.env.LIVETV_SHARPEN === undefined ? 0.5 : parseFloat(process.env.LIVETV_SHARPEN);
+    if (sharpen > 0) chain.push(`unsharp=5:5:${Math.min(sharpen, 2).toFixed(2)}:5:5:0`);
+  }
+  if (hw) chain.push('format=nv12', 'hwupload');
+  return chain.join(',');
+}
+
 // Overridable for other hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M"
 function videoArgs(hw) {
   if (process.env.LIVETV_VIDEO_ARGS) return process.env.LIVETV_VIDEO_ARGS.split(/\s+/).filter(Boolean);
@@ -525,7 +541,7 @@ class HdhrSource {
       '-fflags', '+genpts+discardcorrupt', '-analyzeduration', '2000000', '-probesize', '5000000',
       '-i', url,
       '-map', '0:v:0', '-map', '0:a:0?',
-      '-vf', hw ? 'yadif=mode=0:parity=-1:deint=1,format=nv12,hwupload' : 'yadif=mode=0:parity=-1:deint=1',
+      '-vf', videoFilter(hw),
       ...videoArgs(hw),
       '-force_key_frames', `expr:gte(t,n_forced*${SEG_SECS})`, '-sc_threshold', '0',
       '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',

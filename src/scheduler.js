@@ -3,6 +3,8 @@
 const fs   = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { addLocalDays } = require('./timeutil');
+const { RECURRENCE } = require('./ical');
 
 // JavaScript timers are 32-bit signed integers — delays > this overflow.
 // We re-arm the timer in chunks when needed.
@@ -15,6 +17,9 @@ const FILE     = path.join(dataPath, 'scheduled.json');
 const store = new Map();
 
 let _openRoomCallback = null;
+
+// A recurring night that was missed by more than this (server was down) is skipped, not opened late.
+const MISSED_GRACE_MS = 6 * 3600 * 1000;
 
 // ── Persistence ───────────────────────────────────────────
 
@@ -67,19 +72,45 @@ function armTimer(scheduled) {
   scheduled._timer = setTimeout(() => fire(scheduled.id), delay);
 }
 
+/** Move a recurring night to its next occurrence after `after` (same local wall-clock time). */
+function advance(scheduled, after = Date.now()) {
+  const step = RECURRENCE[scheduled.recurrence].days;
+  let next = new Date(scheduled.scheduledFor);
+  do { next = addLocalDays(next, step, scheduled.timezone || 'UTC'); } while (next.getTime() <= after);
+  scheduled.scheduledFor = next.toISOString();
+  scheduled.remindersSent = {};
+  scheduled.occurrence = (scheduled.occurrence || 1) + 1;
+  // The pre-picked movie was for the first night only
+  scheduled.movieKey = scheduled.movieTitle = scheduled.partId = null;
+}
+
 function fire(id) {
   const scheduled = store.get(id);
   if (!scheduled) return; // already removed
 
-  // Remove from store before calling callback
-  store.delete(id);
-  persist();
+  const overdue = Date.now() - new Date(scheduled.scheduledFor).getTime();
+  // What the room is opened from — a snapshot, since a recurring record is advanced right below
+  const snapshot = serialize(scheduled);
 
-  console.log(`[Scheduler] Firing scheduled room "${scheduled.name}" (id=${id})`);
+  if (scheduled.recurrence) {
+    advance(scheduled);
+    persist();
+    armTimer(scheduled);
+    if (overdue > MISSED_GRACE_MS) {
+      console.log(`[Scheduler] Skipped missed occurrence of "${scheduled.name}" (${Math.round(overdue / 3600000)}h overdue)`);
+      return;
+    }
+  } else {
+    // One-off: remove from store before calling callback
+    store.delete(id);
+    persist();
+  }
+
+  console.log(`[Scheduler] Firing scheduled room "${snapshot.name}" (id=${id})`);
 
   if (_openRoomCallback) {
     try {
-      _openRoomCallback(scheduled);
+      _openRoomCallback(snapshot);
     } catch (err) {
       console.error('[Scheduler] openRoomCallback threw:', err.message);
     }
@@ -108,7 +139,7 @@ function init(openRoomCallback) {
  * @returns {object} the new scheduled room record
  */
 function createScheduled(fields) {
-  const { name, scheduledFor, timezone, movieKey, movieTitle, partId, createdBy } = fields;
+  const { name, scheduledFor, timezone, movieKey, movieTitle, partId, createdBy, recurrence } = fields;
   const scheduled = {
     id:           uuidv4(),
     inviteToken:  uuidv4(),
@@ -119,6 +150,9 @@ function createScheduled(fields) {
     movieTitle:   movieTitle || null,
     partId:       partId    || null,
     createdBy,    // { id, name }
+    recurrence:   RECURRENCE[recurrence] ? recurrence : null, // 'weekly' | 'biweekly' | null
+    occurrence:   1,
+    remindersSent: {},  // `${webhookId}` -> scheduledFor it was sent for, so a reminder fires once per night
     createdAt:    new Date().toISOString()
   };
   store.set(scheduled.id, scheduled);
@@ -139,6 +173,28 @@ function deleteScheduled(id) {
   persist();
   console.log(`[Scheduler] Deleted scheduled room "${scheduled.name}" (id=${id})`);
   return true;
+}
+
+/**
+ * Skip the next occurrence of a recurring night. Returns the updated record, or null if not recurring.
+ */
+function skipNext(id) {
+  const scheduled = store.get(id);
+  if (!scheduled || !scheduled.recurrence) return null;
+  if (scheduled._timer) clearTimeout(scheduled._timer);
+  advance(scheduled, new Date(scheduled.scheduledFor).getTime());
+  persist();
+  armTimer(scheduled);
+  console.log(`[Scheduler] Skipped next occurrence of "${scheduled.name}" → ${scheduled.scheduledFor}`);
+  return serialize(scheduled);
+}
+
+/** Remember that a webhook's reminder was sent for this occurrence. */
+function markReminded(id, webhookId) {
+  const scheduled = store.get(id);
+  if (!scheduled) return;
+  (scheduled.remindersSent || (scheduled.remindersSent = {}))[webhookId] = scheduled.scheduledFor;
+  persist();
 }
 
 /**
@@ -167,4 +223,4 @@ function listScheduled() {
     .map(serialize);
 }
 
-module.exports = { init, createScheduled, deleteScheduled, getScheduled, getByInviteToken, listScheduled };
+module.exports = { init, createScheduled, deleteScheduled, skipNext, markReminded, getScheduled, getByInviteToken, listScheduled };

@@ -2,6 +2,16 @@ const express = require('express');
 const router = express.Router();
 const plex = require('../plex');
 
+// GET /api/movies/facets — what the vote filters can offer (genres, ratings, years, longest runtime)
+router.get('/facets', async (req, res) => {
+  try {
+    res.json(await require('../voting').facets());
+  } catch (err) {
+    console.error('Facets error:', err.message);
+    res.status(500).json({ error: 'Failed to read the library' });
+  }
+});
+
 // GET /api/movies?search=&genre=&sort=title
 router.get('/', async (req, res) => {
   try {

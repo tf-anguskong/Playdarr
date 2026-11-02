@@ -9,12 +9,13 @@
 </head>
 <body class="browser-page">
   <header class="header">
-    <div class="header-logo">play<span class="dk">darr</span></div>
+    <div class="header-logo">Play<span class="dk">darr</span></div>
     <div class="header-right">
       <div class="user-menu">
         <img id="user-avatar" class="user-avatar" src="" alt="" style="display:none">
         <span id="user-name" class="user-name"></span>
         <button id="edit-name-btn" class="btn-edit-name" title="Change display name" style="display:none">✎</button>
+        <a id="admin-link" href="/admin" class="btn-logout" style="display:none;text-decoration:none">Admin</a>
         <form action="/auth/logout" method="POST" style="display:inline">
           <button type="submit" class="btn-logout">Sign out</button>
         </form>
@@ -39,6 +40,21 @@
     </div>
     <div id="rooms-grid" class="rooms-grid">
       <div class="loading">Looking for rooms…</div>
+    </div>
+
+    <!-- Recently added (Plex users) -->
+    <div id="recent-section" style="display:none">
+      <div class="browser-toolbar" style="margin-top:2rem">
+        <h2>Recently added</h2>
+      </div>
+      <div id="recent-movies" class="recent-group" style="display:none">
+        <div class="recent-label">Movies</div>
+        <div class="recent-row"></div>
+      </div>
+      <div id="recent-shows" class="recent-group" style="display:none">
+        <div class="recent-label">TV shows</div>
+        <div class="recent-row"></div>
+      </div>
     </div>
 
     <div id="scheduled-section" style="display:none">
@@ -71,6 +87,22 @@
     </div>
   </div>
 
+  <!-- Start watching a recently added title -->
+  <div id="recent-modal" class="modal-overlay" style="display:none">
+    <div class="modal recent-modal">
+      <img id="recent-modal-poster" class="recent-modal-poster" src="" alt="">
+      <div class="recent-modal-body">
+        <h3 id="recent-modal-title"></h3>
+        <div id="recent-modal-sub" class="recent-modal-sub"></div>
+        <p class="recent-modal-text">Create a room with this ready to go and start watching?</p>
+        <div class="modal-actions" style="margin-top:auto">
+          <button id="recent-cancel" class="btn-logout">Not now</button>
+          <button id="recent-confirm" class="btn-create">Create room</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Schedule room modal -->
   <div id="schedule-modal" class="modal-overlay" style="display:none">
     <div class="modal">
@@ -93,6 +125,14 @@
       <div class="sched-field-group">
         <label class="sched-label">Timezone</label>
         <select id="sched-timezone" class="filter-select" style="width:100%"></select>
+      </div>
+      <div class="sched-field-group">
+        <label class="sched-label">Repeat</label>
+        <select id="sched-repeat" class="filter-select" style="width:100%">
+          <option value="">Does not repeat</option>
+          <option value="weekly">Every week (same time, same invite link)</option>
+          <option value="biweekly">Every 2 weeks</option>
+        </select>
       </div>
       <div id="sched-error" style="color:#ff6b7a;font-size:0.8rem;margin-top:0.5rem;display:none"></div>
       <div class="modal-actions">

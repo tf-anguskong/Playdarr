@@ -3,6 +3,11 @@
 const express   = require('express');
 const router    = express.Router();
 const scheduler = require('../scheduler');
+const notifier  = require('../notifier');
+const { googleCalendarUrl, RECURRENCE } = require('../ical');
+
+// Calendar links ride along with every record so the lobby can offer "add to calendar"
+const withCalendar = s => ({ ...s, calendar: { ics: `/join/${s.inviteToken}/event.ics`, google: googleCalendarUrl(s) } });
 
 // All routes are mounted under /api/schedule and already require Plex auth
 // (enforced by server.js before mounting this router).
@@ -10,7 +15,7 @@ const scheduler = require('../scheduler');
 // ── GET /api/schedule ─────────────────────────────────────
 // List all upcoming scheduled rooms.
 router.get('/', (req, res) => {
-  res.json({ scheduled: scheduler.listScheduled() });
+  res.json({ scheduled: scheduler.listScheduled().map(withCalendar) });
 });
 
 // ── GET /api/schedule/config ──────────────────────────────
@@ -22,7 +27,7 @@ router.get('/config', (req, res) => {
 // ── POST /api/schedule ────────────────────────────────────
 // Create a new scheduled room.
 router.post('/', (req, res) => {
-  const { name, scheduledFor, timezone, movieKey, movieTitle, partId } = req.body || {};
+  const { name, scheduledFor, timezone, movieKey, movieTitle, partId, recurrence } = req.body || {};
 
   if (!scheduledFor) {
     return res.status(400).json({ error: 'scheduledFor is required' });
@@ -56,10 +61,12 @@ router.post('/', (req, res) => {
     movieKey:     movieKey  || null,
     movieTitle:   movieTitle || null,
     partId:       partId    || null,
+    recurrence:   RECURRENCE[recurrence] ? recurrence : null,
     createdBy:    { id: user.id, name: user.displayName || user.name }
   });
 
-  res.status(201).json({ scheduled });
+  notifier.notify('schedule.created', notifier.scheduleData(scheduled));
+  res.status(201).json({ scheduled: withCalendar(scheduled) });
 });
 
 // ── DELETE /api/schedule/:id ──────────────────────────────
@@ -80,6 +87,20 @@ router.delete('/:id', (req, res) => {
   }
   scheduler.deleteScheduled(req.params.id);
   res.json({ ok: true });
+});
+
+// ── POST /api/schedule/:id/skip ───────────────────────────
+// Skip the next occurrence of a recurring night (creator or server owner).
+router.post('/:id/skip', (req, res) => {
+  const scheduled = scheduler.getScheduled(req.params.id);
+  if (!scheduled) return res.status(404).json({ error: 'Scheduled room not found' });
+  const user = req.session.user;
+  if (scheduled.createdBy.id !== user.id && !user.isAdmin) {
+    return res.status(403).json({ error: 'Only the creator or the server owner can skip an occurrence' });
+  }
+  const updated = scheduler.skipNext(req.params.id);
+  if (!updated) return res.status(400).json({ error: 'That night does not repeat' });
+  res.json({ scheduled: withCalendar(updated) });
 });
 
 module.exports = router;

@@ -5,6 +5,7 @@ const router = express.Router();
 const { getRoomByInviteToken } = require('../sync');
 const { encryptToken, decryptToken } = require('../tokenCrypto');
 const { sanitizeText } = require('../sanitize');
+const users = require('../users');
 
 if (!process.env.PLEX_CLIENT_ID) {
   throw new Error('PLEX_CLIENT_ID env var must be set (use a unique stable identifier for your app)');
@@ -92,9 +93,12 @@ router.get('/plex/callback/:pinId', async (req, res) => {
         console.error('[Auth] Session regenerate error:', regenErr);
         return res.redirect('/login?error=auth');
       }
+      const name = plexUser.friendlyName || plexUser.username || plexUser.email;
+      const known = users.touch({ id: plexUser.id, name, picture: plexUser.thumb }, { login: true });
       req.session.user = {
         id: String(plexUser.id),
-        name: plexUser.friendlyName || plexUser.username || plexUser.email,
+        name,
+        displayName: known.nickname || undefined,   // the nickname they chose on an earlier visit
         email: plexUser.email,
         picture: plexUser.thumb,
         plexToken: encryptToken(authToken),
