@@ -42,6 +42,14 @@
       <div class="loading">Looking for rooms…</div>
     </div>
 
+    <!-- Live TV: what's on now (Plex users, when Live TV rooms are enabled) -->
+    <div id="livenow-section" style="display:none">
+      <div class="browser-toolbar" style="margin-top:2rem">
+        <h2>Live TV <span class="livenow-sub">on now</span></h2>
+      </div>
+      <div class="recent-row" id="livenow-row"></div>
+    </div>
+
     <!-- Recently added (Plex users) -->
     <div id="recent-section" style="display:none">
       <div class="browser-toolbar" style="margin-top:2rem">
@@ -94,7 +102,7 @@
       <div class="recent-modal-body">
         <h3 id="recent-modal-title"></h3>
         <div id="recent-modal-sub" class="recent-modal-sub"></div>
-        <p class="recent-modal-text">Create a room with this ready to go and start watching?</p>
+        <p id="recent-modal-text" class="recent-modal-text">Create a room with this ready to go and start watching?</p>
         <div class="modal-actions" style="margin-top:auto">
           <button id="recent-cancel" class="btn-logout">Not now</button>
           <button id="recent-confirm" class="btn-create">Create room</button>

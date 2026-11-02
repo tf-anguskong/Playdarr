@@ -9,10 +9,11 @@ Everything lives under `DATA_PATH` (`/data` in the container), which Docker Comp
 | `scheduled.json` | Upcoming and recurring watch nights, including their invite links | **Yes** |
 | `webhooks.json` | Your webhooks (URLs are secrets; file mode 600) and last delivery status | **Yes** |
 | `users.json` | The people list and their nicknames | **Yes** |
+| `always-on.json` | Always-on rooms (name, type, pinned channel, permanent invite link) | **Yes** |
 | `sessions/` | Sign-in sessions (7-day lifetime) | No — people just sign in again |
 | `dvr/` | Live TV recordings | No — temporary; wiped when the server starts |
 
-**Not saved at all:** rooms. They live in memory, so restarting the container closes every open room. Plan updates for when nobody is watching.
+**Not saved at all:** ordinary rooms. They live in memory, so restarting the container closes every open room. (Always-on rooms are the exception: they're recreated, empty, from `always-on.json`.) Plan updates for when nobody is watching.
 
 ## Back up
 
@@ -21,7 +22,7 @@ The three files that matter are tiny. From the project folder, with the containe
 ```bash
 # Replace movienight_sessions with your volume name
 docker run --rm -v movienight_sessions:/data -v "$PWD":/backup alpine \
-  tar czf /backup/playdarr-data-$(date +%F).tgz -C /data scheduled.json webhooks.json users.json
+  tar czf /backup/playdarr-data-$(date +%F).tgz -C /data scheduled.json webhooks.json users.json always-on.json
 ```
 
 (If one of the files doesn't exist yet — for example you've never made a webhook — `tar` will complain about it; drop that name from the command.)

@@ -16,6 +16,7 @@ This wiki is for the **person who runs the server**. It covers setting Playdarr 
 | Post reminders and invite links to Discord | [Webhooks and Notifications](Webhooks-and-Notifications) |
 | Kick someone, close a room, reset a nickname | [Moderation](Moderation) |
 | Set up weekly movie nights | [Scheduling and Recurring Nights](Scheduling-and-Recurring-Nights) |
+| Keep a room (or a Live TV channel) open all the time | [Always-On Rooms](Always-On-Rooms) |
 | Run Live TV from an HDHomeRun | [Live TV Administration](Live-TV-Administration) |
 | Look up an environment variable | [Configuration Reference](Configuration-Reference) |
 | Back up, restore or update | [Data, Backups and Updates](Data-Backups-and-Updates) |
@@ -26,7 +27,7 @@ This wiki is for the **person who runs the server**. It covers setting Playdarr 
 
 - **Playdarr** is one Node.js container. It proxies video from your Plex server (so Plex tokens never reach browsers) and keeps every viewer in a room in sync.
 - **Plex users** sign in with Plex and can create rooms. **Guests** join through an invite link with just a display name.
-- **Rooms live in memory.** Restarting the container closes them. Schedules, webhooks and the people list are saved to disk and survive restarts.
+- **Rooms live in memory.** Restarting the container closes them, except **always-on rooms**, which are recreated. Schedules, webhooks, the people list and always-on rooms are saved to disk and survive restarts.
 - **Live TV** (optional) comes straight from an HDHomeRun tuner through ffmpeg into a per-room on-disk recording; Plex supplies only the channel guide.
 
 ## Conventions used in this guide

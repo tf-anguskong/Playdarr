@@ -21,7 +21,7 @@ const { sanitizeText } = require('./sanitize');
 const moviesRouter = require('./routes/movies');
 const showsRouter = require('./routes/shows');
 const { router: streamRouter, clearRoomManifest } = require('./routes/stream');
-const { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom } = require('./sync');
+const { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, restorePersistentRooms } = require('./sync');
 const scheduler = require('./scheduler');
 const scheduleRouter = require('./routes/schedule');
 const adminRouter = require('./routes/admin');
@@ -339,6 +339,7 @@ app.get('/login', (req, res) => {
 });
 
 setupSync(io, enabledRoomTypes);
+restorePersistentRooms();
 
 notifier.init();
 scheduler.init((scheduled) => {

@@ -58,6 +58,10 @@ See the [troubleshooting table on the webhooks page](Webhooks-and-Notifications#
 
 See [Live TV Administration](Live-TV-Administration#troubleshooting-live-tv).
 
+## Always-on rooms
+
+See [Always-On Rooms](Always-On-Rooms#troubleshooting).
+
 ## Voting and "Recently added"
 
 | Symptom | Cause and fix |
