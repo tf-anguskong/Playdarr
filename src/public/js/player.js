@@ -139,7 +139,8 @@ socket.on('state', applyState);
 socket.on('livetv-reload', () => {
   if (roomType !== 'livetv') return;
   const st = lastKnownState;
-  loadLiveTvRelay(st ? (st.playing ? st.position + (Date.now() - st.lastUpdate) / 1000 : st.position) : null, !st || st.playing);
+  const t = liveTarget();   // arrival-anchored (see liveState), not the client-vs-server wall-clock difference
+  loadLiveTvRelay(t != null ? t : (st ? st.position : null), !st || st.playing);
 });
 
 socket.on('room-error', (msg) => {
@@ -211,8 +212,15 @@ function applyState(state) {
   video.style.display = 'block';
   titleEl.textContent = state.movieTitle || 'Now Playing';
 
-  const elapsed    = (Date.now() - state.lastUpdate) / 1000;
-  const targetTime = state.playing ? state.position + elapsed : state.position;
+  // Anchor the room clock to when this update ARRIVED (client clock only). state.position is already extrapolated to
+  // the moment the server sent it, so adding (Date.now() - state.lastUpdate) would fold any difference between the
+  // client's and the server's wall clocks straight into the sync error.
+  const projected = movieTarget();   // where the previous anchor said the room should be right now
+  movieState = state;
+  movieStateAt = performance.now();
+  const targetTime = state.position;   // the room's position at this instant
+  // A deliberate jump of the room clock (someone scrubbed, a resync) must be followed at once, so lift the seek gap
+  if (projected != null && Math.abs(targetTime - projected) > 1.5) movieSeekAt = -1e9;
 
   // New movie — full reload
   if (state.movieKey !== currentKey) {
@@ -235,25 +243,63 @@ function applyState(state) {
     return;
   }
 
-  if (!state.playing) return;
-
-  // Drift correction during playback
-  const drift    = video.currentTime - targetTime;
-  const absDrift = Math.abs(drift);
-
-  if (absDrift > 5) {
-    // Large drift — hard seek
-    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    video.currentTime = targetTime;
-    releaseSyncLock();
-  } else if (absDrift > 0.5) {
-    // Small drift — nudge playback rate to catch up gradually (±5%)
-    video.playbackRate = drift > 0 ? 0.95 : 1.05;
-  } else {
-    // In sync — restore normal speed
-    if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
+  if (!state.playing) {
+    // Paused: park at the room's position (e.g. someone scrubbed while we were already paused)
+    if (Math.abs(video.currentTime - targetTime) > 0.5) {
+      isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+      video.currentTime = targetTime;
+      releaseSyncLock();
+    }
+    return;
   }
+  // Playing: the chase loop below keeps this viewer on the room clock, continuously
 }
+
+// ── Movie / TV sync: everyone chases the room clock ────────────────────────────────────────
+// The server holds the clock (position + time since the last play/pause/seek). Every viewer — host included, since
+// anyone may scrub — steers onto it with a gentle, proportional playback-rate change checked four times a second,
+// and only hard-seeks when far off. A seek costs a rebuffer on a transcoded stream, so the threshold is generous and
+// automatic seeks are spaced out: a viewer who stalls for a few seconds would otherwise seek forward, stall again,
+// and chase the room in circles.
+// Hysteresis (start correcting past 0.15 s, stop inside 0.05 s) and 1 % rate steps keep speed changes rare, which
+// matters because every speed change is audible as a faint pitch wobble.
+let movieState = null;
+let movieStateAt = 0;
+const movieTarget = () => (movieState ? (movieState.playing ? movieState.position + (performance.now() - movieStateAt) / 1000 : movieState.position) : null);
+const MOVIE_SEEK_SEC = 5;
+const MOVIE_SEEK_GAP_MS = 8000;
+let movieCorrecting = false;
+let movieRateAt = -1e9;
+let movieSeekAt = -1e9;
+setInterval(() => {
+  if (roomType !== 'movie' && roomType !== 'tv') return;
+  if (!movieState || !movieState.playing || video.paused) { movieCorrecting = false; resetPlaybackRate('not playing'); return; }
+  if (isSyncing || video.readyState < 3) return;
+  const target = movieTarget();
+  if (target == null) return;
+  const drift = video.currentTime - target;   // + = ahead of the room
+  const abs = Math.abs(drift);
+
+  if (abs > MOVIE_SEEK_SEC && performance.now() - movieSeekAt > MOVIE_SEEK_GAP_MS) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    video.currentTime = target;
+    releaseSyncLock();
+    movieSeekAt = performance.now();
+    movieCorrecting = false;
+    return;
+  }
+  if (!movieCorrecting && abs > 0.15) movieCorrecting = true;
+  else if (movieCorrecting && abs < 0.05) movieCorrecting = false;
+
+  let rate = 1;
+  if (movieCorrecting) rate = 1 - Math.max(-0.08, Math.min(0.08, drift * 0.4));
+  rate = Math.round(rate * 100) / 100;
+  const now = performance.now();
+  if (Math.abs(video.playbackRate - rate) >= 0.01 && (rate === 1 || now - movieRateAt > 1000)) {
+    video.playbackRate = rate;
+    movieRateAt = now;
+  }
+}, 250);
 
 // ── HLS loader ─────────────────────────────────────────────
 function showPlayOverlay() {
@@ -273,10 +319,14 @@ function hidePlayOverlay() {
 document.getElementById('play-overlay')?.addEventListener('click', () => {
   hidePlayOverlay();
   if (lastKnownState && lastKnownState.playing) {
-    const elapsed   = (Date.now() - lastKnownState.lastUpdate) / 1000;
-    const catchUpTo = lastKnownState.position + elapsed;
+    // The room clock anchored to when its last update arrived — not (Date.now() - state.lastUpdate), which would
+    // mix the client's and server's wall clocks
+    const catchUpTo = roomType === 'livetv' ? liveTarget()
+      : (roomType === 'movie' || roomType === 'tv') ? movieTarget()
+      : lastKnownState.position;
     isSyncing = true;
-    video.currentTime = catchUpTo;
+    if (catchUpTo != null && roomType !== 'livetv') video.currentTime = catchUpTo;
+    else if (catchUpTo != null) liveSeekAbs(catchUpTo);
   }
   video.play().catch(console.warn);
   releaseSyncLock();
@@ -874,8 +924,9 @@ function applyYtState(state) {
   }
 
   noMovie.style.display = 'none';
-  const elapsed    = (Date.now() - state.lastUpdate) / 1000;
-  const targetTime = state.playing ? state.position + elapsed : state.position;
+  // state.position is already the room's position at the moment the update was sent; adding
+  // (Date.now() - state.lastUpdate) would mix the client's and server's wall clocks (skew becomes sync error)
+  const targetTime = state.position;
 
   if (state.youtubeVideoId !== ytVideoId || !ytPlayer) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
