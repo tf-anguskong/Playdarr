@@ -14,8 +14,9 @@ const syncText    = document.getElementById('sync-text');
 
 let isSyncing        = false;
 let syncTimer        = null;
-let currentKey       = null;
-let activeLiveTvChannel = null; // channel number for guide highlighting
+let currentKey          = null;
+let currentLiveTvChannel = null; // channel number/id — stable across retune (unlike movieKey/ratingKey)
+let activeLiveTvChannel = null;  // channel number for guide highlighting
 let hlsInstance      = null;
 let isHost           = false;
 let roomType         = 'movie';
@@ -77,12 +78,12 @@ function applyRoomSettings(settings) {
     const volOverlay = document.getElementById('volume-overlay');
     if (volOverlay) volOverlay.style.display = (locked && !isHost) ? 'flex' : 'none';
   } else if (roomType === 'livetv') {
-    // Live TV: hide native controls (no seeking on a live stream).
-    // Click the video to pause/play. Volume overlay stays for volume control.
-    video.controls = false;
-    video.style.cursor = 'pointer';
+    // Live TV plays from the server DVR: the host has native controls (pause, seek,
+    // rewind) and guests follow. Guests get the volume overlay instead.
+    video.controls = isHost;
+    video.style.cursor = '';
     const volOverlay = document.getElementById('volume-overlay');
-    if (volOverlay) volOverlay.style.display = 'flex';
+    if (volOverlay) volOverlay.style.display = isHost ? 'none' : 'flex';
   }
   document.getElementById('reaction-bar').style.display = roomSettings.reactionsEnabled ? '' : 'none';
   if (isHost) {
@@ -97,6 +98,14 @@ socket.on('room-state', (state) => {
   isHost = state.isHost;
   roomType = state.roomType || 'movie';
   roomNameEl.textContent = state.name || '';
+
+  // For LiveTV, reset currentKey to ensure fresh stream load from Playdarr proxy
+  // This prevents stale connections from previous rooms/sessions
+  if (roomType === 'livetv') {
+    currentKey = null;
+    currentLiveTvChannel = null;
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+  }
   setHostUI(isHost, state.inviteToken);
   if (state.settings) applyRoomSettings(state.settings);
   applyState(state);
@@ -115,11 +124,11 @@ socket.on('kicked', () => {
 
 socket.on('state', applyState);
 
-// Server-side retune produced the same ratingKey — HLS manifest cache won't
-// detect a change, so the server broadcasts this to force a fresh manifest fetch.
+// Server restarted the relay (retune or channel change) — reload the HLS player.
 socket.on('livetv-reload', () => {
-  if (roomType !== 'livetv' || !currentKey) return;
-  loadLiveTvHls(currentKey);
+  if (roomType !== 'livetv') return;
+  const st = lastKnownState;
+  loadLiveTvRelay(st ? (st.playing ? st.position + (Date.now() - st.lastUpdate) / 1000 : st.position) : null, !st || st.playing);
 });
 
 socket.on('room-error', (msg) => {
@@ -155,6 +164,7 @@ function setSyncing(v) {
   syncText.textContent = v ? 'Syncing…' : 'Synced';
 }
 function releaseSyncLock() {
+  if (roomType === 'livetv') liveLog('sync lock release scheduled');
   syncTimer = setTimeout(() => { isSyncing = false; setSyncing(false); }, 400);
 }
 
@@ -369,81 +379,149 @@ function loadHls(ratingKey, targetTime, shouldPlay) {
   }
 }
 
-// ── Live TV player (HLS via Plex transcode proxy) ────────────
-function loadLiveTvHls(ratingKey) {
+// ── Live TV player (server DVR → HLS) ────────────────────────
+// Connects to /api/stream/live/:roomId/index.m3u8 — the per-room DVR the server
+// records from Plex. Every segment carries a PROGRAM-DATE-TIME derived from the
+// DVR clock, so each client can convert its own video.currentTime to and from
+// "DVR seconds", the shared timeline the room position is expressed in.
+const DVR_EPOCH_MS = Date.UTC(2020, 0, 1);
+
+// Batch client-side Live TV debug lines to the server so they land in the docker logs.
+const liveLogQueue = [];
+let liveLogTimer = null;
+function liveLog(msg) {
+  console.log('[LiveTV]', msg);
+  liveLogQueue.push(`${(performance.now() / 1000).toFixed(1)}s ${msg}`);
+  if (!liveLogTimer) liveLogTimer = setTimeout(() => {
+    liveLogTimer = null;
+    const lines = liveLogQueue.splice(0);
+    fetch('/api/stream/live-log', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines }), keepalive: true
+    }).catch(() => {});
+  }, 500);
+}
+let liveTlOffset = null; // DVR seconds minus video.currentTime for this client
+
+const fragDvrStart = f => (f.programDateTime - DVR_EPOCH_MS) / 1000; // DVR seconds at fragment start
+function liveAbs(t = video.currentTime) { return liveTlOffset == null ? null : t + liveTlOffset; }
+function liveSeekAbs(abs) { if (liveTlOffset != null) video.currentTime = abs - liveTlOffset; }
+function liveDetails() {
+  return hlsInstance && (hlsInstance.latestLevelDetails || hlsInstance.levels?.[hlsInstance.currentLevel]?.details) || null;
+}
+/** Newest recorded DVR second this client knows about (from its last playlist load). */
+function liveEdgeAbs() {
+  const frags = liveDetails()?.fragments;
+  const last = frags?.[frags.length - 1];
+  return last && last.programDateTime != null ? fragDvrStart(last) + last.duration : null;
+}
+
+function loadLiveTvRelay(targetAbs, shouldPlay) {
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+  liveTlOffset = null;
+  liveLog(`load relay: target=${targetAbs == null ? 'null' : targetAbs.toFixed(1)} play=${shouldPlay} host=${isHost} hls=${Hls.isSupported()}`);
   hidePlayOverlay();
   document.getElementById('yt-player-container').style.display = 'none';
+  video.style.display = 'block';
+  noMovie.style.display = 'none';
 
-  const src = `/api/stream/hls/${roomId}/${ratingKey}/master.m3u8?live=1`;
+  const src = `/api/stream/live/${roomId}/index.m3u8`;
 
-  if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-    hlsInstance = new Hls({ enableWorker: true });
+  if (Hls.isSupported()) {
+    // Loading starts normally; once the first playlist arrives we know how this
+    // client's timeline maps to DVR seconds and restart loading at the target.
+    // Never auto-jump to the live edge — the host decides where the room is.
+    try {
+      // hls.js rejects liveMaxLatencyDurationCount unless liveSyncDurationCount is set and smaller.
+      hlsInstance = new Hls({
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: Infinity,
+        maxLiveSyncPlaybackRate: 1,
+        backBufferLength: 600,
+      });
+    } catch (err) {
+      liveLog(`Hls init failed: ${err.message}`);
+      return;
+    }
+    let started = false;
     hlsInstance.loadSource(src);
     hlsInstance.attachMedia(video);
-    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-      tryPlay();
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => liveLog('manifest parsed'));
+    hlsInstance.on(Hls.Events.LEVEL_LOADED, (_, data) => {
+      const frags = data.details.fragments;
+      const first = frags[0], last = frags[frags.length - 1];
+      if (!started) liveLog(`level loaded: ${frags.length} frags, first.start=${first?.start} first.pdt=${first?.programDateTime}`);
+      if (!first || first.programDateTime == null) { if (!started) liveLog('no programDateTime on fragments — cannot map DVR timeline'); return; }
+      liveTlOffset = fragDvrStart(first) - first.start;
+      if (started) return;
+      started = true;
+      const lo = fragDvrStart(first);
+      const hi = fragDvrStart(last) + last.duration - 3;
+      const abs = Math.min(Math.max(targetAbs ?? hi, lo), Math.max(lo, hi));
+      console.log(`[LiveTV] DVR ${lo.toFixed(1)}–${(hi + 3).toFixed(1)}s, starting at ${abs.toFixed(1)}s`);
+      liveLog(`startLoad at client t=${(abs - liveTlOffset).toFixed(1)} offset=${liveTlOffset.toFixed(1)}`);
+      hlsInstance.startLoad(abs - liveTlOffset);
+      if (shouldPlay) tryPlay();
       releaseSyncLock();
     });
-    let liveTvRetryCount = 0;
-    const LIVE_TV_MAX_RETRIES = 4;
-    hlsInstance.on(Hls.Events.ERROR, (_, d) => {
-      if (!d.fatal) return;
-      if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
-        console.warn('[LiveTV] Media error, recovering:', d.details);
-        hlsInstance.recoverMediaError();
-      } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR && liveTvRetryCount < LIVE_TV_MAX_RETRIES) {
-        liveTvRetryCount++;
-        // For LiveTV, retry immediately (no delay) - exponential backoff is too slow
-        const delay = 0;
-        console.warn(`[LiveTV] Network error, retry ${liveTvRetryCount}/${LIVE_TV_MAX_RETRIES} immediately:`, d.details);
-        const bustSrc = `${src}&bust=1`;
-        setTimeout(() => {
-          if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-          hlsInstance = new Hls({ enableWorker: true });
-          hlsInstance.loadSource(bustSrc);
-          hlsInstance.attachMedia(video);
-          hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => tryPlay());
-          hlsInstance.on(Hls.Events.ERROR, (__, d2) => {
-            if (!d2.fatal) return;
-            // Retries exhausted — the DVR ratingKey is dead.
-            // Host requests a retune; guests wait for the rebroadcast.
-            if (isHost) {
-              noMovieText.textContent = 'Reconnecting to channel…';
-              noMovie.style.display = 'block';
-              video.style.display = 'none';
-              currentKey = null;
-              socket.emit('retune-livetv');
-            } else {
-              noMovieText.textContent = 'Stream interrupted — reconnecting…';
-              noMovie.style.display = 'block';
-              video.style.display = 'none';
-              currentKey = null;
-            }
-          });
-        }, delay);
-      } else {
-        console.error('[LiveTV] Fatal:', d.type, d.details);
-        if (isHost) {
-          noMovieText.textContent = 'Reconnecting to channel…';
-          noMovie.style.display = 'block';
-          video.style.display = 'none';
-          currentKey = null;
-          socket.emit('retune-livetv');
-        } else {
-          noMovieText.textContent = 'Stream interrupted — reconnecting…';
-          noMovie.style.display = 'block';
-          video.style.display = 'none';
-          currentKey = null;
-        }
-      }
+    hlsInstance.on(Hls.Events.FRAG_LOADED, (_, d) => { if (!window.__liveFragLogged) { window.__liveFragLogged = 0; } if (window.__liveFragLogged++ < 3) liveLog(`frag loaded sn=${d.frag.sn} start=${d.frag.start}`); });
+    hlsInstance.on(Hls.Events.BUFFER_APPENDED, () => { if (!window.__liveBufLogged) { window.__liveBufLogged = 1; liveLog('first buffer appended'); } });
+    hlsInstance.on(Hls.Events.FRAG_CHANGED, (_, data) => {
+      const f = data.frag;
+      if (f && f.programDateTime != null) liveTlOffset = fragDvrStart(f) - f.start;
+    });
+    hlsInstance.on(Hls.Events.ERROR, (event, data) => {
+      liveLog(`hls ${data.fatal ? 'FATAL' : 'error'}: ${data.type} / ${data.details}${data.response ? ' http ' + data.response.code : ''}`);
+      if (!data.fatal) return;
+      console.error('[LiveTV] HLS fatal error:', data.type, data.details);
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { hlsInstance.recoverMediaError(); return; }
+      // Tell the server to retune — it will restart the relay and emit livetv-reload
+      if (isHost) socket.emit('retune-livetv');
     });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    // Native HLS (Safari): no PROGRAM-DATE-TIME access, so the DVR timeline is unavailable;
+    // play from the playlist's default start without position sync.
     video.src = src;
-    tryPlay();
+    video.addEventListener('loadedmetadata', () => {
+      releaseSyncLock();
+      tryPlay();
+    }, { once: true });
   }
 }
 
+// Latest server state and when it arrived (client clock), for continuous drift correction.
+let liveState = null;
+let liveStateAt = 0;
+function liveTarget() {
+  if (!liveState) return null;
+  return liveState.playing ? liveState.position + (performance.now() - liveStateAt) / 1000 : liveState.position;
+}
+
+// Guests: every 250ms compare against the host-calibrated room position and steer.
+// Small drift is closed by a gentle, proportional playback-rate change (imperceptible);
+// only a large gap triggers a seek.
+let liveDriftLogAt = 0;
+setInterval(() => {
+  if (roomType !== 'livetv' || isHost || isSyncing) return;
+  if (!liveState || !liveState.playing || video.paused || video.readyState < 3) return;
+  const target = liveTarget(), pos = liveAbs();
+  if (target == null || pos == null) return;
+  const drift = pos - target; // + = ahead of the host
+  const abs = Math.abs(drift);
+  let rate = 1;
+  if (abs > 1.5) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    liveSeekAbs(target);
+    releaseSyncLock();
+    liveLog(`drift ${drift.toFixed(2)}s — seek`);
+  } else if (abs > 0.12) {
+    rate = 1 - Math.max(-0.08, Math.min(0.08, drift * 0.4));
+  }
+  if (Math.abs(video.playbackRate - rate) > 0.005) video.playbackRate = rate;
+  if (performance.now() - liveDriftLogAt > 15000) {
+    liveDriftLogAt = performance.now();
+    liveLog(`sync drift=${drift.toFixed(2)}s rate=${rate.toFixed(3)}`);
+  }
+}, 250);
 
 function applyLiveTvState(state) {
   document.getElementById('yt-player-container').style.display = 'none';
@@ -462,10 +540,9 @@ function applyLiveTvState(state) {
 
   noMovie.style.display = 'none';
   video.style.display = 'block';
-  // Apply livetv controls (no seeking)
-  video.controls = false;
+  video.controls = isHost;
   const volOverlay = document.getElementById('volume-overlay');
-  if (volOverlay) volOverlay.style.display = 'flex';
+  if (volOverlay) volOverlay.style.display = isHost ? 'none' : 'flex';
 
   titleEl.textContent = state.liveTvChannelTitle || state.liveTvChannel;
 
@@ -478,15 +555,25 @@ function applyLiveTvState(state) {
   // Track the active channel number for guide highlighting
   activeLiveTvChannel = state.liveTvChannel || null;
 
-  // Channel change → reload stream via Plex transcode proxy
-  if (state.movieKey && state.movieKey !== currentKey) {
-    currentKey = state.movieKey;
-    loadLiveTvHls(state.movieKey);
-  }
+  // Always keep currentKey in sync with the server's ratingKey
+  currentKey = state.movieKey || currentKey;
 
-  // Compute target from server state — same smooth extrapolation as movie sync
-  const elapsed    = (Date.now() - state.lastUpdate) / 1000;
-  const targetTime = state.playing ? state.position + elapsed : state.position;
+  // Target (DVR seconds). state.position is already extrapolated to the moment the server
+  // sent it, so only time since *receipt* is added — using state.lastUpdate would fold the
+  // difference between the client's and server's wall clocks straight into the sync error.
+  liveState  = state;
+  liveStateAt = performance.now();
+  const targetTime = liveTarget();
+
+  // Only reload the HLS player when the channel itself changes (not on retune,
+  // which keeps the same DVR — the relay URL and timeline are stable).
+  if (state.movieKey && state.liveTvChannel !== currentLiveTvChannel) {
+    currentLiveTvChannel = state.liveTvChannel;
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    loadLiveTvRelay(targetTime, state.playing);
+    return;
+  }
+  if (liveTlOffset == null) return; // playlist not loaded yet; the initial seek handles it
 
   // Sync play/pause state
   if (state.playing && video.paused) {
@@ -499,23 +586,7 @@ function applyLiveTvState(state) {
     releaseSyncLock();
   }
 
-  // Drift correction — guests only, same logic as movie/TV sync.
-  // Host's reported position calibrates room.position on the server,
-  // so targetTime is a smooth, deterministic value all clients share.
-  if (!isHost && state.playing && !video.paused) {
-    const drift    = video.currentTime - targetTime;
-    const absDrift = Math.abs(drift);
-
-    if (absDrift > 5) {
-      isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-      video.currentTime = targetTime;
-      releaseSyncLock();
-    } else if (absDrift > 0.5) {
-      video.playbackRate = drift > 0 ? 0.95 : 1.05;
-    } else {
-      if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
-    }
-  }
+  // Drift correction for guests runs continuously in liveDriftLoop() below.
 
   if (guideOpen) renderGuide(); // re-highlight active channel
 }
@@ -643,7 +714,7 @@ function showNotif(text) {
 setInterval(() => {
   let pos = null;
   if ((roomType === 'movie' || roomType === 'tv' || roomType === 'livetv') && currentKey && !video.paused && !video.ended) {
-    pos = video.currentTime;
+    pos = roomType === 'livetv' ? liveAbs() : video.currentTime;
   } else if (roomType === 'youtube' && ytPlayer && ytVideoId) {
     if (ytPlayer.getPlayerState?.() === YT.PlayerState.PLAYING) {
       pos = ytPlayer.getCurrentTime?.();
@@ -899,36 +970,55 @@ socket.on('lost-host', () => {
 });
 
 // ── Playback → server ──────────────────────────────────────
-video.addEventListener('click', () => {
-  if (roomType !== 'livetv') return;
-  if (video.paused) {
-    video.play().catch(() => {});
-    socket.emit('play', { position: video.currentTime });
-  } else {
-    video.pause();
-    socket.emit('pause', { position: video.currentTime });
-  }
-});
+// Live TV positions are DVR seconds; only the host drives playback there.
+const playbackPos = () => roomType === 'livetv' ? liveAbs() : video.currentTime;
+const livetvGuest = () => roomType === 'livetv' && !isHost;
 
 video.addEventListener('play', () => {
   if (isSyncing) return;
-  if (roomType === 'livetv') return; // live TV emits from click handler; ignore HLS.js internal events
+  if (livetvGuest()) return;
   if (roomSettings.playbackLocked && !isHost) {
     // Immediately revert — don't let the video run while server-state says paused
     isSyncing = true; video.pause(); releaseSyncLock(); return;
   }
-  socket.emit('play', { position: video.currentTime });
+  const pos = playbackPos();
+  if (pos != null) socket.emit('play', { position: pos });
 });
 video.addEventListener('pause',  () => {
   if (isSyncing) return;
-  if (roomType === 'livetv') return; // live TV emits from click handler; ignore HLS.js internal events
+  if (livetvGuest()) return;
   if (roomSettings.playbackLocked && !isHost) return;
-  socket.emit('pause', { position: video.currentTime });
+  const pos = playbackPos();
+  if (pos != null) socket.emit('pause', { position: pos });
 });
 video.addEventListener('seeked', () => {
   if (isSyncing) return;
+  if (livetvGuest()) return;
   if (roomSettings.playbackLocked && !isHost) return;
-  socket.emit('seek',  { position: video.currentTime });
+  const pos = playbackPos();
+  if (pos != null) socket.emit('seek',  { position: pos });
+});
+
+// Live TV video-element diagnostics (to the docker logs)
+['waiting', 'playing', 'canplay', 'stalled', 'error', 'loadedmetadata'].forEach(ev => video.addEventListener(ev, () => {
+  if (roomType === 'livetv') liveLog(`video ${ev} t=${video.currentTime.toFixed(1)} paused=${video.paused} ready=${video.readyState}${ev === 'error' ? ' code=' + video.error?.code : ''}`);
+}));
+
+// Live TV: "behind live" readout + Go live button (host)
+const liveBehindEl = document.getElementById('livetv-behind');
+const goLiveBtn    = document.getElementById('livetv-golive');
+setInterval(() => {
+  if (roomType !== 'livetv' || !liveBehindEl) return;
+  const edge = liveEdgeAbs(), pos = liveAbs();
+  if (edge == null || pos == null) { liveBehindEl.textContent = ''; return; }
+  const behind = Math.max(0, edge - pos);
+  liveBehindEl.textContent = behind < 12 ? 'LIVE' : `-${Math.floor(behind / 60)}:${String(Math.floor(behind % 60)).padStart(2, '0')} behind live`;
+  liveBehindEl.classList.toggle('is-live', behind < 12);
+  if (goLiveBtn) goLiveBtn.style.display = (isHost && behind >= 12) ? 'inline-block' : 'none';
+}, 1000);
+goLiveBtn?.addEventListener('click', () => {
+  const edge = liveEdgeAbs();
+  if (edge != null) liveSeekAbs(edge - 4); // 'seeked' then tells the room
 });
 
 // ── Movie browser modal (host only) ───────────────────────
@@ -1190,6 +1280,7 @@ async function loadChannels() {
       <div class="episode-item" data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" data-channelid="${esc(ch.channelId || '')}" style="cursor:pointer">
         <div class="episode-info">
           <span class="episode-title">${esc(ch.number)} ${esc(ch.title || '')}</span>
+          ${ch.nowPlaying ? `<span class="episode-meta">${esc(ch.nowPlaying)}</span>` : ''}
         </div>
       </div>
     `).join('');
@@ -1269,7 +1360,7 @@ document.getElementById('chat-export').addEventListener('click', () => {
   const title = titleEl.textContent.trim() || '';
   const date  = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
   const header = [
-    `Movie Night Chat Export`,
+    `Playdarr Chat Export`,
     title ? `${room} — ${title}` : room,
     date,
     '─'.repeat(40),
@@ -1285,7 +1376,7 @@ document.getElementById('chat-export').addEventListener('click', () => {
   const a    = document.createElement('a');
   a.href     = URL.createObjectURL(blob);
   const safeName = (title || room).replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_') || 'chat';
-  a.download = `movienight_${safeName}.txt`;
+  a.download = `playdarr_${safeName}.txt`;
   a.click();
   URL.revokeObjectURL(a.href);
 });

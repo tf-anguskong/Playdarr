@@ -112,7 +112,7 @@ function createScheduled(fields) {
   const scheduled = {
     id:           uuidv4(),
     inviteToken:  uuidv4(),
-    name:         (name || 'Movie Night').slice(0, 60),
+    name:         (name || 'Watch Party').slice(0, 60),
     scheduledFor, // ISO string
     timezone:     timezone || process.env.DEFAULT_TIMEZONE || 'UTC',
     movieKey:     movieKey  || null,

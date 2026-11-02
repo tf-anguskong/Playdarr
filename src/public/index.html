@@ -9,7 +9,7 @@
 </head>
 <body class="browser-page">
   <header class="header">
-    <div class="header-logo">Playdarr</div>
+    <div class="header-logo">play<span class="dk">darr</span></div>
     <div class="header-right">
       <div class="user-menu">
         <img id="user-avatar" class="user-avatar" src="" alt="" style="display:none">
@@ -119,7 +119,7 @@
             <option value="rating">Rating</option>
           </select>
         </div>
-        <span id="sched-movie-count" class="movie-count"></span>
+        <span id="sched-movie-count" class="movie-count"></span><div class="view-toggle"><button type="button" class="view-toggle-btn active" data-view="grid">grid</button><button type="button" class="view-toggle-btn" data-view="list">list</button></div>
       </div>
       <div id="sched-movies-grid" class="movies-grid modal-grid"></div>
     </div>
@@ -127,5 +127,6 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/js/lobby.js"></script>
+  <script src="/js/viewtoggle.js"></script>
 </body>
 </html>

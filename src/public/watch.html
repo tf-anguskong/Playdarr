@@ -23,6 +23,10 @@
       <!-- Live TV info (shown for livetv rooms) -->
       <div id="livetv-info" style="display:none">
         <div id="livetv-channel-title" class="sidebar-title" style="font-size:0.9rem;color:var(--text-muted)"></div>
+        <div class="livetv-dvr-row">
+          <span id="livetv-behind" class="livetv-behind"></span>
+          <button id="livetv-golive" class="btn-golive" type="button" style="display:none">Go live</button>
+        </div>
       </div>
 
       <!-- Host: set YouTube video (YouTube rooms only) -->
@@ -199,7 +203,7 @@
       <div id="show-browser-shows" class="show-browser-panel">
         <div class="browser-toolbar" style="margin-bottom:1rem;flex-shrink:0">
           <input type="text" id="show-search-input" class="search-input" placeholder="Search shows…" autocomplete="off">
-          <span id="show-count" class="movie-count"></span>
+          <span id="show-count" class="movie-count"></span><div class="view-toggle"><button type="button" class="view-toggle-btn active" data-view="grid">grid</button><button type="button" class="view-toggle-btn" data-view="list">list</button></div>
         </div>
         <div id="shows-grid" class="movies-grid modal-grid"></div>
       </div>
@@ -231,7 +235,7 @@
             <option value="rating">Rating</option>
           </select>
         </div>
-        <span id="movie-count" class="movie-count"></span>
+        <span id="movie-count" class="movie-count"></span><div class="view-toggle"><button type="button" class="view-toggle-btn active" data-view="grid">grid</button><button type="button" class="view-toggle-btn" data-view="list">list</button></div>
       </div>
       <div id="movies-grid" class="movies-grid modal-grid"></div>
     </div>
@@ -253,5 +257,6 @@
   <script src="/js/hls.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="/js/player.js"></script>
+  <script src="/js/viewtoggle.js"></script>
 </body>
 </html>

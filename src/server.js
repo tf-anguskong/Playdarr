@@ -160,7 +160,11 @@ app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
   });
 });
 
+// The lobby page is served by the authed '/' route; direct hits on index.html must not bypass it.
+app.get('/index.html', (req, res) => res.redirect('/'));
+
 app.use(express.static(path.join(__dirname, 'public'), {
+  index: false,
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.css') || filePath.endsWith('.js')) {
       res.setHeader('Cache-Control', 'no-store');
@@ -302,4 +306,4 @@ scheduler.init((scheduled) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`Movie Night running on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Playdarr running on port ${PORT}`));

@@ -4,7 +4,7 @@ const axios = require('axios');
 
 const PLEX_HOST        = process.env.LIVETV_PLEX_HOST || process.env.PLEX_URL || '';
 const PLEX_TOKEN       = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN || '';
-const CLIENT_ID        = 'movienight-app';
+const CLIENT_ID        = 'playdarr-app';
 const GUIDE_TTL_MS       = 300_000; // 5 min — channel lineup is stable
 const NOW_PLAYING_TTL_MS = 120_000; // 2 min — refresh program info frequently
 
@@ -99,40 +99,18 @@ async function fetchNowPlaying(headers) {
 // same existing subscription (and its already-running expiry clock).
 async function stopSubscription(subKey) {
   const headers = buildHeaders();
-
-  // First, delete the subscription
   await axios.delete(`${PLEX_HOST}/media/subscriptions/${subKey}`, {
     headers,
     params: { 'X-Plex-Client-Identifier': CLIENT_ID },
     timeout: 5000,
-  }).catch(() => {}); // Ignore errors - subscription might already be gone
-
-  // Also cancel any stale transcode sessions for this client
-  // Plex doesn't immediately kill old sessions when subscription is deleted
-  try {
-    const sessionsRes = await axios.get(`${PLEX_HOST}/transcode/sessions`, { headers, timeout: 5000 });
-    const sessions = sessionsRes.data?.MediaContainer?.TranscodeSession || [];
-    const now = Date.now() / 1000;
-
-    for (const session of sessions) {
-      // Cancel old static sessions (older than 60 seconds) to prevent accumulation
-      if (session.context === 'static' && session.timeStamp) {
-        const age = now - session.timeStamp;
-        if (age > 60) {
-          console.log(`[LiveTV] Cancelling stale transcode session ${session.key} (age: ${age}s)`);
-          await axios.delete(`${PLEX_HOST}/transcode/sessions/${session.key}`, { headers, timeout: 2000 }).catch(() => {});
-        }
-      }
-    }
-  } catch (err) {
-    // Ignore - cleaning up old sessions is best effort
-  }
-
-  console.log(`[LiveTV] Stopped subscription ${subKey} and cleaned stale sessions`);
+  }).catch(() => {}); // Ignore errors — subscription might already be gone
+  console.log(`[LiveTV] Stopped subscription ${subKey}`);
 }
 
 // Tune a live TV channel via Plex DVR — returns { ratingKey, subKey }
-async function tuneChannel(channelId) {
+// Pass a unique clientId to force Plex to create a fresh subscription instead of
+// deduplicating and returning the same stale one (used during proactive retune).
+async function tuneChannel(channelId, clientId = CLIENT_ID) {
   // Validate channelId is not empty (Plex may return numeric or string IDs)
   if (!channelId || typeof String(channelId).trim() !== 'string' || !String(channelId).trim()) {
     throw new Error('Invalid channelId: must be a non-empty string');
@@ -144,17 +122,36 @@ async function tuneChannel(channelId) {
   const url = `${PLEX_HOST}/livetv/dvrs/${cachedDvrKey}/channels/${channelId}/tune`;
   const { data } = await axios.post(url, null, {
     headers,
-    params: { 'X-Plex-Client-Identifier': CLIENT_ID },
+    params: { 'X-Plex-Client-Identifier': clientId },
     timeout: 15000,
   });
 
   // The tune response nests metadata under MediaSubscription[0].MediaGrabOperation[0].Metadata
   const sub  = data?.MediaContainer?.MediaSubscription?.[0];
   const meta = sub?.MediaGrabOperation?.[0]?.Metadata;
-  if (!meta?.ratingKey) throw new Error('Tune response missing ratingKey');
 
+  // If no ratingKey, wait and retry once (Plex may be slow to provision)
+  if (!meta?.ratingKey) {
+    console.log(`[LiveTV] Tune response missing ratingKey, waiting and retrying...`);
+    await new Promise(r => setTimeout(r, 2000));
+    const retry = await axios.post(url, null, {
+      headers,
+      params: { 'X-Plex-Client-Identifier': clientId },
+      timeout: 15000,
+    });
+    const sub2 = retry.data?.MediaContainer?.MediaSubscription?.[0];
+    const meta2 = sub2?.MediaGrabOperation?.[0]?.Metadata;
+    if (!meta2?.ratingKey) {
+      throw new Error('Tune response missing ratingKey (after retry)');
+    }
+    console.log(`[LiveTV] Retuned channel ${channelId} → ratingKey ${meta2.ratingKey} (sub ${sub2.key})`);
+    return { ratingKey: String(meta2.ratingKey), subKey: sub2.key };
+  }
+
+  // meta.key is '/livetv/sessions/{uuid}' — needed as the 'key' param in /:/timeline
+  // so Plex correctly associates keepalive pings with this live session.
   console.log(`[LiveTV] Tuned channel ${channelId} → ratingKey ${meta.ratingKey} (sub ${sub.key})`);
-  return { ratingKey: meta.ratingKey, subKey: sub.key };
+  return { ratingKey: String(meta.ratingKey), subKey: sub.key, sessionKey: meta.key };
 }
 
 async function getGuide() {

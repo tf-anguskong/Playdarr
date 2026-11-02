@@ -7,8 +7,8 @@ const plexAxios = axios.create({
   baseURL: PLEX_URL,
   headers: {
     Accept: 'application/json',
-    'X-Plex-Client-Identifier': 'movienight-app',
-    'X-Plex-Product': 'Movie Night'
+    'X-Plex-Client-Identifier': 'playdarr-app',
+    'X-Plex-Product': 'Playdarr'
   }
 });
 

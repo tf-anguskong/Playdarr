@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+const crypto = require('crypto');
 const liveTvManager = require('../livetv-manager');
 
 const PLEX_URL = process.env.PLEX_URL;
 const PLEX_TOKEN = process.env.PLEX_TOKEN;
 const LIVETV_PLEX_URL   = process.env.LIVETV_PLEX_HOST  || PLEX_URL;
 const LIVETV_PLEX_TOKEN = process.env.LIVETV_PLEX_TOKEN || PLEX_TOKEN;
-const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
+const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'playdarr-app';
 
 // Map to track LiveTV channelId per room (needed for retune on bust)
 const livetvChannelIds = new Map(); // roomId → channelId
@@ -17,6 +18,8 @@ const livetvSubKeys = new Map(); // roomId → subKey
 
 // Map to track the current LiveTV ratingKey per room (for redirecting stale requests)
 const livetvCurrentRatingKeys = new Map(); // roomId → currentRatingKey
+
+const liveRelay = require('../live-relay');
 
 // Cache the master manifest per room+movie so only the first viewer
 // calls start.m3u8. Latecomers get the cached manifest and share
@@ -43,17 +46,14 @@ setInterval(() => {
   }
 }, 30 * 60 * 1000); // run every 30 minutes
 
-// Send periodic timeline pings so Plex doesn't clean up the transcode session.
-// Without these, Plex kills the session after ~60s of perceived inactivity,
-// causing 404s on segment requests and forcing a full session restart.
+// For live TV, keepalive is handled by the LiveRelay in live-relay.js.
+// This function covers non-live sessions (movies, TV shows) — it sends
+// /:/timeline to prevent the Plex transcode session from being cleaned up.
 function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken) {
+  if (isLive) return; // relay handles live TV keepalive
   stopKeepalive(cacheKey);
   const startedAt = Date.now();
   const timer = setInterval(() => {
-    const elapsedMs = Date.now() - startedAt;
-    // Timeline ping — send advancing time so Plex knows the client is actively
-    // consuming the stream. Sending time:0 forever causes Plex to treat the
-    // session as inactive and terminate it after ~3 minutes (observed for live TV).
     axios.get(`${plexBaseUrl}/:/timeline`, {
       params: {
         'X-Plex-Token': plexToken,
@@ -62,95 +62,19 @@ function startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, ple
         ratingKey,
         key: `/library/metadata/${ratingKey}`,
         state: 'playing',
-        time: elapsedMs,
-        duration: isLive ? 0 : undefined,
+        time: Date.now() - startedAt,
         hasMDE: 1
       }
     }).catch(() => {});
-    // For live TV, also hit the transcode ping endpoint as belt-and-suspenders
-    if (isLive) {
-      axios.get(`${plexBaseUrl}/video/:/transcode/universal/ping`, {
-        params: { 'X-Plex-Token': plexToken, session: sessionId }
-      }).catch(() => {});
-    }
   }, KEEPALIVE_MS);
-  // Use distinct keys to avoid overwriting - one for main timer, one for live timer
-  keepaliveTimers.set(cacheKey + '-main', timer);
-
-  // For LiveTV, proactively refresh the session at 3 minutes to prevent
-  // Plex from killing it (~4 min timeout). This creates a new session BEFORE
-  // the old one dies, making the transition seamless to clients.
-  if (isLive) {
-    const PROACTIVE_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
-    const proactiveTimer = setTimeout(async () => {
-      console.log(`[HLS] Proactive session refresh for ${cacheKey} (3 min mark)`);
-      // Get the subKey for this room to stop old subscription
-      const roomId = cacheKey.split('-')[0];
-      const subKey = livetvSubKeys.get(roomId);
-      const oldSubKey = subKey;
-
-      // Stop old subscription and clean stale sessions
-      if (oldSubKey) {
-        const liveTvManager = require('../livetv-manager');
-        await liveTvManager.stopSubscription(oldSubKey).catch(() => {});
-      }
-
-      // Clear caches so next request creates fresh session
-      stopKeepalive(cacheKey);
-      manifestCache.delete(cacheKey);
-      activeSessions.delete(cacheKey);
-
-      // Clear the subKey so next tune gets a fresh one
-      if (roomId) {
-        livetvSubKeys.delete(roomId);
-        livetvCurrentRatingKeys.delete(roomId);
-      }
-
-      console.log(`[HLS] Proactive refresh complete for ${cacheKey}`);
-    }, PROACTIVE_REFRESH_MS);
-    keepaliveTimers.set(cacheKey + '-proactive', proactiveTimer);
-
-    // Also use a separate more aggressive keepalive timer (every 1.5s)
-    // to ensure Plex doesn't kill the session due to inactivity
-    const liveKeepalive = setInterval(() => {
-      // Additional transcode ping endpoint for LiveTV
-      axios.get(`${plexBaseUrl}/video/:/transcode/universal/ping`, {
-        params: { 'X-Plex-Token': plexToken, session: sessionId }
-      }).catch(() => {});
-      // Also hit the timeline with current time to keep session alive
-      const nowMs = Date.now() - startedAt;
-      axios.get(`${plexBaseUrl}/:/timeline`, {
-        params: {
-          'X-Plex-Token': plexToken,
-          'X-Plex-Client-Identifier': CLIENT_ID,
-          'X-Plex-Session-Identifier': sessionId,
-          ratingKey,
-          key: `/library/metadata/${ratingKey}`,
-          state: 'playing',
-          time: nowMs,
-          duration: 0,
-          hasMDE: 1
-        }
-      }).catch(() => {});
-    }, 1500);
-    keepaliveTimers.set(cacheKey + '-live', liveKeepalive);
-  }
+  keepaliveTimers.set(cacheKey, timer);
 }
 
 function stopKeepalive(cacheKey) {
-  // Clear main keepalive timer
-  const timer = keepaliveTimers.get(cacheKey + '-main');
-  if (timer) { clearInterval(timer); keepaliveTimers.delete(cacheKey + '-main'); }
-  // Clear LiveTV keepalive timer (both old '-live' key and legacy keys for backward compat)
-  const liveTimer = keepaliveTimers.get(cacheKey + '-live');
-  if (liveTimer) { clearInterval(liveTimer); keepaliveTimers.delete(cacheKey + '-live'); }
-  // Clear proactive refresh timer (uses setTimeout, not setInterval)
-  const proactiveTimer = keepaliveTimers.get(cacheKey + '-proactive');
-  if (proactiveTimer) { clearTimeout(proactiveTimer); keepaliveTimers.delete(cacheKey + '-proactive'); }
-  // Clear any remaining timer at the base key (legacy, shouldn't happen but safe to clear)
-  const legacyTimer = keepaliveTimers.get(cacheKey);
-  if (legacyTimer) { clearInterval(legacyTimer); keepaliveTimers.delete(cacheKey); }
+  const timer = keepaliveTimers.get(cacheKey);
+  if (timer) { clearInterval(timer); keepaliveTimers.delete(cacheKey); }
 }
+
 
 function clearRoomManifest(roomId) {
   for (const key of manifestCache.keys()) {
@@ -215,18 +139,19 @@ function rewriteM3u8(content, baseDir, proxyPrefix = '/api/stream/proxy') {
     .join('\n');
 }
 
+
 // ── Shared Plex transcode helper ───────────────────────────
 // Extracted so the route handler and prewarmManifest share the same logic.
-async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix, offsetMs = 0 }) {
+async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix, offsetMs = 0, playbackSessionId = null, bgSessionId = null }) {
   const params = {
     'X-Plex-Token': plexToken,
     'X-Plex-Client-Identifier': CLIENT_ID,
     'X-Plex-Session-Identifier': sessionId,
-    'X-Plex-Product': 'Movie Night',
+    'X-Plex-Product': 'Playdarr',
     'X-Plex-Platform': 'Chrome',
     'X-Plex-Platform-Version': '120.0',
     'X-Plex-Device': 'Windows',
-    'X-Plex-Device-Name': 'Movie Night',
+    'X-Plex-Device-Name': 'Playdarr',
     'X-Plex-Version': '1.0.0',
     hasMDE: '1',
     path: `/library/metadata/${ratingKey}`,
@@ -239,6 +164,11 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
     mediaIndex: '0',
     partIndex: '0',
     fastSeek: '1',
+    // Include session UUIDs in the start request so Plex can associate subsequent
+    // keepalive calls (background polls, timeline) with this specific playback session.
+    // Native Plex sends matching UUIDs in both start.mpd and all keepalive requests.
+    ...(playbackSessionId ? { 'X-Plex-Playback-Session-Id': playbackSessionId } : {}),
+    ...(bgSessionId       ? { 'X-Plex-Session-Id': bgSessionId }               : {}),
     ...(offsetMs > 0 ? { offset: offsetMs } : {})
   };
   // Build query string manually — axios encodes '/' as '%2F' in param values,
@@ -254,21 +184,22 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
     headers: {
       Accept: 'application/x-mpegURL',
       'X-Plex-Client-Identifier': CLIENT_ID,
-      'X-Plex-Product': 'Movie Night',
+      'X-Plex-Product': 'Playdarr',
       'X-Plex-Platform': 'Chrome',
-      'X-Plex-Device-Name': 'Movie Night',
+      'X-Plex-Device-Name': 'Playdarr',
       'X-Plex-Token': plexToken
     }
   });
   return rewriteM3u8(plexRes.data, '/video/:/transcode/universal/', proxyPrefix);
 }
 
+
 // ── HLS transcode start ────────────────────────────────────
 router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const { roomId, ratingKey } = req.params;
   if (!/^[\w-]+$/.test(ratingKey)) return res.status(400).send('Invalid ratingKey');
-  const sessionId = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey.slice(0, 24)}`;
-  let cacheKey    = `${roomId}-${ratingKey}`;
+  let actualRatingKey = ratingKey; // may be updated by bust+retune below
+  let cacheKey        = `${roomId}-${ratingKey}`;
 
   // ?bust=1 signals that the client detected a broken stream and needs a fresh
   // Plex session. Evict the stale manifest so we start over below.
@@ -283,9 +214,11 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
 
   // For LiveTV: check if client is using a stale ratingKey (e.g., after retune).
   // If so, redirect them to the current one to avoid 400 errors from Plex.
+  // Use String() comparison — Plex tune returns ratingKey as a number, but URL
+  // params are always strings; strict equality would cause a false redirect loop.
   if (isLive && !bust) {
     const currentRatingKey = livetvCurrentRatingKeys.get(roomId);
-    if (currentRatingKey && currentRatingKey !== ratingKey) {
+    if (currentRatingKey && String(currentRatingKey) !== String(ratingKey)) {
       console.log(`[HLS] Redirecting stale ratingKey ${ratingKey} → ${currentRatingKey} for room ${roomId}`);
       return res.redirect(`/api/stream/hls/${roomId}/${currentRatingKey}/master.m3u8?live=1`);
     }
@@ -293,11 +226,15 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
 
   // For LiveTV with bust=1, we need to retune to get a fresh Plex session
   // because the old session has expired (~3-4 min for LiveTV)
-  let actualRatingKey = ratingKey;
   if (bust && isLive) {
     const channelId = livetvChannelIds.get(roomId);
-    if (channelId) {
-      console.log(`[HLS] LiveTV bust - retuning to channel ${channelId}`);
+    if (!channelId) {
+      // Channel ID not found - likely server restart or stale state.
+      // Return 410 Gone to tell client to re-select the channel.
+      console.log(`[HLS] LiveTV bust but no channelId for room ${roomId} — session expired, client must re-select channel`);
+      return res.status(410).json({ error: 'LiveTV session expired', code: 'SESSION_EXPIRED' });
+    }
+    console.log(`[HLS] LiveTV bust - retuning to channel ${channelId}`);
       // Delete old subscription first to force a fresh session
       // Get subKey from our map (set by prewarmManifest or select-livetv-channel)
       const oldSubKey = livetvSubKeys.get(roomId);
@@ -321,7 +258,6 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       // Update for new session
       cacheKey = newCacheKey;
       console.log(`[HLS] LiveTV retuned to ratingKey=${actualRatingKey}, sub=${tuneResult.subKey}`);
-    }
   } else if (bust) {
     stopKeepalive(cacheKey);
     manifestCache.delete(cacheKey);
@@ -356,7 +292,13 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
     }
   }
 
-  const fetchManifest = () => callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey: actualRatingKey, proxyPrefix, offsetMs });
+  // Recompute sessionId from actualRatingKey — after a bust+retune, actualRatingKey
+  // may differ from the URL param ratingKey, and using a stale sessionId causes Plex
+  // to reject the new transcode start with 400.
+  const sessionId         = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${actualRatingKey.slice(0, 24)}`;
+  const playbackSessionId = isLive ? crypto.randomUUID() : null;
+  const bgSessionId       = isLive ? crypto.randomUUID() : null;
+  const fetchManifest     = () => callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey: actualRatingKey, proxyPrefix, offsetMs, playbackSessionId, bgSessionId });
 
   const promise = fetchManifest();
   manifestPending.set(cacheKey, promise);
@@ -364,8 +306,8 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   try {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
-    activeSessions.set(cacheKey, { sessionId, ratingKey: actualRatingKey, isLive, plexBaseUrl, plexToken });
-    startKeepalive(cacheKey, sessionId, actualRatingKey, isLive, plexBaseUrl, plexToken);
+    activeSessions.set(cacheKey, { sessionId, ratingKey: actualRatingKey, isLive, plexBaseUrl, plexToken, playbackSessionId, bgSessionId });
+    startKeepalive(cacheKey, sessionId, actualRatingKey, isLive, plexBaseUrl, plexToken, roomId);
     manifestPending.delete(cacheKey);
     res.send(manifest);
   } catch (err) {
@@ -375,51 +317,26 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   }
 });
 
-// Pre-start a Plex transcode session and cache its manifest server-side.
-// Called by doRetune in sync.js so the manifest is already cached by the time
-// clients receive livetv-reload — reducing black-screen time on retune from ~7s to ~2s.
-async function prewarmManifest(roomId, ratingKey, isLive, channelId = null, subKey = null) {
+
+async function prewarmManifest(roomId, ratingKey, isLive = false) {
+  // Live TV is handled by the server-side relay (live-relay.js), not manifest caching.
+  if (isLive) return;
+
   const cacheKey    = `${roomId}-${ratingKey}`;
+  if (manifestCache.has(cacheKey) || manifestPending.has(cacheKey)) return;
 
-  // Early return if already cached/pending - but still store channel/sub info first
-  if (manifestCache.has(cacheKey) || manifestPending.has(cacheKey)) {
-    // Still store LiveTV metadata even if manifest is cached
-    if (isLive && channelId) {
-      livetvChannelIds.set(roomId, channelId);
-    }
-    if (isLive && subKey) {
-      livetvSubKeys.set(roomId, subKey);
-    }
-    if (isLive) {
-      livetvCurrentRatingKeys.set(roomId, ratingKey);
-    }
-    return;
-  }
-
-  // Store channelId for LiveTV so we can retune on bust=1
-  if (isLive && channelId) {
-    livetvChannelIds.set(roomId, channelId);
-  }
-  // Store subKey for LiveTV so we can stop the subscription on retune
-  if (isLive && subKey) {
-    livetvSubKeys.set(roomId, subKey);
-  }
-  // Track the current ratingKey for LiveTV rooms
-  if (isLive) {
-    livetvCurrentRatingKeys.set(roomId, ratingKey);
-  }
-
-  const plexBaseUrl = isLive ? LIVETV_PLEX_URL   : PLEX_URL;
-  const plexToken   = isLive ? LIVETV_PLEX_TOKEN  : PLEX_TOKEN;
-  const proxyPrefix = isLive ? '/api/stream/proxy-live' : '/api/stream/proxy';
+  const plexBaseUrl = PLEX_URL;
+  const plexToken   = PLEX_TOKEN;
+  const proxyPrefix = '/api/stream/proxy';
   const sessionId   = `mn-${roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-${ratingKey.slice(0, 24)}`;
-  const promise     = callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix });
+
+  const promise = callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey, proxyPrefix });
   manifestPending.set(cacheKey, promise);
   try {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
-    activeSessions.set(cacheKey, { sessionId, ratingKey, isLive, plexBaseUrl, plexToken });
-    startKeepalive(cacheKey, sessionId, ratingKey, isLive, plexBaseUrl, plexToken);
+    activeSessions.set(cacheKey, { sessionId, ratingKey, isLive: false, plexBaseUrl, plexToken });
+    startKeepalive(cacheKey, sessionId, ratingKey, false, plexBaseUrl, plexToken);
     manifestPending.delete(cacheKey);
   } catch (err) {
     manifestPending.delete(cacheKey);
@@ -441,7 +358,56 @@ function filterProxyParams(query) {
   return filtered;
 }
 
-// ── General Plex proxy (HLS segments & sub-manifests) ──────
+// ── Live TV relay playlist ─────────────────────────────────────
+// Clients connect here instead of directly to Plex. The server-side relay
+// (live-relay.js) buffers segments from Plex so clients get a stable URL
+// that never expires, and Plex sees continuous consumption.
+router.get('/live/:roomId/index.m3u8', (req, res) => {
+  const { roomId } = req.params;
+  const dvr = liveRelay.getDvr(roomId);
+  if (!dvr) {
+    console.log(`[LiveHTTP] ${roomId}: playlist 503 (no DVR) for ${req.session?.user?.name}`);
+    return res.status(503).set('Retry-After', '2').send('Relay not active');
+  }
+  const playlist = dvr.getPlaylist();
+  if (!playlist) {
+    console.log(`[LiveHTTP] ${roomId}: playlist 503 (DVR empty) for ${req.session?.user?.name}`);
+    return res.status(503).set('Retry-After', '2').send('Buffering…');
+  }
+  dvr.playlistHits = (dvr.playlistHits || 0) + 1;
+  if (dvr.playlistHits <= 3 || dvr.playlistHits % 20 === 0) {
+    const { start, edge } = dvr.info();
+    console.log(`[LiveHTTP] ${roomId}: playlist #${dvr.playlistHits} -> ${req.session?.user?.name} (${dvr.entries.length} segs, ${start.toFixed(1)}–${edge.toFixed(1)}s)`);
+  }
+  res.setHeader('Content-Type', 'application/x-mpegURL');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send(playlist);
+});
+
+// Client-side Live TV debug lines, so they show up in `docker compose logs`.
+router.post('/live-log', (req, res) => {
+  const who = req.session?.user?.name || '?';
+  const lines = Array.isArray(req.body?.lines) ? req.body.lines.slice(0, 50) : [];
+  for (const l of lines) console.log(`[LiveClient ${who}] ${String(l).slice(0, 300).replace(/\s+/g, ' ')}`);
+  res.sendStatus(204);
+});
+
+router.get('/live/:roomId/:segment', (req, res) => {
+  const { roomId, segment } = req.params;
+  if (!/^[\w.-]+$/.test(segment)) return res.status(400).send('Bad segment name');
+  const dvr = liveRelay.getDvr(roomId);
+  if (!dvr) return res.status(404).send('Relay not active');
+  const file = dvr.segmentPath(segment);
+  if (!file) {
+    console.log(`[LiveHTTP] ${roomId}: segment ${segment} 404 (not in DVR window) for ${req.session?.user?.name}`);
+    return res.status(404).send('Segment not in DVR window');
+  }
+  res.setHeader('Content-Type', 'video/MP2T');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(file, err => { if (err && !res.headersSent) res.status(404).end(); });
+});
+
+// ── General Plex proxy (HLS/DASH segments & sub-manifests) ──────
 async function handleProxy(req, res, plexBaseUrl, plexToken, proxyPrefix) {
   const plexPath = '/' + req.params[0];
 
@@ -480,13 +446,13 @@ async function handleProxy(req, res, plexBaseUrl, plexToken, proxyPrefix) {
         res.send(rewriteM3u8(text, baseDir, proxyPrefix));
       });
     } else {
-      // Stream directly (TS, m4s segments, etc.)
+      // Stream directly (TS segments, etc.)
       response.data.pipe(res);
       req.on('close', () => response.data.destroy());
     }
   } catch (err) {
     const status = err.response?.status || 500;
-    console.error(`[HLS] Proxy error ${status} for ${plexPath.substring(0, 80)}:`, err.message);
+    console.error(`[Proxy] error ${status} for ${plexPath.substring(0, 80)}:`, err.message);
     if (!res.headersSent) {
       res.status(status).send('Proxy error');
     }

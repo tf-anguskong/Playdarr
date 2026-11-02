@@ -355,7 +355,7 @@ async function submitSchedule() {
     const res  = await fetch('/api/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name || 'Movie Night', scheduledFor, timezone, movieKey, movieTitle, partId })
+      body: JSON.stringify({ name: name || 'Watch Party', scheduledFor, timezone, movieKey, movieTitle, partId })
     });
     const data = await res.json();
     if (!res.ok) {

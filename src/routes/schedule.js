@@ -50,7 +50,7 @@ router.post('/', (req, res) => {
 
   const user = req.session.user;
   const scheduled = scheduler.createScheduled({
-    name:         (name || '').trim() || 'Movie Night',
+    name:         (name || '').trim() || 'Watch Party',
     scheduledFor: scheduledDate.toISOString(),
     timezone:     resolvedTz,
     movieKey:     movieKey  || null,

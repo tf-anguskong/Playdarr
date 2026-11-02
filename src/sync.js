@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
+const { startRelay, stopRelay, getDvr } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 
@@ -54,6 +55,7 @@ class Room {
     this.liveTvChannelTitle = null;  // e.g. 'KIRO/CBS'
     this.liveTvChannelId    = null;  // DVR channel ID for re-tuning
     this.liveTvSubKey       = null;  // Plex MediaSubscription key for current tune
+    this.retuning           = false; // guard against concurrent retunes
     this.movieKey       = null;
     this.movieTitle     = null;
     this.partId         = null;
@@ -84,6 +86,7 @@ class Room {
       hasNextEpisode: this.roomType === 'tv' && this.tvEpisodeIndex < this.tvEpisodeList.length - 1,
       liveTvChannel:      this.liveTvChannel,
       liveTvChannelTitle: this.liveTvChannelTitle,
+      liveDvr: this.roomType === 'livetv' ? (getDvr(this.id)?.info() || null) : null,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -169,39 +172,39 @@ function formatEpisodeTitle(showTitle, ep) {
   return `${showTitle ? showTitle + ' · ' : ''}${se}${ep.title || ''}`;
 }
 
-// ── Live TV retune (reactive only — called when HLS stream fails) ─────────
+// ── Live TV retune — restarts the server-side relay with a fresh Plex session ──
 async function doRetune(room, io) {
   if (!room.liveTvChannelId) return;
+  if (room.retuning) return; // prevent concurrent retunes (e.g. proactive + stall firing together)
+  room.retuning = true;
   const liveTvManager = require('./livetv-manager');
   try {
-    // DELETE the current subscription so Plex creates a genuinely fresh session.
-    // Without this, retune returns the same ratingKey and the dying session continues.
-    if (room.liveTvSubKey) {
-      await liveTvManager.stopSubscription(room.liveTvSubKey).catch(() => {});
-    }
+    const oldSubKey = room.liveTvSubKey;
     clearRoomManifest(room.id);
-    const { ratingKey, subKey } = await liveTvManager.tuneChannel(room.liveTvChannelId);
+
+    // Use a unique clientId so Plex creates a fresh subscription rather than
+    // deduplicating and returning the same stale one. This lets us tune BEFORE
+    // stopping the old subscription — the old relay keeps its valid session and
+    // can continue fetching new segments during the warm-swap.
+    const freshClientId = `playdarr-app-r${Date.now()}`;
+    const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(room.liveTvChannelId, freshClientId);
     room.liveTvSubKey = subKey;
+    room.movieKey     = String(ratingKey);
 
-    // Pre-warm: start the new Plex transcode session and cache its manifest
-    // before telling clients to switch. Clients get an instant cache hit when
-    // they request the new manifest, and Plex has had ~1.5s to buffer the first
-    // segments — cutting black-screen time from ~7s to ~2s.
-    await prewarmManifest(room.id, ratingKey, true, room.liveTvChannelId, subKey).catch(() => {});
-    await new Promise(r => setTimeout(r, 1500));
+    // Warm-swap: new relay buffers alongside the still-valid old relay.
+    // Clients never see a 503 gap.
+    await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io) });
 
-    const keyChanged = ratingKey !== room.movieKey;
-    room.movieKey    = ratingKey;
-    room.playing     = true;
-    room.position    = 0;
-    room.lastUpdate  = Date.now();
-    // If ratingKey is unchanged the clients won't detect the new session from state
-    // alone — force them to reload the HLS manifest explicitly.
-    if (!keyChanged) room.broadcast(io, 'livetv-reload');
+    // Old subscription stopped AFTER swap — old relay had a live session right
+    // up until the moment it was replaced.
+    if (oldSubKey) liveTvManager.stopSubscription(oldSubKey).catch(() => {});
+
     room.broadcastState(io);
     console.log(`[Room] "${room.name}" → Retuned ${room.liveTvChannel} → ratingKey=${ratingKey} (sub ${subKey})`);
   } catch (err) {
     console.error(`[Room] Retune failed for ${room.liveTvChannel}:`, err.message);
+  } finally {
+    room.retuning = false;
   }
 }
 
@@ -229,7 +232,10 @@ function setupSync(io, enabledRoomTypes) {
       // This makes currentPosition() return a smooth, deterministic value
       // that advances at real-time speed — same as movie/TV sync.
       const hostViewer = room.viewers.get(room.hostSocketId);
-      if (hostViewer?.reportedTime != null && hostViewer.reportedAt != null) {
+      // Only while playing and the report is fresh — a paused host stops reporting,
+      // and its stale time must not drag the room position backwards.
+      if (room.playing && hostViewer?.reportedTime != null && hostViewer.reportedAt != null
+          && Date.now() - hostViewer.reportedAt < 3000) {
         room.position   = hostViewer.reportedTime;
         room.lastUpdate = hostViewer.reportedAt;
       }
@@ -238,7 +244,7 @@ function setupSync(io, enabledRoomTypes) {
         room.broadcastViewers(io);
       }
     });
-  }, 2000);
+  }, 1000);
 
   io.on('connection', (socket) => {
     const user = socket.user;
@@ -445,21 +451,26 @@ function setupSync(io, enabledRoomTypes) {
       }
       room._tuningInProgress = true;
 
-      clearRoomManifest(room.id); // stop any existing Plex transcode session
+      clearRoomManifest(room.id);
       try {
         const liveTvManager = require('./livetv-manager');
-        const { ratingKey, subKey } = await liveTvManager.tuneChannel(channelId);
+        const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(channelId);
         room.liveTvChannel      = String(channel || '').slice(0, 20);
         room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
         room.liveTvChannelId    = channelId;
         room.liveTvSubKey       = subKey;
-        room.movieKey   = ratingKey;
-        room.playing    = true;
-        room.position   = 0;
-        room.lastUpdate = Date.now();
+        room.movieKey           = String(ratingKey);
 
-        // Pre-warm the manifest so clients get instant playback
-        await prewarmManifest(room.id, ratingKey, true, channelId, subKey).catch(() => {});
+        // Start server-side relay — records Plex segments into a fresh per-room DVR
+        // (a channel change discards the previous one). Clients connect to
+        // /api/stream/live/:roomId/index.m3u8.
+        await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io), fresh: true });
+
+        // Start a couple of segments behind the newest so playback has buffer ahead of it.
+        const dvr = getDvr(room.id)?.info() || { start: 0, edge: 0 };
+        room.position   = Math.max(dvr.start, dvr.edge - 6);
+        room.playing    = true;
+        room.lastUpdate = Date.now();
 
         room.broadcastState(io);
         console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey}, sub ${subKey})`);
@@ -486,11 +497,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      // LiveTV intentionally bypasses playback lock — the stream is shared across
-      // all viewers and cannot be independently paused/resumed by guests. Only the
-      // host can retune to a different channel, but playback state (play/pause)
-      // must stay in sync for everyone watching the same stream.
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
+      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       room.position = position ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
@@ -506,8 +513,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      // LiveTV intentionally bypasses playback lock — see play handler for explanation.
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
+      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       room.position = position ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
@@ -753,6 +759,7 @@ function setupSync(io, enabledRoomTypes) {
           // Guest hosts cannot reconnect — close the room immediately
           console.log(`[Room] Guest host "${user.name}" disconnected from "${room.name}" — closing`);
           room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
+          stopRelay(room.id);
           inviteTokens.delete(room.inviteToken);
           rooms.delete(room.id);
           broadcastRoomList(io);
@@ -764,6 +771,7 @@ function setupSync(io, enabledRoomTypes) {
             if (!rooms.has(room.id)) return; // already cleaned up
             console.log(`[Room] "${room.name}" closed — host did not reconnect`);
             room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
+            stopRelay(room.id);
             inviteTokens.delete(room.inviteToken);
             rooms.delete(room.id);
             broadcastRoomList(io);
