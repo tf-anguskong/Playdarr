@@ -109,6 +109,9 @@
           <input type="text" id="chat-input" class="chat-input" placeholder="Message…" maxlength="300" autocomplete="off">
           <button id="chat-send" class="btn-chat-send">↵</button>
         </div>
+        <!-- Host only: pause everyone and resume them together from the same spot -->
+        <button id="resync-btn" class="btn-resync" type="button" style="display:none"
+                title="Pause everyone, then resume together from your position after a 2-second countdown">⟳ Force resync</button>
       </div>
 
       <div class="sync-status">
@@ -164,6 +167,15 @@
         <button class="reaction-btn" data-emoji="😱">😱</button>
         <button class="reaction-btn" data-emoji="😮">😮</button>
         <button class="reaction-btn" data-emoji="👏">👏</button>
+      </div>
+
+      <!-- Force resync countdown (everyone) -->
+      <div id="resync-overlay" class="resync-overlay" style="display:none">
+        <div class="resync-card">
+          <div class="resync-title">⟳ Resyncing</div>
+          <div id="resync-count" class="resync-count">2</div>
+          <div id="resync-by" class="resync-by"></div>
+        </div>
       </div>
 
       <!-- Volume control overlay (visible when native controls are hidden due to playback lock) -->

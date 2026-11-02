@@ -65,6 +65,8 @@ function setHostUI(on, inviteToken) {
   document.getElementById('countdown-section').style.display     = (on && !isLiveTv) ? 'block' : 'none';
   document.getElementById('intermission-section').style.display  = (on && !isLiveTv) ? 'block' : 'none';
   document.getElementById('room-controls-section').style.display = on ? 'block' : 'none';
+  const resyncBtn = document.getElementById('resync-btn');
+  if (resyncBtn) resyncBtn.style.display = on ? 'block' : 'none';
   if (on && inviteToken) setupInviteLink(inviteToken);
   if (!on) document.getElementById('invite-section').style.display = 'none';
 }
@@ -1051,6 +1053,64 @@ video.addEventListener('seeked', () => {
   if (roomSettings.playbackLocked && !isHost) return;
   const pos = playbackPos();
   if (pos != null) socket.emit('seek',  { position: pos });
+});
+
+// ── Force resync ───────────────────────────────────────────
+// Host: pause everyone and resume them together from the same spot. The server parks the room at the host's
+// position and resumes it after a 2 s countdown; here every client seeks to that spot while paused (a Live TV
+// guest otherwise only converges once playing) and shows the countdown.
+const resyncBtn = document.getElementById('resync-btn');
+const resyncOverlay = document.getElementById('resync-overlay');
+let resyncReadyAt = 0, resyncBtnTick = null, resyncOverlayTick = null;
+
+function setResyncCooldown(ms) {
+  resyncReadyAt = performance.now() + ms;
+  clearInterval(resyncBtnTick);
+  const update = () => {
+    const left = Math.ceil((resyncReadyAt - performance.now()) / 1000);
+    if (left > 0) { resyncBtn.disabled = true; resyncBtn.textContent = `⟳ Force resync (${left}s)`; }
+    else { resyncBtn.disabled = false; resyncBtn.textContent = '⟳ Force resync'; clearInterval(resyncBtnTick); }
+  };
+  update();
+  if (ms > 0) resyncBtnTick = setInterval(update, 250);
+}
+
+resyncBtn?.addEventListener('click', () => {
+  if (performance.now() < resyncReadyAt) return;
+  socket.emit('force-resync');
+  setResyncCooldown(10000);   // optimistic; the server's answer below corrects it
+});
+
+socket.on('resync-denied', ({ reason, waitSec } = {}) => {
+  if (reason === 'cooldown') { setResyncCooldown((waitSec || 1) * 1000); showNotif(`⟳ You can resync again in ${waitSec || 1}s`); }
+  else { setResyncCooldown(0); showNotif(reason === 'nothing-playing' ? '⟳ Nothing is playing yet' : '⟳ Hold on, something else is in progress'); }
+});
+
+socket.on('resync', ({ seconds = 2, position, by } = {}) => {
+  closeGuide();
+  isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+  try {
+    if (roomType === 'youtube') {
+      if (ytPlayer && ytPlayer.seekTo) { ytPlayer.seekTo(position, true); ytPlayer.pauseVideo(); }
+    } else {
+      video.pause();
+      if (roomType === 'livetv') { if (liveTlOffset != null) liveSeekAbs(position); }
+      else if (Number.isFinite(position)) video.currentTime = position;
+    }
+  } catch { /* the room-state that follows corrects any miss */ }
+  releaseSyncLock();
+
+  const endAt = performance.now() + seconds * 1000;
+  document.getElementById('resync-by').textContent = by ? `${by} is resyncing everyone` : '';
+  resyncOverlay.style.display = 'flex';
+  clearInterval(resyncOverlayTick);
+  const tick = () => {
+    const left = Math.ceil((endAt - performance.now()) / 1000);
+    document.getElementById('resync-count').textContent = Math.max(left, 1);
+    if (performance.now() >= endAt + 400) { resyncOverlay.style.display = 'none'; clearInterval(resyncOverlayTick); }
+  };
+  tick();
+  resyncOverlayTick = setInterval(tick, 100);
 });
 
 // ── Live TV tuning overlay ─────────────────────────────────

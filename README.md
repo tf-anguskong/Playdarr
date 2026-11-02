@@ -82,6 +82,7 @@ Whoever owns the Plex server is the admin (see *Server-owner admin* above) and g
 - **Play/pause attribution** — a system message appears in chat whenever someone plays or pauses, showing who did it and at what position
 - **Emoji reactions** — a reaction bar (👍 ❤️ 😂 😱 😮 👏) overlays the video on hover; reactions float up the screen for all viewers, each tagged with the avatar (or initial) of whoever sent it
 - **Sync indicators** — the viewer list shows each viewer's offset from the host (e.g. `+0.3s`), colour-coded green / amber / red
+- **Force resync** — the host has a *⟳ Force resync* button under the message box. It pauses everyone at the host's position, shows a 2-second "Resyncing" countdown to everyone, then resumes all viewers together from that same spot. Handy when someone drifts or buffers. It works in every room type (for Live TV it uses the host's own player position), is host-only, and is limited to once every 10 seconds so it can't be spammed.
 - **Countdown timer** — host can fire a countdown (3 s, 5 s, 10 s, or custom) before playback begins; all viewers see a film-leader overlay with beep tones; host can cancel mid-count
 - **Intermission** — host can start a timed intermission (1–120 minutes); the video pauses for everyone and an overlay displays the movie poster with a live MM:SS countdown; the movie resumes automatically when the timer ends, or the host can end it early
 
