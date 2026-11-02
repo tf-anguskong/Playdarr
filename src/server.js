@@ -24,6 +24,9 @@ const { router: streamRouter, clearRoomManifest } = require('./routes/stream');
 const { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom } = require('./sync');
 const scheduler = require('./scheduler');
 const scheduleRouter = require('./routes/schedule');
+const adminRouter = require('./routes/admin');
+const notifier = require('./notifier');
+const { buildIcs, googleCalendarUrl } = require('./ical');
 
 const enabledRoomTypes = {
   movie:   process.env.ROOM_TYPE_MOVIE   !== 'false',
@@ -110,6 +113,14 @@ function requirePlexAuth(req, res, next) {
   res.redirect('/login');
 }
 
+// The Plex server owner only (set at login from plex.tv's `owned` flag on this server)
+function requireAdmin(req, res, next) {
+  const user = req.session?.user;
+  if (user && !user.isGuest && user.isAdmin) return next();
+  if (req.headers.accept?.includes('text/html')) return res.redirect('/');
+  res.status(403).json({ error: 'Server owner only' });
+}
+
 // Rate limit auth endpoints — prevents PIN enumeration and brute-force
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -136,6 +147,7 @@ const segmentLimiter = rateLimit({
 app.use('/api/stream/proxy', segmentLimiter);
 app.use('/api/stream', requireAuth, streamRouter);
 app.use('/api/schedule', requirePlexAuth, scheduleRouter);
+app.use('/api/admin', requireAdmin, adminRouter);
 
 app.get('/api/config', (req, res) => res.json({ enabledRoomTypes }));
 
@@ -162,6 +174,7 @@ app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
 
 // The lobby page is served by the authed '/' route; direct hits on index.html must not bypass it.
 app.get('/index.html', (req, res) => res.redirect('/'));
+app.get('/admin.html', (req, res) => res.redirect('/admin'));
 
 app.use(express.static(path.join(__dirname, 'public'), {
   index: false,
@@ -177,6 +190,11 @@ app.use(express.static(path.join(__dirname, 'public'), {
 app.get('/', requireAuth, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.get('/admin', requireAdmin, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
 app.get('/watch/:roomId', (req, res, next) => {
@@ -227,11 +245,23 @@ app.get('/join/:inviteToken/info', (req, res) => {
       scheduled:    true,
       scheduledFor: scheduled.scheduledFor,
       name:         scheduled.name,
-      timezone:     scheduled.timezone
+      timezone:     scheduled.timezone,
+      recurrence:   scheduled.recurrence || null,
+      calendar:     { ics: `/join/${token}/event.ics`, google: googleCalendarUrl(scheduled) }
     });
   }
 
   res.status(404).json({ error: 'Invite expired or invalid' });
+});
+
+// Calendar file for a scheduled night — public like the invite link itself (the token is the secret)
+app.get('/join/:inviteToken/event.ics', (req, res) => {
+  const scheduled = scheduler.getByInviteToken(req.params.inviteToken);
+  if (!scheduled) return res.status(404).send('Not found');
+  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="playdarr-watch-night.ics"');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(buildIcs(scheduled));
 });
 
 // Invite link — public, no auth required
@@ -300,9 +330,11 @@ app.get('/login', (req, res) => {
 
 setupSync(io, enabledRoomTypes);
 
+notifier.init();
 scheduler.init((scheduled) => {
   const room = createScheduledRoom(scheduled);
   console.log(`[Scheduler] Room "${room.name}" opened from schedule (roomId=${room.id})`);
+  notifier.notify('schedule.started', notifier.scheduleData(scheduled));
 });
 
 const PORT = process.env.PORT || 3000;

@@ -19,6 +19,7 @@ async function loadUser() {
   currentUserId = user.id || null;
   isAdmin = !!user.isAdmin;
   if (isAdmin) {
+    document.getElementById('admin-link').style.display = 'inline';
     document.getElementById('user-name').insertAdjacentHTML('afterend', ' <span class="admin-badge" title="You own the Plex server Playdarr is connected to">admin</span>');
     renderRooms(lastRooms);
   }
@@ -247,6 +248,7 @@ function openScheduleModal() {
   document.getElementById('sched-movie-partid').value = '';
   document.getElementById('sched-movie-clear').style.display = 'none';
   document.getElementById('sched-error').style.display = 'none';
+  document.getElementById('sched-repeat').value = '';
   document.getElementById('schedule-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('sched-name').focus(), 50);
 }
@@ -381,7 +383,8 @@ async function submitSchedule() {
     const res  = await fetch('/api/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name || 'Watch Party', scheduledFor, timezone, movieKey, movieTitle, partId })
+      body: JSON.stringify({ name: name || 'Watch Party', scheduledFor, timezone, movieKey, movieTitle, partId,
+        recurrence: document.getElementById('sched-repeat').value || null })
     });
     const data = await res.json();
     if (!res.ok) {
@@ -438,7 +441,7 @@ function renderScheduled(list) {
       <div class="room-card scheduled-card">
         <div class="room-card-header">
           <span class="room-card-name">${esc(s.name)}</span>
-          <span class="sched-badge">Scheduled</span>
+          <span class="sched-badge">${s.recurrence ? (s.recurrence === 'biweekly' ? 'Every 2 weeks' : 'Weekly') : 'Scheduled'}</span>
         </div>
         <div class="room-card-movie">
           ${s.movieTitle ? `<span class="room-now-playing">🎬 ${esc(s.movieTitle)}</span><br>` : ''}
@@ -448,7 +451,10 @@ function renderScheduled(list) {
           <span class="room-viewers">by ${esc(s.createdBy ? s.createdBy.name : 'unknown')}</span>
           <div style="display:flex;gap:0.4rem;align-items:center">
             <button class="btn-copy-link" data-url="${esc(inviteUrl)}" title="Copy invite link">Copy Link</button>
-            ${isOwner ? `<button class="btn-cancel-sched" data-id="${esc(s.id)}">Cancel</button>` : ''}
+            ${s.calendar ? `<a class="btn-copy-link" href="${esc(s.calendar.ics)}" title="Download a calendar file (Apple, Outlook…)" style="text-decoration:none">.ics</a>
+            <a class="btn-copy-link" href="${esc(s.calendar.google)}" target="_blank" rel="noopener" title="Add to Google Calendar" style="text-decoration:none">Google</a>` : ''}
+            ${isOwner && s.recurrence ? `<button class="btn-copy-link" data-skip="${esc(s.id)}" title="Skip the next night">Skip next</button>` : ''}
+            ${isOwner ? `<button class="btn-cancel-sched" data-id="${esc(s.id)}">${s.recurrence ? 'Cancel series' : 'Cancel'}</button>` : ''}
           </div>
         </div>
       </div>
@@ -466,10 +472,18 @@ function renderScheduled(list) {
     });
   });
 
+  grid.querySelectorAll('[data-skip]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Skip the next occurrence of this night?')) return;
+      const res = await fetch('/api/schedule/' + btn.dataset.skip + '/skip', { method: 'POST' }).catch(() => null);
+      if (res && res.ok) loadScheduled(); else alert('Failed to skip.');
+    });
+  });
+
   // Wire up cancel buttons
   grid.querySelectorAll('.btn-cancel-sched').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Cancel this scheduled room?')) return;
+      if (!confirm(btn.textContent.includes('series') ? 'Cancel this whole recurring series?' : 'Cancel this scheduled room?')) return;
       try {
         const res = await fetch('/api/schedule/' + btn.dataset.id, { method: 'DELETE' });
         if (res.ok) {

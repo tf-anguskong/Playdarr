@@ -4,6 +4,8 @@ const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
 const { startRelay, startHdhr, hdhrEnabled, stopRelay, getDvr } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
+const notifier = require('./notifier');
+const voting = require('./voting');
 
 const rooms        = new Map(); // roomId -> Room
 const inviteTokens = new Map(); // inviteToken -> roomId
@@ -166,6 +168,36 @@ function closeRoom(io, room, reason) {
   broadcastRoomList(io);
 }
 
+/** Point a room at a movie (host pick, or the winner of a vote). */
+function applyMovie(io, room, movieKey, movieTitle, partId) {
+  clearRoomManifest(room.id); // Evict cached manifest so next request starts fresh
+  room.movieKey = movieKey; room.movieTitle = movieTitle; room.partId = partId;
+  room.playing = false; room.position = 0; room.lastUpdate = Date.now();
+  console.log(`[Room] "${room.name}" → "${movieTitle}"`);
+  room.broadcastState(io);
+  broadcastRoomList(io);
+}
+
+// ── Movie vote helpers ──
+const viewerUserIds = room => [...new Set(Array.from(room.viewers.values()).map(v => v.id))];
+
+function broadcastVoteProgress(io, room) {
+  if (room.vote?.status !== 'voting') return;
+  room.broadcast(io, 'vote-progress', voting.progress(room.vote, viewerUserIds(room)));
+}
+
+/** Once everyone still in the room has swiped the whole deck, reveal the result. */
+function maybeFinalizeVote(io, room) {
+  const vote = room.vote;
+  if (!vote || vote.status !== 'voting') return;
+  const { done, total } = voting.progress(vote, viewerUserIds(room));
+  if (total > 0 && done === total) {
+    room.broadcast(io, 'vote-result', { id: vote.id, ...voting.finalize(vote) });
+  } else {
+    broadcastVoteProgress(io, room);
+  }
+}
+
 /** Remove one viewer from their room. `ban` also stops that account rejoining this room. */
 function removeViewer(io, room, targetSocketId, byUser, { ban = false } = {}) {
   const target = room.viewers.get(targetSocketId);
@@ -173,6 +205,7 @@ function removeViewer(io, room, targetSocketId, byUser, { ban = false } = {}) {
   io.to(targetSocketId).emit('kicked', { byAdmin: !!byUser.isAdmin });
   room.viewers.delete(targetSocketId);
   socketToRoom.delete(targetSocketId);
+  maybeFinalizeVote(io, room);
   if (ban && target.id) (room.bannedIds || (room.bannedIds = new Set())).add(target.id);
   room.broadcastViewers(io);
   broadcastRoomList(io);
@@ -369,6 +402,10 @@ function setupSync(io, enabledRoomTypes) {
 
       socket.emit('room-created', { roomId: room.id, inviteToken: room.inviteToken });
       broadcastRoomList(io);
+      notifier.notify('room.created', {
+        name: room.name, createdBy: user.displayName || user.name,
+        url: `${(process.env.APP_URL || '').replace(/\/$/, '')}/join/${room.inviteToken}`,
+      });
       console.log(`[Room] ${user.name} created "${room.name}" (${room.id})`);
     });
 
@@ -426,6 +463,11 @@ function setupSync(io, enabledRoomTypes) {
 
       socket.emit('room-state', { ...room.state(), isHost, isAdmin, inviteToken: isHost ? room.inviteToken : null });
       room.broadcastViewers(io);
+      if (room.vote) {
+        socket.emit('vote-started', voting.publicState(room.vote, user.id));
+        if (room.vote.status === 'done') socket.emit('vote-result', { id: room.vote.id, ...room.vote.result });
+        else maybeFinalizeVote(io, room);
+      }
       console.log(`[Room] ${user.name} joined "${room.name}"`);
     });
 
@@ -433,12 +475,60 @@ function setupSync(io, enabledRoomTypes) {
     socket.on('select-movie', ({ movieKey, movieTitle, partId }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || room.hostSocketId !== socket.id) return;
-      clearRoomManifest(room.id); // Evict cached manifest so next request starts fresh
-      room.movieKey = movieKey; room.movieTitle = movieTitle; room.partId = partId;
-      room.playing = false; room.position = 0; room.lastUpdate = Date.now();
-      console.log(`[Room] "${room.name}" → "${movieTitle}"`);
-      room.broadcastState(io);
-      broadcastRoomList(io);
+      applyMovie(io, room, movieKey, movieTitle, partId);
+    });
+
+    // ── Movie vote: swipe through a filtered deck, most-liked movie wins ──────────
+    // The host controls it (filters, start, reveal, cancel, and playing the winner); everyone swipes.
+    socket.on('vote-start', async (filters) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.hostSocketId !== socket.id) return;
+      if (room.roomType !== 'movie') return socket.emit('error-msg', 'Voting is for movie rooms');
+      try {
+        const { candidates, matched, filters: clean } = await voting.drawDeck(filters);
+        if (candidates.length < voting.MIN_DECK) {
+          return socket.emit('vote-error', `Only ${candidates.length} movie${candidates.length === 1 ? '' : 's'} match those filters — loosen them a little`);
+        }
+        room.vote = voting.create(candidates, clean, matched);
+        console.log(`[Vote] "${room.name}" started with ${candidates.length} of ${matched} matching movies`);
+        // Per-user payload: a refreshed page gets its own earlier swipes back
+        room.viewers.forEach((v, sid) => io.to(sid).emit('vote-started', voting.publicState(room.vote, v.id)));
+        broadcastVoteProgress(io, room);
+      } catch (err) {
+        console.error('[Vote] deck error:', err.message);
+        socket.emit('vote-error', 'Could not load the movie library');
+      }
+    });
+
+    socket.on('vote-cast', ({ voteId, ratingKey, yes } = {}) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room?.vote || room.vote.id !== voteId) return;
+      if (!voting.cast(room.vote, user.id, user.displayName || user.name, String(ratingKey), yes)) return;
+      maybeFinalizeVote(io, room);
+    });
+
+    socket.on('vote-reveal', () => {
+      const room = socketToRoom.get(socket.id);
+      if (!room?.vote || room.vote.status !== 'voting' || room.hostSocketId !== socket.id) return;
+      room.broadcast(io, 'vote-result', { id: room.vote.id, ...voting.finalize(room.vote) });
+    });
+
+    socket.on('vote-cancel', () => {
+      const room = socketToRoom.get(socket.id);
+      if (!room?.vote || room.hostSocketId !== socket.id) return;
+      room.vote = null;
+      room.broadcast(io, 'vote-closed', { reason: 'cancelled' });
+    });
+
+    // Play one of the deck's movies — normally the winner, but the host may pick a runner-up
+    socket.on('vote-play', ({ ratingKey } = {}) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room?.vote || room.vote.status !== 'done' || room.hostSocketId !== socket.id) return;
+      const pick = voting.findCandidate(room.vote, String(ratingKey));
+      if (!pick) return;
+      room.vote = null;
+      room.broadcast(io, 'vote-closed', { reason: 'picked' });
+      applyMovie(io, room, pick.ratingKey, pick.title, pick.partId);
     });
 
     // ── Select TV episode (host only, TV rooms) ────────────
@@ -849,6 +939,7 @@ function setupSync(io, enabledRoomTypes) {
       if (!room) return;
 
       room.viewers.delete(socket.id);
+      maybeFinalizeVote(io, room);
 
       if (room.hostSocketId === socket.id) {
         if (room.countdownTimer) {
@@ -930,6 +1021,10 @@ function createScheduledRoom(scheduled) {
     name:        scheduled.name
   });
 
+  // A recurring night reuses its invite link; if last time's room is somehow still open, keep it
+  const existing = inviteTokens.get(scheduled.inviteToken);
+  if (existing && rooms.has(existing)) return rooms.get(existing);
+
   // Preserve the pre-shared invite token
   room.inviteToken  = scheduled.inviteToken;
   room.awaitingHost = true;
@@ -952,4 +1047,12 @@ function getRoom(roomId) {
   return rooms.get(roomId) || null;
 }
 
-module.exports = { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom };
+/** Close a room from outside the socket layer (admin panel / API). Returns false if it doesn't exist. */
+function adminCloseRoom(roomId, reason = 'Closed by the server owner') {
+  const room = rooms.get(roomId);
+  if (!room || !_io) return false;
+  closeRoom(_io, room, reason);
+  return true;
+}
+
+module.exports = { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, adminCloseRoom };

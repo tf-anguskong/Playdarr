@@ -30,6 +30,16 @@ async function poll() {
     const res  = await fetch('/join/' + token + '/info', { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
+    if (data.calendar) {
+      document.getElementById('cal-ics').href = data.calendar.ics;
+      document.getElementById('cal-google').href = data.calendar.google;
+      document.getElementById('cal-links').style.display = 'block';
+    }
+    if (data.recurrence) {
+      const note = document.getElementById('repeat-note');
+      note.textContent = data.recurrence === 'biweekly' ? 'Repeats every 2 weeks — keep this link.' : 'Repeats every week — keep this link.';
+      note.style.display = 'block';
+    }
     if (data.roomId) {
       clearInterval(interval);
       window.location.href = '/join/' + token;

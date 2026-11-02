@@ -43,6 +43,30 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **First-joiner becomes host** — when the scheduled time arrives and the room opens, whoever joins first is granted host, regardless of whether they have a Plex account
 - **Persistent schedule** — upcoming scheduled rooms survive server restarts (`DATA_PATH/scheduled.json`); the timer re-arms on startup
 - **Default timezone** — set `DEFAULT_TIMEZONE` in `.env` to pre-fill the timezone picker when scheduling (e.g. `America/New_York`)
+- **Recurring watch nights** — choose *Every week* or *Every 2 weeks* when scheduling. The night keeps the same local time across daylight-saving changes and the **same invite link every time**, so people can bookmark it. The lobby card has *Skip next* and *Cancel series*; a night missed by more than 6 hours (server down) is skipped rather than opened late.
+- **Calendar invites** — every scheduled night has an `.ics` download (Apple, Outlook, …) and an *Add to Google Calendar* link, on the lobby card and on the guest waiting page. Recurring nights carry a repeat rule and a 15-minute alarm. The `.ics` is served from the invite token (`/join/<token>/event.ics`), so anyone with the invite link can add it.
+
+### Movie Vote
+
+Movie rooms have a **🗳 Movie vote** button for the host.
+
+- **Host controls it** — pick genres, rating (G/PG/R…), length, year range, minimum rating and deck size, then start. The server draws a random deck of matching movies from your Plex library.
+- **Everyone swipes** — drag a card right (yes) or left (no), tap ♥ / ✕, or use the arrow keys. Guests vote too. A refresh mid-vote restores your swipes.
+- **Most likes wins** — the result is revealed automatically when everyone in the room has finished (or the host can reveal early). Ties go to the movie with the fewest *no*s. A unanimous winner is celebrated; the runners-up are listed and the host can play any of them with one click, which loads it into the room.
+
+### Admin Panel & Webhooks
+
+Whoever owns the Plex server is the admin (see *Server-owner admin* above) and gets an **Admin** button in the lobby, opening `/admin`:
+
+- **Webhooks** — post to a Discord channel (or any JSON endpoint, e.g. ntfy, n8n, Home Assistant) when:
+  - a watch night is **scheduled**,
+  - a watch night is **about to start** — a reminder sent N minutes before (5 min – 1 day, per webhook), once per night, including each occurrence of a recurring one,
+  - a scheduled room **opens**, or
+  - a room is **created**.
+
+  Every message carries the invite link. Discord gets an embed with localised `<t:…>` timestamps; *Generic JSON* gets `{ event, title, message, url, data }`. Each webhook has a *Send test* button and shows the status of its last delivery. Webhook URLs are secrets: they're stored in `DATA_PATH/webhooks.json` (mode 600) and never sent back to the browser (only a short hint is shown). Create a Discord webhook under *Channel settings → Integrations → Webhooks*.
+- **Live rooms** — every open room with who's in it; kick (and block from rejoining) or close.
+- **Scheduled & recurring** — everything upcoming, with copy link, skip next, and cancel. `APP_URL` must be set so links in notifications point at your public address.
 
 ### Social
 - **Real-time chat** — all viewers can send messages; chat includes the sender's current movie timestamp for context

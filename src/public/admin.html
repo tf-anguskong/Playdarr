@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playdarr · Admin</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="browser-page">
+  <header class="header">
+    <div class="header-logo">play<span class="dk">darr</span> <span class="admin-badge">admin</span></div>
+    <div class="header-right">
+      <a href="/" class="btn-logout" style="text-decoration:none">← Lobby</a>
+    </div>
+  </header>
+
+  <main class="browser-main admin-page">
+
+    <!-- Webhooks -->
+    <section class="admin-section">
+      <div class="browser-toolbar">
+        <div>
+          <h2>Webhooks</h2>
+          <p class="admin-hint">Post to a Discord channel (or any JSON endpoint) when a watch night is scheduled, about to start, or a room opens.</p>
+        </div>
+        <button id="wh-add-btn" class="btn-create">+ Add webhook</button>
+      </div>
+
+      <form id="wh-form" class="admin-form" style="display:none" autocomplete="off">
+        <input type="hidden" id="wh-id">
+        <div class="admin-form-grid">
+          <label class="sched-label">Name
+            <input id="wh-name" class="search-input" type="text" maxlength="40" placeholder="Movie night channel" required>
+          </label>
+          <label class="sched-label">Type
+            <select id="wh-type" class="filter-select"></select>
+          </label>
+          <label class="sched-label admin-span">Webhook URL
+            <input id="wh-url" class="search-input" type="url" placeholder="https://discord.com/api/webhooks/…" spellcheck="false">
+            <span id="wh-url-note" class="admin-hint"></span>
+          </label>
+          <div class="sched-label admin-span">Send when
+            <div id="wh-events" class="admin-checks"></div>
+          </div>
+          <label class="sched-label">Reminder lead time
+            <select id="wh-lead" class="filter-select"></select>
+          </label>
+          <label class="admin-inline"><input id="wh-enabled" type="checkbox" checked> Enabled</label>
+        </div>
+        <div id="wh-error" class="admin-error" style="display:none"></div>
+        <div class="modal-actions">
+          <button type="button" id="wh-cancel" class="btn-logout">Cancel</button>
+          <button type="submit" class="btn-create">Save</button>
+        </div>
+      </form>
+
+      <div id="wh-list" class="admin-list"><div class="loading">Loading…</div></div>
+    </section>
+
+    <!-- Live rooms -->
+    <section class="admin-section">
+      <div class="browser-toolbar"><h2>Live rooms</h2></div>
+      <div id="rooms-list" class="admin-list"><div class="loading">Looking for rooms…</div></div>
+    </section>
+
+    <!-- Scheduled -->
+    <section class="admin-section">
+      <div class="browser-toolbar"><h2>Scheduled &amp; recurring</h2></div>
+      <div id="sched-list" class="admin-list"><div class="loading">Loading…</div></div>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/admin.js"></script>
+</body>
+</html>

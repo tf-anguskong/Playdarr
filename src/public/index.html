@@ -15,6 +15,7 @@
         <img id="user-avatar" class="user-avatar" src="" alt="" style="display:none">
         <span id="user-name" class="user-name"></span>
         <button id="edit-name-btn" class="btn-edit-name" title="Change display name" style="display:none">✎</button>
+        <a id="admin-link" href="/admin" class="btn-logout" style="display:none;text-decoration:none">Admin</a>
         <form action="/auth/logout" method="POST" style="display:inline">
           <button type="submit" class="btn-logout">Sign out</button>
         </form>
@@ -93,6 +94,14 @@
       <div class="sched-field-group">
         <label class="sched-label">Timezone</label>
         <select id="sched-timezone" class="filter-select" style="width:100%"></select>
+      </div>
+      <div class="sched-field-group">
+        <label class="sched-label">Repeat</label>
+        <select id="sched-repeat" class="filter-select" style="width:100%">
+          <option value="">Does not repeat</option>
+          <option value="weekly">Every week (same time, same invite link)</option>
+          <option value="biweekly">Every 2 weeks</option>
+        </select>
       </div>
       <div id="sched-error" style="color:#ff6b7a;font-size:0.8rem;margin-top:0.5rem;display:none"></div>
       <div class="modal-actions">
