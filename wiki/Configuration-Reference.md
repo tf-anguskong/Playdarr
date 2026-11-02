@@ -6,6 +6,8 @@ All settings live in `.env` (copy `.env.example` to start). **After editing `.en
 docker compose up -d --force-recreate
 ```
 
+> **Prefer a UI?** Most of the settings below can also be changed from **Admin → Settings** ([Settings Page](Settings-Page)). A value defined in `.env` always takes priority and shows as locked there. The Settings page uses friendly names, so [the mapping table](Settings-Page#which-setting-is-which-variable) lists which is which.
+
 ## Required
 
 | Variable | Description |
@@ -48,6 +50,8 @@ See [Live TV Administration](Live-TV-Administration) for what these mean in prac
 | `HDHR_IP` | — | HDHomeRun tuner address. Set = video comes directly from the tuner; unset = tuned through Plex's DVR |
 | `HDHR_PORT` | `5004` | HDHomeRun streaming port |
 | `LIVETV_SOURCE` | `hdhr` if `HDHR_IP` is set | `hdhr` or `plex` (force the Plex DVR path) |
+| `LIVETV_PAUSE_COOLDOWN_SEC` | `10` | Seconds that must pass between pauses in a Live TV room. `0` turns it off. Movie and TV rooms aren't limited |
+| `LIVETV_MAX_ROOMS` | `2` | Most Live TV rooms that may be **streaming** at once. Each holds a tuner and an encoder, so keep it at or below your tuner count and what your CPU/GPU can encode. Whole number, 1 or more; anything else logs a warning and uses 2 |
 | `LIVETV_BUFFER_SEC` | `10` | Seconds behind live a room plays (range 4–60) |
 | `LIVETV_UPSCALE` | off | `720` or `1080`: upscale shorter channels to this height |
 | `LIVETV_SHARPEN` | `0.5` | Sharpen strength used with upscaling (`0` = off) |

@@ -1,12 +1,13 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
-const { startRelay, startHdhr, hdhrEnabled, stopRelay, getDvr } = require('./live-relay');
+const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 const notifier = require('./notifier');
 const voting = require('./voting');
 const alwaysOn = require('./always-on');
+const settings = require('./settings');
 
 const rooms        = new Map(); // roomId -> Room
 const inviteTokens = new Map(); // inviteToken -> roomId
@@ -93,6 +94,7 @@ class Room {
       liveTvProgram: this.roomType === 'livetv' ? (this.liveTvProgram || null) : null,
       liveDvr: this.roomType === 'livetv' ? (getDvr(this.id)?.info() || null) : null,
       liveBufferSec: this.roomType === 'livetv' ? (this.liveTvSource === 'hdhr' ? HDHR_START_BEHIND_SEC : LIVE_START_BEHIND_SEC) : null,
+      pauseCooldownSec: this.roomType === 'livetv' ? pauseCooldownMs() / 1000 : 0,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -171,6 +173,7 @@ function closeRoom(io, room, reason) {
   if (room.countdownTimer)    clearTimeout(room.countdownTimer);
   if (room.intermissionTimer) clearTimeout(room.intermissionTimer);
   if (room.closeTimer)        clearTimeout(room.closeTimer);
+  if (room.resyncTimer)       clearTimeout(room.resyncTimer);
   room.broadcast(io, 'room-closed', { reason });
   room.viewers.forEach((_, sid) => socketToRoom.delete(sid));
   stopRelay(room.id);
@@ -187,7 +190,7 @@ function closeRoom(io, room, reason) {
  * tuner and encoder are free. The pinned channel is re-tuned when someone arrives ("tune on first join").
  */
 function resetPersistentRoom(io, room) {
-  for (const k of ['countdownTimer', 'intermissionTimer', 'closeTimer']) {
+  for (const k of ['countdownTimer', 'intermissionTimer', 'closeTimer', 'resyncTimer']) {
     if (room[k]) clearTimeout(room[k]);
     room[k] = null;
   }
@@ -195,6 +198,7 @@ function resetPersistentRoom(io, room) {
   room.vote = null;
   room.bannedIds = null;
   room._tuneGen = (room._tuneGen || 0) + 1;   // any tune still in flight belongs to the previous occupants
+  room.lastPauseAt = 0;
   room.settings = { playbackLocked: false, reactionsEnabled: true };
   room.hostId = null; room.hostName = 'always on'; room.hostPicture = null;
   room.hostIsGuest = false; room.hostSocketId = null; room.awaitingHost = true;
@@ -326,7 +330,56 @@ const LIVE_START_BEHIND_SEC = 8;
 // IS the playback buffer (the player can only buffer what the DVR already holds), so a larger value
 // rides out encoder / network hiccups at the cost of more delay from the broadcast and a longer
 // start-up wait (the DVR has to record this much first). Tunable with LIVETV_BUFFER_SEC.
-const HDHR_START_BEHIND_SEC = Math.max(4, Math.min(60, parseInt(process.env.LIVETV_BUFFER_SEC, 10) || 10));
+const bufferFromEnv = () => Math.max(4, Math.min(60, parseInt(process.env.LIVETV_BUFFER_SEC, 10) || 10));
+let HDHR_START_BEHIND_SEC = bufferFromEnv();
+settings.onChange('bufferSec', () => { HDHR_START_BEHIND_SEC = bufferFromEnv(); });
+
+// How many Live TV rooms may be streaming at once. Each one holds a tuner and an encoder, so this is the
+// server's Live TV capacity. LIVETV_MAX_ROOMS (a whole number, 1 or more); default 2.
+const maxRoomsFromEnv = () => {
+  const raw = process.env.LIVETV_MAX_ROOMS;
+  const n = parseInt(raw, 10);
+  if (raw !== undefined && raw !== '' && !(Number.isInteger(n) && n >= 1)) {
+    console.warn(`[LiveTV] LIVETV_MAX_ROOMS="${raw}" is not a whole number of 1 or more — using 2`);
+    return 2;
+  }
+  return Number.isInteger(n) && n >= 1 ? n : 2;
+};
+let LIVETV_MAX_ROOMS = maxRoomsFromEnv();
+console.log(`[LiveTV] Live TV capacity: ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} at a time`);
+settings.onChange('maxLiveTvRooms', () => {
+  LIVETV_MAX_ROOMS = maxRoomsFromEnv();
+  console.log(`[LiveTV] Live TV capacity changed: ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} at a time`);
+});
+
+/**
+ * Live TV rooms currently *streaming* — recording or mid-tune. Those are the ones using a tuner and CPU.
+ * A Live TV room that is merely open (an empty always-on room, or one with no channel picked yet) is free,
+ * so it doesn't count. `except` leaves one room out, so a channel change in a room that's already
+ * streaming isn't treated as taking a second slot.
+ */
+// Force resync (host): pause everyone at the host's position, then resume them together after a short countdown.
+const RESYNC_SECONDS = 2;
+const RESYNC_COOLDOWN_MS = 10_000;   // so it can't be spammed (each one pauses the room)
+
+// Live TV: how long must pass between pauses (rapid play/pause thrashes the recording and breaks the stream).
+// LIVETV_PAUSE_COOLDOWN_SEC, default 10, 0 = off. Read on use so the admin Settings page applies it immediately.
+const pauseCooldownMs = () => {
+  const n = parseInt(process.env.LIVETV_PAUSE_COOLDOWN_SEC, 10);
+  return (Number.isFinite(n) ? Math.max(0, Math.min(120, n)) : 10) * 1000;
+};
+
+function liveTvInUse(except = null) {
+  let n = 0;
+  for (const r of rooms.values()) {
+    if (r.roomType !== 'livetv' || r === except) continue;
+    if (r._tuningInProgress || getDvr(r.id) || getRelay(r.id)) n++;
+  }
+  return n;
+}
+const liveTvCapacity = () => ({ max: LIVETV_MAX_ROOMS, inUse: liveTvInUse() });
+const liveTvFullMessage = (inUse) =>
+  `Live TV is full right now (${inUse} of ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} in use). Try again when one ends.`;
 const SEGMENT_SECS = 2;
 const reactionLimiter      = makeSocketRateLimiter(5, 2000);  // 5 reactions / 2s
 const seekLimiter          = makeSocketRateLimiter(15, 2000); // 15 seeks / 2s (scrubbing)
@@ -393,7 +446,17 @@ async function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
 
   // Prevent concurrent tune requests (rate limit on channel switching)
   if (room._tuningInProgress) return 'Channel change in progress';
+
+  // Capacity: this room taking a slot must not push the server past LIVETV_MAX_ROOMS. (No await between this
+  // check and setting _tuningInProgress, so two rooms can't both squeeze in.)
+  const others = liveTvInUse(room);
+  if (others >= LIVETV_MAX_ROOMS) {
+    const message = liveTvFullMessage(others);
+    room.broadcast(io, 'livetv-tune-failed', { message });
+    return message;
+  }
   room._tuningInProgress = true;
+  room.lastPauseAt = 0;
   const gen = room._tuneGen || 0;
   // True once the room was closed, or reset (always-on) while we were still tuning
   const stale = () => rooms.get(room.id) !== room || (room._tuneGen || 0) !== gen;
@@ -611,6 +674,10 @@ function setupSync(io, enabledRoomTypes) {
       if (preload) roomType = { tv: 'tv', livetv: 'livetv' }[preload.kind] || 'movie';
       const type = VALID_TYPES.includes(roomType) ? roomType : (VALID_TYPES[0] || 'movie');
       if (preload && type !== roomType) return socket.emit('error-msg', 'That room type is turned off');
+      // Courtesy check so nobody builds a Live TV room that can't tune; the real gate is in tuneRoomChannel
+      if (type === 'livetv' && liveTvInUse() >= LIVETV_MAX_ROOMS) {
+        return socket.emit('error-msg', liveTvFullMessage(liveTvInUse()));
+      }
       let youtubeVideoId = null;
       if (type === 'youtube') {
         youtubeVideoId = extractYoutubeId(youtubeUrl || '');
@@ -664,20 +731,22 @@ function setupSync(io, enabledRoomTypes) {
         resetPersistentRoom(io, room);
       }
 
-      // Scheduled room: first *Plex* user to join becomes the host.
-      // Guests are not allowed to claim host on a scheduled room — they must
-      // wait until a Plex user has joined and opened the room.
+      // A room waiting for its host: the first person in becomes the host.
+      // - Scheduled room: Plex users only. Guests wait until a Plex user has opened the room.
+      // - Always-on room: open to whoever arrives first, a guest holding the invite link included —
+      //   the point of an always-on room is that people can walk in and start it.
       if (room.awaitingHost) {
-        if (user.isGuest) {
+        const guestMayOpen = room.persistentId && user.inviteToken === room.inviteToken;
+        if (user.isGuest && !guestMayOpen) {
           return socket.emit('room-error', 'Waiting for the host to arrive. Please try again shortly.');
         }
         room.awaitingHost  = false;
-        room.hostId        = user.id;
+        room.hostId        = user.isGuest ? null : user.id;
         room.hostName      = user.displayName || user.name;
         room.hostPicture   = user.picture || null;
-        room.hostIsGuest   = false;
+        room.hostIsGuest   = !!user.isGuest;
         room.hostSocketId  = socket.id;
-        console.log(`[Room] "${room.name}" (scheduled) — first joiner "${user.name}" became host`);
+        console.log(`[Room] "${room.name}" (${room.persistentId ? 'always-on' : 'scheduled'}) — first joiner "${user.name}"${user.isGuest ? ' (guest)' : ''} became host`);
       }
 
       const isHost         = socket.id === room.hostSocketId ||
@@ -892,6 +961,7 @@ function setupSync(io, enabledRoomTypes) {
     socket.on('play', ({ position }) => {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
+      if (room.resyncTimer) return;   // a resync is counting down; it will resume everyone itself
       if (!playPauseLimiter.allow(socket.id)) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       room.position = position ?? room.currentPosition();
@@ -908,8 +978,16 @@ function setupSync(io, enabledRoomTypes) {
     socket.on('pause', ({ position }) => {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
+      if (room.resyncTimer) return;
       if (!playPauseLimiter.allow(socket.id)) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      // Live TV: no pause spam. A pause that comes too soon after the last one is refused and the pauser's
+      // player resumes (the room never actually paused, so nothing changes for anyone else).
+      if (room.roomType === 'livetv' && room.playing) {
+        const wait = (room.lastPauseAt || 0) + pauseCooldownMs() - Date.now();
+        if (wait > 0) { socket.emit('pause-denied', { waitSec: Math.ceil(wait / 1000) }); return; }
+      }
+      if (room.roomType === 'livetv') room.lastPauseAt = Date.now();
       room.position = position ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
@@ -924,6 +1002,7 @@ function setupSync(io, enabledRoomTypes) {
     socket.on('seek', ({ position }) => {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
+      if (room.resyncTimer) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       if (!seekLimiter.allow(socket.id)) return;
       room.position = position; room.lastUpdate = Date.now();
@@ -984,6 +1063,40 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Countdown (host only) ──────────────────────────────
+    // ── Force resync (host only) ───────────────────────────
+    // Parks everyone at the host's current position (paused), then resumes them together after RESYNC_SECONDS.
+    socket.on('force-resync', () => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.hostSocketId !== socket.id) return;
+      if (!room.movieKey && !room.youtubeVideoId) return socket.emit('resync-denied', { reason: 'nothing-playing' });
+      if (room.countdownTimer || room.intermissionTimer || room.resyncTimer) return socket.emit('resync-denied', { reason: 'busy' });
+      const wait = (room.lastResyncAt || 0) + RESYNC_COOLDOWN_MS - Date.now();
+      if (wait > 0) return socket.emit('resync-denied', { reason: 'cooldown', waitSec: Math.ceil(wait / 1000) });
+      room.lastResyncAt = Date.now();
+
+      // Where "now" is: Live TV trusts the host's own player (its latest report), everything else the room clock
+      let position = room.currentPosition();
+      if (room.roomType === 'livetv' && room.playing) {
+        const hv = room.viewers.get(room.hostSocketId);
+        if (hv?.reportedTime != null && hv.reportedAt != null && Date.now() - hv.reportedAt < 3000) {
+          position = hv.reportedTime + (Date.now() - hv.reportedAt) / 1000;
+        }
+      }
+
+      room.position = position; room.playing = false; room.lastUpdate = Date.now();
+      room.broadcastState(io);
+      room.broadcast(io, 'resync', { seconds: RESYNC_SECONDS, position, by: user.displayName || user.name });
+      room.broadcast(io, 'chat', { name: user.displayName || user.name, text: '🔄 forced a resync', isSystem: true, videoTime: Math.floor(position) });
+      console.log(`[Room] "${room.name}" — ${user.name} forced a resync at ${position.toFixed(1)}s`);
+
+      room.resyncTimer = setTimeout(() => {
+        room.resyncTimer = null;
+        if (!rooms.has(room.id)) return;
+        room.playing = true; room.lastUpdate = Date.now();   // position stays where everyone was parked
+        room.broadcastState(io);
+      }, RESYNC_SECONDS * 1000);
+    });
+
     socket.on('start-countdown', ({ seconds } = {}) => {
       const room = socketToRoom.get(socket.id);
       if (!room || room.hostSocketId !== socket.id) return;
@@ -1255,4 +1368,5 @@ const enabledRoomTypes = () => ({ ..._enabledRoomTypes });
 module.exports = {
   setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, adminCloseRoom, onlineUserIds,
   createPersistentRoom, restorePersistentRooms, getPersistentRoom, removePersistentRoom, enabledRoomTypes,
+  liveTvCapacity,
 };

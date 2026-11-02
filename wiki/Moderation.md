@@ -42,6 +42,7 @@ Anyone hosting a room can:
 
 - kick viewers (without blocking),
 - hand the host role to someone else,
+- **force a resync**: the *⟳ Force resync* button under the message box pauses everyone at your position, shows a 2-second countdown, and resumes them all together from the same spot (once per 10 seconds),
 - lock playback so only they can control it,
 - turn reactions off.
 

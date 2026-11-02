@@ -35,6 +35,7 @@ Anyone who has a room's invite link can join as a guest. Treat links like keys:
 
 - Share them where you'd share the room itself.
 - **Closing a room invalidates its link.** A recurring night's link persists until the series is cancelled.
+- For an **always-on room**, whoever holds the link can be the first in and become its host (and so tune its channel or pick what plays). Don't post those links publicly.
 - A recurring night's `.ics` file (`/join/<token>/event.ics`) is fetchable by anyone with that same link.
 - You can kick and block someone, but a kicked **guest** can re-enter via the link with a new identity — close the room if you need to shut them out.
 

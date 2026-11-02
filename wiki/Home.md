@@ -13,6 +13,7 @@ This wiki is for the **person who runs the server**. It covers setting Playdarr 
 | Get a fresh install running and tested | [Admin Quick Start](Admin-Quick-Start) |
 | Understand (or fix) who counts as admin | [Becoming an Admin](Becoming-an-Admin) |
 | Learn what's on the `/admin` page | [Admin Panel](Admin-Panel) |
+| Change configuration from the browser | [Settings Page](Settings-Page) |
 | Post reminders and invite links to Discord | [Webhooks and Notifications](Webhooks-and-Notifications) |
 | Kick someone, close a room, reset a nickname | [Moderation](Moderation) |
 | Set up weekly movie nights | [Scheduling and Recurring Nights](Scheduling-and-Recurring-Nights) |

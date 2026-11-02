@@ -6,6 +6,9 @@ require('dotenv').config();
   console[level] = (...args) => orig(`[${new Date().toISOString()}]`, ...args);
 });
 
+// Applies admin-saved settings to process.env (anything defined in .env wins) — must run before other modules read it
+const settings = require('./settings');
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -30,12 +33,18 @@ const notifier = require('./notifier');
 const users = require('./users');
 const { buildIcs, googleCalendarUrl } = require('./ical');
 
-const enabledRoomTypes = {
+const roomTypesFromEnv = () => ({
   movie:   process.env.ROOM_TYPE_MOVIE   !== 'false',
   tv:      process.env.ROOM_TYPE_TV      !== 'false',
   youtube: process.env.ROOM_TYPE_YOUTUBE !== 'false',
   livetv:  process.env.ROOM_TYPE_LIVETV  === 'true',
-};
+});
+// One shared object (sync.js holds the same reference), updated in place when the admin changes a room-type setting
+const enabledRoomTypes = roomTypesFromEnv();
+settings.onChange(['roomMovie', 'roomTv', 'roomYoutube', 'roomLivetv'], () => {
+  Object.assign(enabledRoomTypes, roomTypesFromEnv());
+  restorePersistentRooms();   // an always-on room whose type was just switched on opens now
+});
 
 const app = express();
 const server = http.createServer(app);
@@ -158,9 +167,10 @@ app.use('/api/admin', requireAdmin, adminRouter);
 
 app.get('/api/config', (req, res) => res.json({ enabledRoomTypes }));
 
-if (enabledRoomTypes.livetv) {
-  app.use('/api/livetv', requireAuth, require('./routes/livetv'));
-}
+// Always mounted, so Live TV can be switched on from the admin settings without a restart
+app.use('/api/livetv', requireAuth,
+  (req, res, next) => (enabledRoomTypes.livetv ? next() : res.status(404).json({ error: 'Live TV is turned off' })),
+  require('./routes/livetv'));
 
 app.get('/api/me', (req, res) => {
     const user = req.session?.user || null;
@@ -185,6 +195,7 @@ app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
 // The lobby page is served by the authed '/' route; direct hits on index.html must not bypass it.
 app.get('/index.html', (req, res) => res.redirect('/'));
 app.get('/admin.html', (req, res) => res.redirect('/admin'));
+app.get('/admin-settings.html', (req, res) => res.redirect('/admin/settings'));
 
 app.use(express.static(path.join(__dirname, 'public'), {
   index: false,
@@ -205,6 +216,11 @@ app.get('/', requireAuth, (req, res) => {
 app.get('/admin', requireAdmin, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+app.get('/admin/settings', requireAdmin, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(path.join(__dirname, 'public', 'admin-settings.html'));
 });
 
 app.get('/watch/:roomId', (req, res, next) => {

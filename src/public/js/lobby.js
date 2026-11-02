@@ -34,6 +34,7 @@ async function loadUser() {
     document.getElementById('edit-name-btn').style.display = 'inline';
     loadScheduled();
     loadRecent();
+    livenowActive = true;
     loadLiveNow();
     setInterval(loadLiveNow, 120000);   // programs change on the hour / half hour
   }
@@ -81,7 +82,12 @@ nameInput.addEventListener('keydown', e => {
 });
 
 // ── Room list ──────────────────────────────────────────────
-socket.on('room-list', (rooms) => { lastRooms = rooms; renderRooms(rooms); });
+let livenowActive = false, livenowTimer = null;
+socket.on('room-list', (rooms) => {
+  lastRooms = rooms; renderRooms(rooms);
+  // Rooms starting or ending change how many Live TV slots are in use — refresh the strip shortly after
+  if (livenowActive) { clearTimeout(livenowTimer); livenowTimer = setTimeout(loadLiveNow, 2500); }
+});
 
 function renderRooms(rooms) {
   const grid = document.getElementById('rooms-grid');
@@ -223,10 +229,10 @@ socket.on('error-msg', () => {   // e.g. Plex couldn't load the title — let th
 // What's airing right now, from the Plex guide. Main networks (x.1 subchannels) first.
 const LIVENOW_MAX = 14;
 
-function livenowCard(ch) {
+function livenowCard(ch, full) {
   const title = `${ch.number} ${ch.title || ''}`.trim();
   return `
-    <button type="button" class="livenow-card" data-kind="livetv" data-channel="${esc(ch.number)}"
+    <button type="button" class="livenow-card${full ? ' is-full' : ''}"${full ? ' disabled' : ''} data-kind="livetv" data-channel="${esc(ch.number)}"
             data-title="${esc(title)}" data-sub="${esc(ch.nowPlaying ? 'Now: ' + ch.nowPlaying : '')}"
             data-thumb="${esc(ch.thumb || '')}" title="${esc(title + (ch.nowPlaying ? ' — ' + ch.nowPlaying : ''))}">
       <span class="livenow-logo">${ch.thumb ? `<img src="${esc(ch.thumb)}" alt="" loading="lazy" draggable="false">` : '📡'}</span>
@@ -240,14 +246,21 @@ async function loadLiveNow() {
   try {
     const { enabledRoomTypes = {} } = await fetch('/api/config').then(r => r.json());
     if (!enabledRoomTypes.livetv) { section.style.display = 'none'; return; }
-    const { channels = [] } = await fetch('/api/livetv/guide').then(r => r.json());
+    const [{ channels = [] }, cap] = await Promise.all([
+      fetch('/api/livetv/guide').then(r => r.json()),
+      fetch('/api/livetv/capacity').then(r => r.json()).catch(() => null),
+    ]);
+    const full = !!cap && cap.inUse >= cap.max;
+    const capEl = document.getElementById('livenow-cap');
+    capEl.textContent = cap ? (full ? `full · ${cap.inUse} of ${cap.max} rooms in use` : `${cap.inUse} of ${cap.max} rooms in use`) : '';
+    capEl.classList.toggle('is-full', full);
     const live = channels.filter(c => c.nowPlaying);
     const main = c => (/\.1$/.test(c.number) ? 0 : 1);
     live.sort((a, b) => main(a) - main(b) || parseFloat(a.number) - parseFloat(b.number));
     if (!live.length) { section.style.display = 'none'; return; }
     document.getElementById('livenow-row').innerHTML =
-      live.slice(0, LIVENOW_MAX).map(livenowCard).join('') +
-      `<button type="button" class="livenow-card livenow-more" data-kind="livetv" data-title="Live TV" data-sub="All channels" data-thumb="">
+      live.slice(0, LIVENOW_MAX).map(ch => livenowCard(ch, full)).join('') +
+      `<button type="button" class="livenow-card livenow-more${full ? ' is-full' : ''}"${full ? ' disabled' : ''} data-kind="livetv" data-title="Live TV" data-sub="All channels" data-thumb="">
          <span class="livenow-logo">＋</span><span class="livenow-chan">More channels</span>
          <span class="livenow-prog">${live.length} on air — pick one in the room</span></button>`;
     section.style.display = 'block';

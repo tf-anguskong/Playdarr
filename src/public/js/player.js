@@ -65,6 +65,8 @@ function setHostUI(on, inviteToken) {
   document.getElementById('countdown-section').style.display     = (on && !isLiveTv) ? 'block' : 'none';
   document.getElementById('intermission-section').style.display  = (on && !isLiveTv) ? 'block' : 'none';
   document.getElementById('room-controls-section').style.display = on ? 'block' : 'none';
+  const resyncBtn = document.getElementById('resync-btn');
+  if (resyncBtn) resyncBtn.style.display = on ? 'block' : 'none';
   if (on && inviteToken) setupInviteLink(inviteToken);
   if (!on) document.getElementById('invite-section').style.display = 'none';
 }
@@ -97,6 +99,7 @@ function applyRoomSettings(settings) {
 
 socket.on('room-state', (state) => {
   isHost = state.isHost;
+  if (video.playbackRate !== 1) video.playbackRate = 1;   // a (re)join starts from normal speed
   isAdmin = !!state.isAdmin;
   const closeBtn = document.getElementById('admin-close-room-btn');
   if (closeBtn) closeBtn.style.display = isAdmin ? 'block' : 'none';
@@ -136,7 +139,8 @@ socket.on('state', applyState);
 socket.on('livetv-reload', () => {
   if (roomType !== 'livetv') return;
   const st = lastKnownState;
-  loadLiveTvRelay(st ? (st.playing ? st.position + (Date.now() - st.lastUpdate) / 1000 : st.position) : null, !st || st.playing);
+  const t = liveTarget();   // arrival-anchored (see liveState), not the client-vs-server wall-clock difference
+  loadLiveTvRelay(t != null ? t : (st ? st.position : null), !st || st.playing);
 });
 
 socket.on('room-error', (msg) => {
@@ -208,8 +212,15 @@ function applyState(state) {
   video.style.display = 'block';
   titleEl.textContent = state.movieTitle || 'Now Playing';
 
-  const elapsed    = (Date.now() - state.lastUpdate) / 1000;
-  const targetTime = state.playing ? state.position + elapsed : state.position;
+  // Anchor the room clock to when this update ARRIVED (client clock only). state.position is already extrapolated to
+  // the moment the server sent it, so adding (Date.now() - state.lastUpdate) would fold any difference between the
+  // client's and the server's wall clocks straight into the sync error.
+  const projected = movieTarget();   // where the previous anchor said the room should be right now
+  movieState = state;
+  movieStateAt = performance.now();
+  const targetTime = state.position;   // the room's position at this instant
+  // A deliberate jump of the room clock (someone scrubbed, a resync) must be followed at once, so lift the seek gap
+  if (projected != null && Math.abs(targetTime - projected) > 1.5) movieSeekAt = -1e9;
 
   // New movie — full reload
   if (state.movieKey !== currentKey) {
@@ -232,25 +243,63 @@ function applyState(state) {
     return;
   }
 
-  if (!state.playing) return;
-
-  // Drift correction during playback
-  const drift    = video.currentTime - targetTime;
-  const absDrift = Math.abs(drift);
-
-  if (absDrift > 5) {
-    // Large drift — hard seek
-    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
-    video.currentTime = targetTime;
-    releaseSyncLock();
-  } else if (absDrift > 0.5) {
-    // Small drift — nudge playback rate to catch up gradually (±5%)
-    video.playbackRate = drift > 0 ? 0.95 : 1.05;
-  } else {
-    // In sync — restore normal speed
-    if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
+  if (!state.playing) {
+    // Paused: park at the room's position (e.g. someone scrubbed while we were already paused)
+    if (Math.abs(video.currentTime - targetTime) > 0.5) {
+      isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+      video.currentTime = targetTime;
+      releaseSyncLock();
+    }
+    return;
   }
+  // Playing: the chase loop below keeps this viewer on the room clock, continuously
 }
+
+// ── Movie / TV sync: everyone chases the room clock ────────────────────────────────────────
+// The server holds the clock (position + time since the last play/pause/seek). Every viewer — host included, since
+// anyone may scrub — steers onto it with a gentle, proportional playback-rate change checked four times a second,
+// and only hard-seeks when far off. A seek costs a rebuffer on a transcoded stream, so the threshold is generous and
+// automatic seeks are spaced out: a viewer who stalls for a few seconds would otherwise seek forward, stall again,
+// and chase the room in circles.
+// Hysteresis (start correcting past 0.15 s, stop inside 0.05 s) and 1 % rate steps keep speed changes rare, which
+// matters because every speed change is audible as a faint pitch wobble.
+let movieState = null;
+let movieStateAt = 0;
+const movieTarget = () => (movieState ? (movieState.playing ? movieState.position + (performance.now() - movieStateAt) / 1000 : movieState.position) : null);
+const MOVIE_SEEK_SEC = 5;
+const MOVIE_SEEK_GAP_MS = 8000;
+let movieCorrecting = false;
+let movieRateAt = -1e9;
+let movieSeekAt = -1e9;
+setInterval(() => {
+  if (roomType !== 'movie' && roomType !== 'tv') return;
+  if (!movieState || !movieState.playing || video.paused) { movieCorrecting = false; resetPlaybackRate('not playing'); return; }
+  if (isSyncing || video.readyState < 3) return;
+  const target = movieTarget();
+  if (target == null) return;
+  const drift = video.currentTime - target;   // + = ahead of the room
+  const abs = Math.abs(drift);
+
+  if (abs > MOVIE_SEEK_SEC && performance.now() - movieSeekAt > MOVIE_SEEK_GAP_MS) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    video.currentTime = target;
+    releaseSyncLock();
+    movieSeekAt = performance.now();
+    movieCorrecting = false;
+    return;
+  }
+  if (!movieCorrecting && abs > 0.15) movieCorrecting = true;
+  else if (movieCorrecting && abs < 0.05) movieCorrecting = false;
+
+  let rate = 1;
+  if (movieCorrecting) rate = 1 - Math.max(-0.08, Math.min(0.08, drift * 0.4));
+  rate = Math.round(rate * 100) / 100;
+  const now = performance.now();
+  if (Math.abs(video.playbackRate - rate) >= 0.01 && (rate === 1 || now - movieRateAt > 1000)) {
+    video.playbackRate = rate;
+    movieRateAt = now;
+  }
+}, 250);
 
 // ── HLS loader ─────────────────────────────────────────────
 function showPlayOverlay() {
@@ -270,10 +319,14 @@ function hidePlayOverlay() {
 document.getElementById('play-overlay')?.addEventListener('click', () => {
   hidePlayOverlay();
   if (lastKnownState && lastKnownState.playing) {
-    const elapsed   = (Date.now() - lastKnownState.lastUpdate) / 1000;
-    const catchUpTo = lastKnownState.position + elapsed;
+    // The room clock anchored to when its last update arrived — not (Date.now() - state.lastUpdate), which would
+    // mix the client's and server's wall clocks
+    const catchUpTo = roomType === 'livetv' ? liveTarget()
+      : (roomType === 'movie' || roomType === 'tv') ? movieTarget()
+      : lastKnownState.position;
     isSyncing = true;
-    video.currentTime = catchUpTo;
+    if (catchUpTo != null && roomType !== 'livetv') video.currentTime = catchUpTo;
+    else if (catchUpTo != null) liveSeekAbs(catchUpTo);
   }
   video.play().catch(console.warn);
   releaseSyncLock();
@@ -497,6 +550,15 @@ function loadLiveTvRelay(targetAbs, shouldPlay) {
   }
 }
 
+// Guests nudge video.playbackRate (a few percent) to stay in sync. Only the guest sync loop ever puts it back to 1,
+// so anything that stops that loop — becoming the host, a paused room, a rejoin — must do it explicitly, or the
+// room plays at e.g. 0.93x indefinitely (slowed, pitch-shifted, warbly audio until the page is refreshed).
+function resetPlaybackRate(why) {
+  if (video.playbackRate === 1) return;
+  if (roomType === 'livetv') liveLog(`playbackRate ${video.playbackRate.toFixed(3)} → 1 (${why})`);
+  video.playbackRate = 1;
+}
+
 // Latest server state and when it arrived (client clock), for continuous drift correction.
 let liveState = null;
 let liveStateAt = 0;
@@ -510,8 +572,11 @@ function liveTarget() {
 // only a large gap triggers a seek.
 let liveDriftLogAt = 0;
 setInterval(() => {
-  if (roomType !== 'livetv' || isHost || isSyncing) return;
-  if (!liveState || !liveState.playing || video.paused || video.readyState < 3) return;
+  if (roomType !== 'livetv') return;
+  if (isHost) { resetPlaybackRate('host does not chase anyone'); return; }
+  if (isSyncing) return;
+  if (!liveState || !liveState.playing || video.paused) { resetPlaybackRate('paused'); return; }
+  if (video.readyState < 3) return;
   const target = liveTarget(), pos = liveAbs();
   if (target == null || pos == null) return;
   const drift = pos - target; // + = ahead of the host
@@ -859,8 +924,9 @@ function applyYtState(state) {
   }
 
   noMovie.style.display = 'none';
-  const elapsed    = (Date.now() - state.lastUpdate) / 1000;
-  const targetTime = state.playing ? state.position + elapsed : state.position;
+  // state.position is already the room's position at the moment the update was sent; adding
+  // (Date.now() - state.lastUpdate) would mix the client's and server's wall clocks (skew becomes sync error)
+  const targetTime = state.position;
 
   if (state.youtubeVideoId !== ytVideoId || !ytPlayer) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
@@ -974,6 +1040,7 @@ socket.on('viewers', (viewers) => {
 
 socket.on('became-host', ({ inviteToken }) => {
   isHost = true;
+  resetPlaybackRate('became host');
   setHostUI(true, inviteToken);
   renderViewers(lastViewers);
   // If intermission is active, expose the cancel button to the new host
@@ -985,6 +1052,7 @@ socket.on('became-host', ({ inviteToken }) => {
 
 socket.on('lost-host', () => {
   isHost = false;
+  resetPlaybackRate('lost host');
   setHostUI(false);
   renderViewers(lastViewers);
 });
@@ -1004,10 +1072,29 @@ video.addEventListener('play', () => {
   const pos = playbackPos();
   if (pos != null) socket.emit('play', { position: pos });
 });
+// Live TV: pauses can't be spammed (the server enforces a cooldown between them). If the host pauses again too
+// soon, keep playing and say why — undone straight away here rather than waiting for the server to refuse it.
+let lastPauseSentAt = -1e9;
+const pauseCooldownMsLeft = () => Math.max(0, lastPauseSentAt + (liveState?.pauseCooldownSec ?? 10) * 1000 - performance.now());
+function undoPause(waitSec) {
+  isSyncing = true; video.play().catch(() => {}); releaseSyncLock();
+  showNotif(`⏸ You can pause again in ${waitSec}s`);
+}
+socket.on('pause-denied', ({ waitSec } = {}) => {   // the server's word wins if the clocks disagree
+  if (roomType !== 'livetv') return;
+  lastPauseSentAt = performance.now() + (waitSec || 1) * 1000 - (liveState?.pauseCooldownSec ?? 10) * 1000;
+  undoPause(waitSec || 1);
+});
+
 video.addEventListener('pause',  () => {
   if (isSyncing) return;
   if (livetvGuest()) return;
   if (roomSettings.playbackLocked && !isHost) return;
+  if (roomType === 'livetv' && liveState && liveState.playing) {
+    const left = pauseCooldownMsLeft();
+    if (left > 0) { undoPause(Math.ceil(left / 1000)); return; }
+    lastPauseSentAt = performance.now();
+  }
   const pos = playbackPos();
   if (pos != null) socket.emit('pause', { position: pos });
 });
@@ -1017,6 +1104,64 @@ video.addEventListener('seeked', () => {
   if (roomSettings.playbackLocked && !isHost) return;
   const pos = playbackPos();
   if (pos != null) socket.emit('seek',  { position: pos });
+});
+
+// ── Force resync ───────────────────────────────────────────
+// Host: pause everyone and resume them together from the same spot. The server parks the room at the host's
+// position and resumes it after a 2 s countdown; here every client seeks to that spot while paused (a Live TV
+// guest otherwise only converges once playing) and shows the countdown.
+const resyncBtn = document.getElementById('resync-btn');
+const resyncOverlay = document.getElementById('resync-overlay');
+let resyncReadyAt = 0, resyncBtnTick = null, resyncOverlayTick = null;
+
+function setResyncCooldown(ms) {
+  resyncReadyAt = performance.now() + ms;
+  clearInterval(resyncBtnTick);
+  const update = () => {
+    const left = Math.ceil((resyncReadyAt - performance.now()) / 1000);
+    if (left > 0) { resyncBtn.disabled = true; resyncBtn.textContent = `⟳ Force resync (${left}s)`; }
+    else { resyncBtn.disabled = false; resyncBtn.textContent = '⟳ Force resync'; clearInterval(resyncBtnTick); }
+  };
+  update();
+  if (ms > 0) resyncBtnTick = setInterval(update, 250);
+}
+
+resyncBtn?.addEventListener('click', () => {
+  if (performance.now() < resyncReadyAt) return;
+  socket.emit('force-resync');
+  setResyncCooldown(10000);   // optimistic; the server's answer below corrects it
+});
+
+socket.on('resync-denied', ({ reason, waitSec } = {}) => {
+  if (reason === 'cooldown') { setResyncCooldown((waitSec || 1) * 1000); showNotif(`⟳ You can resync again in ${waitSec || 1}s`); }
+  else { setResyncCooldown(0); showNotif(reason === 'nothing-playing' ? '⟳ Nothing is playing yet' : '⟳ Hold on, something else is in progress'); }
+});
+
+socket.on('resync', ({ seconds = 2, position, by } = {}) => {
+  closeGuide();
+  isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+  try {
+    if (roomType === 'youtube') {
+      if (ytPlayer && ytPlayer.seekTo) { ytPlayer.seekTo(position, true); ytPlayer.pauseVideo(); }
+    } else {
+      video.pause();
+      if (roomType === 'livetv') { if (liveTlOffset != null) liveSeekAbs(position); }
+      else if (Number.isFinite(position)) video.currentTime = position;
+    }
+  } catch { /* the room-state that follows corrects any miss */ }
+  releaseSyncLock();
+
+  const endAt = performance.now() + seconds * 1000;
+  document.getElementById('resync-by').textContent = by ? `${by} is resyncing everyone` : '';
+  resyncOverlay.style.display = 'flex';
+  clearInterval(resyncOverlayTick);
+  const tick = () => {
+    const left = Math.ceil((endAt - performance.now()) / 1000);
+    document.getElementById('resync-count').textContent = Math.max(left, 1);
+    if (performance.now() >= endAt + 400) { resyncOverlay.style.display = 'none'; clearInterval(resyncOverlayTick); }
+  };
+  tick();
+  resyncOverlayTick = setInterval(tick, 100);
 });
 
 // ── Live TV tuning overlay ─────────────────────────────────
@@ -1060,6 +1205,7 @@ socket.on('livetv-tune-failed', ({ message } = {}) => {
 // Live TV: "behind live" readout + Go live button (host)
 const liveBehindEl = document.getElementById('livetv-behind');
 const goLiveBtn    = document.getElementById('livetv-golive');
+const goLivePlayerBtn = document.getElementById('livetv-golive-player');
 setInterval(() => {
   if (roomType !== 'livetv' || !liveBehindEl) return;
   const edge = liveEdgeAbs(), pos = liveAbs();
@@ -1069,12 +1215,16 @@ setInterval(() => {
   const liveThresh = (liveState?.liveBufferSec ?? 4) + 8;
   liveBehindEl.textContent = behind < liveThresh ? 'LIVE' : `-${Math.floor(behind / 60)}:${String(Math.floor(behind % 60)).padStart(2, '0')} behind live`;
   liveBehindEl.classList.toggle('is-live', behind < liveThresh);
-  if (goLiveBtn) goLiveBtn.style.display = (isHost && behind >= liveThresh) ? 'inline-block' : 'none';
+  const showGoLive = isHost && behind >= liveThresh;
+  if (goLiveBtn) goLiveBtn.style.display = showGoLive ? 'inline-block' : 'none';
+  if (goLivePlayerBtn) goLivePlayerBtn.style.display = showGoLive ? 'flex' : 'none';
 }, 1000);
-goLiveBtn?.addEventListener('click', () => {
+function goLive() {
   const edge = liveEdgeAbs();
   if (edge != null) liveSeekAbs(edge - (liveState?.liveBufferSec ?? 4)); // keep the room's buffer; 'seeked' tells the room
-});
+}
+goLiveBtn?.addEventListener('click', goLive);
+goLivePlayerBtn?.addEventListener('click', goLive);
 
 // ── Movie browser modal (host only) ───────────────────────
 document.getElementById('choose-movie-btn').addEventListener('click', () => {

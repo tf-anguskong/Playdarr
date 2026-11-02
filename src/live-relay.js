@@ -425,13 +425,14 @@ class LiveRelay {
 // segments written directly into the room's DVR directory. No Plex session involved, so
 // nothing expires: if ffmpeg dies or the feed stalls it is simply restarted, and the
 // restart is recorded as a discontinuity.
-const HDHR_IP   = process.env.HDHR_IP || '';
-const HDHR_PORT = process.env.HDHR_PORT || '5004';
+// Read on use (not at load) so the admin Settings page can change the tuner without a restart
+const hdhrIp   = () => process.env.HDHR_IP || '';
+const hdhrPort = () => process.env.HDHR_PORT || '5004';
 const SEG_SECS  = 2;
 
 /** True when an HDHomeRun is configured and the source hasn't been forced back to Plex. */
 function hdhrEnabled() {
-  return !!HDHR_IP && (process.env.LIVETV_SOURCE || 'hdhr').toLowerCase() !== 'plex';
+  return !!hdhrIp() && (process.env.LIVETV_SOURCE || 'hdhr').toLowerCase() !== 'plex';
 }
 
 // Intel / AMD iGPU (VAAPI) encode. Opt-in with LIVETV_HWACCEL=vaapi (aliases: intel, amd — VAAPI is
@@ -440,7 +441,9 @@ function hdhrEnabled() {
 // part, the H.264 encode, moves to the GPU. If no render device is found, or ffmpeg keeps failing
 // with it, we fall back to software x264.
 const GPU_VENDORS = { '0x8086': 'Intel', '0x1002': 'AMD' };
-let vaapiChoice;   // undefined = not looked up yet; null = none; else { device, vendor }
+let vaapiChoice;
+// The render device is looked up once and cached; forget it when the admin changes the GPU settings
+require('./settings').onChange(['hwaccel', 'vaapiDevice'], () => { vaapiChoice = undefined; });   // undefined = not looked up yet; null = none; else { device, vendor }
 
 /** The render node to encode on: LIVETV_VAAPI_DEVICE if set, else the first Intel/AMD node in /dev/dri. */
 function vaapiDevice() {
@@ -531,7 +534,7 @@ class HdhrSource {
 
   _spawn() {
     if (!this.running) return;
-    const url = `http://${HDHR_IP}:${HDHR_PORT}/auto/v${this.channel}`;
+    const url = `http://${hdhrIp()}:${hdhrPort()}/auto/v${this.channel}`;
     // A restart after earlier segments marks a discontinuity (timestamps start over).
     this.nextDisc = this.dvr.entries.length > 0;
     const hw = this.useHw && !process.env.LIVETV_VIDEO_ARGS;

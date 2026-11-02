@@ -36,6 +36,8 @@ docker compose logs | grep -E "Auth|Webhooks|Scheduler|Room|Vote|HDHR"
 |---|---|
 | Video won't load / endless spinner | Check Plex is reachable at `PLEX_URL` from the container: `docker exec playdarr node -e "require('axios').get(process.env.PLEX_URL+'/identity').then(r=>console.log('OK',r.status)).catch(e=>console.log('FAIL',e.message))"`. Also check Plex can transcode that file |
 | Posters/artwork missing | Same Plex connectivity issue |
+| Audio sounds slowed, deep or warbly until you refresh | The page was nudging its playback speed to stay in sync and the speed didn't return to normal (it used to stick when a viewer was promoted to host). Fixed; if you still see it, open the browser console and run `document.getElementById('video-player').playbackRate` — anything other than `1` while the room is in sync is a bug worth reporting |
+| One viewer is behind, or the room feels out of step | The host can press **⟳ Force resync** (under the message box): everyone pauses at the host's position, a 2-second countdown runs, and all resume together. It's limited to once every 10 seconds |
 | Viewers drift out of sync | Check the viewer list's `+0.3s`-style badges; persistent red usually means a weak connection on that viewer |
 | Chat or sync stops behind a proxy | The proxy isn't forwarding WebSockets. It needs `Upgrade`/`Connection: upgrade` headers and long read timeouts (see the NGINX sample in the README) |
 | Room vanished | Rooms close ~30 s after the host leaves with no one to take over, and on every container restart |
@@ -75,6 +77,8 @@ See [Always-On Rooms](Always-On-Rooms#troubleshooting).
 
 | Symptom | Cause and fix |
 |---|---|
+| "You can pause again in Ns" (Live TV) | The pause cooldown (default 10 s between pauses) stopped a too-quick second pause. Wait the few seconds, or change or turn it off under Admin → Settings → Live TV pause cooldown |
+| "Live TV is full right now" | You've reached `LIVETV_MAX_ROOMS` (default 2). Wait for a room to end, or raise it in `.env` (up to your tuner count and what your CPU/GPU can encode) |
 | High CPU during Live TV | Software encoding is about one core per room — use [GPU encoding](Live-TV-Administration#hardware-encoding-intel-or-amd-igpu) |
 | Disk filling | Live TV recordings are ~3–4 GB per room-hour; close idle Live TV rooms; they're deleted on close and at startup |
 

@@ -2,7 +2,7 @@
 
 Open it from the **Admin** button in the lobby header, or go straight to `/admin`. Anyone who isn't the server owner is redirected to the lobby (and API calls get `403 Server owner only`).
 
-The page has five sections. Everything refreshes live or on a timer, so you can leave it open.
+The page has five sections, and there's a separate [Settings page](Settings-Page). Everything refreshes live or on a timer, so you can leave it open.
 
 ## Webhooks
 
@@ -49,6 +49,10 @@ Every upcoming watch night:
 - *Copy link* (the standing invite link), *Skip next* (recurring only), *Cancel* / *Cancel series*.
 
 See [Scheduling and Recurring Nights](Scheduling-and-Recurring-Nights).
+
+## Settings page
+
+**Admin → Settings** (`/admin/settings`) lets you change the server's configuration without editing `.env`. See [Settings Page](Settings-Page) for how it works.
 
 ## What isn't here (yet)
 
