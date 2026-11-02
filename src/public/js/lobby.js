@@ -10,11 +10,18 @@ function esc(s = '') {
 
 // ── User info ──────────────────────────────────────────────
 let currentUserId = null;
+let isAdmin = false;   // Plex server owner — can close rooms, kick viewers, cancel any scheduled room
+let lastRooms = [];
 
 async function loadUser() {
   const { user } = await fetch('/api/me').then(r => r.json());
   if (!user) return;
   currentUserId = user.id || null;
+  isAdmin = !!user.isAdmin;
+  if (isAdmin) {
+    document.getElementById('user-name').insertAdjacentHTML('afterend', ' <span class="admin-badge" title="You own the Plex server Playdarr is connected to">admin</span>');
+    renderRooms(lastRooms);
+  }
   document.getElementById('user-name').textContent = user.displayName || user.name;
   if (user.picture) {
     const a = document.getElementById('user-avatar');
@@ -70,7 +77,9 @@ nameInput.addEventListener('keydown', e => {
 });
 
 // ── Room list ──────────────────────────────────────────────
-socket.on('room-list', (rooms) => {
+socket.on('room-list', (rooms) => { lastRooms = rooms; renderRooms(rooms); });
+
+function renderRooms(rooms) {
   const grid = document.getElementById('rooms-grid');
   if (!rooms.length) {
     grid.innerHTML = '<div class="loading">No rooms yet — create one to get started!</div>';
@@ -102,9 +111,26 @@ socket.on('room-list', (rooms) => {
         <span class="room-viewers">${r.viewerCount} watching</span>
         <a class="btn-join" href="/watch/${r.id}">Join →</a>
       </div>
+      ${isAdmin && r.viewers ? `
+      <div class="admin-room-panel">
+        ${r.viewers.map(v => `
+          <div class="admin-viewer">
+            <span class="admin-viewer-name">${esc(v.name)}${v.isHost ? ' 👑' : ''}${v.isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span>
+            ${v.isHost || v.isAdmin ? '' : `<button class="btn-kick" data-kick="${esc(v.socketId)}">Kick</button>`}
+          </div>`).join('') || '<span class="admin-empty">Nobody in the room</span>'}
+        <button class="btn-close-room" data-close="${esc(r.id)}" data-name="${esc(r.name)}">Close room</button>
+      </div>` : ''}
     </div>
   `).join('');
-});
+
+  if (!isAdmin) return;
+  grid.querySelectorAll('[data-kick]').forEach(btn => btn.addEventListener('click', () => {
+    if (confirm('Kick this viewer and block them from rejoining the room?')) socket.emit('admin-kick', { targetSocketId: btn.dataset.kick });
+  }));
+  grid.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', () => {
+    if (confirm(`Close "${btn.dataset.name}" for everyone in it?`)) socket.emit('admin-close-room', { roomId: btn.dataset.close });
+  }));
+}
 
 // ── Create room ────────────────────────────────────────────
 let selectedRoomType = 'movie';
@@ -406,7 +432,7 @@ function renderScheduled(list) {
     }
 
     const inviteUrl = window.location.origin + '/join/' + s.inviteToken;
-    const isOwner   = currentUserId && s.createdBy && s.createdBy.id === currentUserId;
+    const isOwner   = isAdmin || (currentUserId && s.createdBy && s.createdBy.id === currentUserId);
 
     return `
       <div class="room-card scheduled-card">

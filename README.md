@@ -30,6 +30,7 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **Guest invite links** — hosts share a link; guests enter a display name and join without a Plex account; guests cannot see the lobby or create rooms
 - **Host transfer** — the host can promote any viewer (including guests) to host mid-session, giving them playback control for that room; guests granted host cannot create new rooms or scheduled events
 - **Auto host migration** — if the host leaves and other viewers remain, the room automatically promotes the next best viewer (preferring Plex users over guests) rather than closing
+- **Server-owner admin** — whoever *owns* the Plex server Playdarr is connected to is detected automatically at login (plex.tv marks the account as owner of that server), with no extra config. Admins get an `admin` badge and can close any room, kick any viewer (and block them from rejoining that room) from the lobby or from inside a room, and cancel any scheduled room. Other users, including hosts, can't kick an admin. Sign out and back in after upgrading for the owner flag to be picked up.
 - **Room persistence** — rooms live in memory; a 30-second grace timer keeps a room alive if the host briefly navigates away
 
 ### Scheduled Rooms
@@ -165,8 +166,11 @@ Copy `.env.example` to `.env` and fill in the values:
 | `HDHR_IP` | No | LAN address of your HDHomeRun tuner. When set, Live TV video is pulled directly from it via ffmpeg and Plex is used only for the guide. If unset, Live TV tunes through Plex's DVR instead. |
 | `HDHR_PORT` | No | HDHomeRun streaming port (default: `5004`) |
 | `LIVETV_SOURCE` | No | `hdhr` (default when `HDHR_IP` is set) or `plex` to force the Plex DVR path |
+| `LIVETV_BUFFER_SEC` | No | Live TV playback buffer in seconds (default: `10`, range 4–60). Rooms play this far behind the newest recorded video, so larger values ride out hiccups but add delay and lengthen start-up |
 | `LIVETV_X264_PRESET` | No | x264 speed/quality preset for the software encode (default: `veryfast`) |
 | `LIVETV_MAX_BITRATE` | No | Peak video bitrate for the encode (default: `8M`) |
+| `LIVETV_HWACCEL` | No | `vaapi` to encode on an Intel or AMD iGPU instead of the CPU (Linux hosts; also run with `docker-compose.vaapi.yml` so `/dev/dri` is available in the container). `intel` and `amd` are accepted as aliases. Falls back to software x264 if no GPU is found or it fails. |
+| `LIVETV_VAAPI_DEVICE` | No | VAAPI render device. Default: the first Intel or AMD node in `/dev/dri` (an NVIDIA card is skipped). Set it explicitly if the box has several GPUs. |
 | `LIVETV_VIDEO_ARGS` | No | Replace the whole video encoder argument list, e.g. `-c:v h264_nvenc -preset p4 -b:v 6M` for hardware encoding |
 
 ---
@@ -178,5 +182,7 @@ Copy `.env.example` to `.env` and fill in the values:
 - Rooms and chat are **in-memory only** — everything is lost on server restart. This is intentional.
 - The stream proxy restricts forwarded requests to Plex transcode paths only (`/video/:/transcode/universal/` and `/library/parts/`). Arbitrary Plex API access through the proxy is blocked.
 - **Live TV needs an HDHomeRun and a Plex server for the guide.** `ROOM_TYPE_LIVETV=true` does nothing without a Plex server that has a DVR device (e.g. HDHomeRun) configured with channels — Plex provides the channel list and programme info. `LIVETV_PLEX_HOST` and `HDHR_IP` must be LAN addresses reachable from the container.
-- **Live TV encodes on the server's CPU.** Each room runs one ffmpeg (software x264 by default — roughly one core for a 1080i channel at the `veryfast` preset) and occupies one tuner. Hardware encoding is possible via `LIVETV_VIDEO_ARGS` if your Docker host exposes a GPU.
+- **Live TV encodes on the server's CPU.** Each room runs one ffmpeg (software x264 by default — roughly one core for a 1080i channel at the `veryfast` preset) and occupies one tuner. On a Linux host with an Intel or AMD iGPU, set `LIVETV_HWACCEL=vaapi` and start with `docker compose -f docker-compose.yml -f docker-compose.vaapi.yml up --build -d` to move the encode to the GPU (the deinterlace stays on the CPU); other hardware encoders can be used via `LIVETV_VIDEO_ARGS`.
+- **GPU encode checklist.** The kernel driver on the Docker host does the work (`i915`/`xe` for Intel, `amdgpu` for AMD); the image already carries the userspace drivers and `vainfo`. Verify with `ls -l /dev/dri` on the host, then after starting with the override, `docker exec playdarr vainfo` (should list H.264 `EncSlice`) and `docker compose logs | grep "enc="` (should say `enc=vaapi`). If the GPU path fails twice with no output, Playdarr logs a warning and drops back to software x264. Tested on an Intel iGPU (iHD driver) in a Proxmox LXC; AMD is wired the same way but untested here.
+- **Docker in a Proxmox LXC.** The LXC shares the Proxmox host's kernel, so only the passthrough is needed: in the LXC's Resources add a *Device Passthrough* for `/dev/dri/renderD128` (set the GID to the container's `render` group, usually 104), or add `dev0: /dev/dri/renderD128,gid=104` to `/etc/pve/lxc/<ID>.conf`, and restart it. Docker inside the LXC also needs `nesting=1` (and usually `keyctl=1`). The Playdarr container runs as root, so no `group_add` is needed.
 - **Live TV DVR uses disk.** Each room records up to one hour to `DATA_PATH/dvr` (default `/data/dvr`) — roughly 3–4 GB per room-hour at the default bitrate. It is deleted when the room closes and wiped on server start. Size the Docker volume accordingly.

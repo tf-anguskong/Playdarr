@@ -31,7 +31,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `COOKIE_SECURE` — set `true` only when behind HTTPS (reverse proxy). Controls the session cookie `secure` flag directly; **not** driven by `NODE_ENV`.
 - `APP_URL` — public-facing URL, used to build the Plex OAuth callback URL.
 - `PLEX_TOKEN` — server token from Plex Settings → Troubleshooting.
-- `HDHR_IP` / `HDHR_PORT` — HDHomeRun tuner address. When set, Live TV video comes directly from the tuner via ffmpeg (Plex is then only used for the guide). `LIVETV_SOURCE=plex` forces the older Plex-DVR tuning path. Optional encode tuning: `LIVETV_X264_PRESET`, `LIVETV_MAX_BITRATE`, `LIVETV_VIDEO_ARGS` (replaces the video encoder args, e.g. for NVENC).
+- `HDHR_IP` / `HDHR_PORT` — HDHomeRun tuner address. When set, Live TV video comes directly from the tuner via ffmpeg (Plex is then only used for the guide). `LIVETV_SOURCE=plex` forces the older Plex-DVR tuning path. `LIVETV_BUFFER_SEC` (default 10) is how far behind the newest recorded segment a room plays — the player can only buffer what the DVR holds, so this *is* the buffer. `LIVETV_HWACCEL=vaapi` encodes on an Intel or AMD iGPU via VAAPI (Linux only; the render node is auto-picked from `/dev/dri` by PCI vendor, override with `LIVETV_VAAPI_DEVICE`; `docker-compose.vaapi.yml` passes in `/dev/dri`; deinterlace stays on CPU; auto-falls back to x264 if the device is missing or ffmpeg fails twice with no output). Optional encode tuning: `LIVETV_X264_PRESET`, `LIVETV_MAX_BITRATE`, `LIVETV_VIDEO_ARGS` (replaces the video encoder args, e.g. for NVENC).
 
 Sessions are stored in `session-file-store` at `/data/sessions` (Docker volume). The `DATA_PATH` env var overrides the base path for local dev.
 
@@ -79,6 +79,7 @@ Plex's `/video/:/transcode/universal/start.m3u8` returns an HLS manifest contain
 - Plex OAuth uses PIN-based flow (not standard OAuth redirect). The PIN ID is embedded in the **callback URL path** (`/auth/plex/callback/:pinId`) rather than the session, because the session cookie may not be available across the Plex redirect.
 - After OAuth, the server verifies the user has access to the local Plex server by hitting `PLEX_URL` with their token.
 - Guests get a session with `{ isGuest: true, name, inviteToken }` via `POST /auth/guest-join`.
+- **Admin = Plex server owner.** The plex.tv `/resources` entry matching the server's `machineIdentifier` has `owned: true` only for the owner; login stores that as `session.user.isAdmin`. Admins get: `admin-close-room` / `admin-kick` socket events (sync.js; kicks also block rejoining that room), kick buttons in any room they join, a per-room viewer/close panel in the lobby (admin sockets join the `admins` socket.io room and receive a detailed `room-list`), and may cancel any scheduled room (`DELETE /api/schedule/:id`). Admins can't be kicked and the host can only be removed by closing the room. Existing sessions pick this up on next sign-in.
 - `requireAuth` — any session user (Plex or guest). `requirePlexAuth` — non-guest only.
 
 ### Socket authentication

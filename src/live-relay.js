@@ -434,9 +434,48 @@ function hdhrEnabled() {
   return !!HDHR_IP && (process.env.LIVETV_SOURCE || 'hdhr').toLowerCase() !== 'plex';
 }
 
-// Overridable for hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M"
-function videoArgs() {
+// Intel / AMD iGPU (VAAPI) encode. Opt-in with LIVETV_HWACCEL=vaapi (aliases: intel, amd — VAAPI is
+// vendor-neutral, libva picks the right driver); needs /dev/dri passed into the container (Linux
+// hosts — see docker-compose.vaapi.yml). Deinterlacing stays on the CPU (cheap); the expensive
+// part, the H.264 encode, moves to the GPU. If no render device is found, or ffmpeg keeps failing
+// with it, we fall back to software x264.
+const GPU_VENDORS = { '0x8086': 'Intel', '0x1002': 'AMD' };
+let vaapiChoice;   // undefined = not looked up yet; null = none; else { device, vendor }
+
+/** The render node to encode on: LIVETV_VAAPI_DEVICE if set, else the first Intel/AMD node in /dev/dri. */
+function vaapiDevice() {
+  if (vaapiChoice !== undefined) return vaapiChoice;
+  vaapiChoice = null;
+  const vendorOf = node => {
+    try { return fs.readFileSync(`/sys/class/drm/${node}/device/vendor`, 'utf8').trim(); } catch { return ''; }
+  };
+  if (process.env.LIVETV_VAAPI_DEVICE) {
+    const device = process.env.LIVETV_VAAPI_DEVICE;
+    if (fs.existsSync(device)) vaapiChoice = { device, vendor: GPU_VENDORS[vendorOf(path.basename(device))] || 'GPU' };
+  } else {
+    let nodes = [];
+    try { nodes = fs.readdirSync('/dev/dri').filter(n => /^renderD\d+$/.test(n)).sort(); } catch { /* no /dev/dri */ }
+    // Prefer a node we know is Intel/AMD (skips e.g. an NVIDIA card that VAAPI can't use); if sysfs
+    // isn't readable, take the first node and let ffmpeg find out.
+    const known = nodes.find(n => GPU_VENDORS[vendorOf(n)]);
+    const node = known || (nodes.length && !nodes.some(n => vendorOf(n)) ? nodes[0] : null);
+    if (node) vaapiChoice = { device: `/dev/dri/${node}`, vendor: GPU_VENDORS[vendorOf(node)] || 'GPU' };
+  }
+  if (vaapiChoice) console.log(`[HDHR] VAAPI encode device ${vaapiChoice.device} (${vaapiChoice.vendor})`);
+  return vaapiChoice;
+}
+function vaapiRequested() { return ['vaapi', 'intel', 'amd'].includes((process.env.LIVETV_HWACCEL || '').toLowerCase()); }
+function vaapiAvailable() { return vaapiRequested() && !!vaapiDevice(); }
+
+// Overridable for other hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M"
+function videoArgs(hw) {
   if (process.env.LIVETV_VIDEO_ARGS) return process.env.LIVETV_VIDEO_ARGS.split(/\s+/).filter(Boolean);
+  if (hw) {
+    return [
+      '-c:v', 'h264_vaapi', '-profile:v', 'high', '-b:v', process.env.LIVETV_VAAPI_BITRATE || '6M',
+      '-maxrate', process.env.LIVETV_MAX_BITRATE || '8M', '-bufsize', '16M',
+    ];
+  }
   return [
     '-c:v', 'libx264', '-preset', process.env.LIVETV_X264_PRESET || 'veryfast', '-profile:v', 'high',
     '-pix_fmt', 'yuv420p', '-crf', '23', '-maxrate', process.env.LIVETV_MAX_BITRATE || '8M', '-bufsize', '16M',
@@ -457,6 +496,8 @@ class HdhrSource {
     this.lastSegAt = 0;
     this.nextDisc  = false;
     this.stderrLines = 0;
+    this.useHw = vaapiAvailable();   // flips to false if the GPU path keeps failing
+    if (vaapiRequested() && !this.useHw) console.warn('[HDHR] LIVETV_HWACCEL is set but no Intel/AMD render device found in /dev/dri — using software x264');
   }
 
   start() {
@@ -477,13 +518,15 @@ class HdhrSource {
     const url = `http://${HDHR_IP}:${HDHR_PORT}/auto/v${this.channel}`;
     // A restart after earlier segments marks a discontinuity (timestamps start over).
     this.nextDisc = this.dvr.entries.length > 0;
+    const hw = this.useHw && !process.env.LIVETV_VIDEO_ARGS;
     const args = [
       '-hide_banner', '-loglevel', 'warning', '-nostdin',
+      ...(hw ? ['-vaapi_device', vaapiDevice().device] : []),
       '-fflags', '+genpts+discardcorrupt', '-analyzeduration', '2000000', '-probesize', '5000000',
       '-i', url,
       '-map', '0:v:0', '-map', '0:a:0?',
-      '-vf', 'yadif=mode=0:parity=-1:deint=1',
-      ...videoArgs(),
+      '-vf', hw ? 'yadif=mode=0:parity=-1:deint=1,format=nv12,hwupload' : 'yadif=mode=0:parity=-1:deint=1',
+      ...videoArgs(hw),
       '-force_key_frames', `expr:gte(t,n_forced*${SEG_SECS})`, '-sc_threshold', '0',
       '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
       '-f', 'segment', '-segment_time', String(SEG_SECS), '-segment_format', 'mpegts',
@@ -491,7 +534,7 @@ class HdhrSource {
       '-segment_list', 'pipe:1', '-segment_list_type', 'csv',
       path.join(this.dvr.dir, 's%d.ts'),
     ];
-    console.log(`[HDHR] ${this.roomId}: ffmpeg start ch ${this.channel} (seg #${this.dvr.nextIdx}${this.nextDisc ? ', after restart' : ''})`);
+    console.log(`[HDHR] ${this.roomId}: ffmpeg start ch ${this.channel} enc=${hw ? 'vaapi' : (process.env.LIVETV_VIDEO_ARGS ? 'custom' : 'x264')} (seg #${this.dvr.nextIdx}${this.nextDisc ? ', after restart' : ''})`);
     this.spawnedAt = Date.now();
     this.proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let buf = '';
@@ -523,6 +566,10 @@ class HdhrSource {
       this.proc = null;
       if (!this.running) return;
       if (!produced) this.failures++;
+      if (this.useHw && this.failures >= 2) {
+        console.warn(`[HDHR] ${this.roomId}: VAAPI encode failed ${this.failures}x with no output — falling back to software x264`);
+        this.useHw = false;
+      }
       const delay = Math.min(1000 * 2 ** Math.min(this.failures, 4), 15000);
       console.warn(`[HDHR] ${this.roomId}: ffmpeg exited (${sig || code}) after ${produced} segments — restarting in ${delay}ms`);
       this.timer = setTimeout(() => this._spawn(), delay);
@@ -609,7 +656,7 @@ async function startRelay(roomId, opts) {
  * Start recording a channel straight from the HDHomeRun into a fresh DVR (replaces any
  * previous relay/DVR for the room). Resolves once `readySec` seconds are recorded.
  */
-async function startHdhr(roomId, { channel, readySec }) {
+async function startHdhr(roomId, { channel, readySec, onProgress }) {
   if (!/^\d{1,3}(\.\d{1,3})?$/.test(String(channel))) throw new Error('Invalid channel number');
   const oldRelay = relays.get(roomId);
   const oldDvr   = dvrs.get(roomId);
@@ -618,8 +665,13 @@ async function startHdhr(roomId, { channel, readySec }) {
   const src = new HdhrSource(roomId, { channel: String(channel), dvr });
   src.start();
 
+  let lastTick = -1;
   const ready = await new Promise(resolve => {
-    const t = setInterval(() => { if (dvr.total >= readySec) { clearInterval(t); resolve(true); } }, 200);
+    const t = setInterval(() => {
+      const tick = Math.floor(Math.min(dvr.total, readySec) * 2); // report in half-second steps
+      if (tick !== lastTick) { lastTick = tick; onProgress && onProgress(Math.min(dvr.total, readySec), readySec); }
+      if (dvr.total >= readySec) { clearInterval(t); resolve(true); }
+    }, 200);
     setTimeout(() => { clearInterval(t); resolve(false); }, 25000);
   });
   if (!ready) {

@@ -61,6 +61,8 @@ router.get('/plex/callback/:pinId', async (req, res) => {
     console.log(`[Auth] authToken present: ${!!authToken}`);
     if (!authToken) return res.redirect('/login?error=no_token');
 
+    // True when this Plex account *owns* the server Playdarr is connected to (plex.tv marks it `owned`).
+    let isAdmin = false;
     try {
       const [machineId, resourcesRes] = await Promise.all([
         getServerMachineId(),
@@ -70,11 +72,12 @@ router.get('/plex/callback/:pinId', async (req, res) => {
           timeout: 8000
         })
       ]);
-      const hasAccess = resourcesRes.data.some(r => r.clientIdentifier === machineId);
-      if (!hasAccess) {
+      const serverResource = resourcesRes.data.find(r => r.clientIdentifier === machineId);
+      if (!serverResource) {
         console.error(`[Auth] User token has no access to server ${machineId}`);
         return res.redirect('/login?error=access');
       }
+      isAdmin = serverResource.owned === true;
     } catch (e) {
       console.error('[Auth] Server access check failed:', e.code, e.message, e.response?.status);
       return res.redirect('/login?error=access');
@@ -95,8 +98,10 @@ router.get('/plex/callback/:pinId', async (req, res) => {
         email: plexUser.email,
         picture: plexUser.thumb,
         plexToken: encryptToken(authToken),
-        isGuest: false
+        isGuest: false,
+        isAdmin
       };
+      if (isAdmin) console.log(`[Auth] ${req.session.user.name} signed in as server owner (admin)`);
       req.session.save(err => {
         if (err) console.error('[Auth] Session save error:', err);
         res.redirect('/');

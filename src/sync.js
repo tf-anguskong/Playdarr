@@ -86,7 +86,10 @@ class Room {
       hasNextEpisode: this.roomType === 'tv' && this.tvEpisodeIndex < this.tvEpisodeList.length - 1,
       liveTvChannel:      this.liveTvChannel,
       liveTvChannelTitle: this.liveTvChannelTitle,
+      liveTuning: this.roomType === 'livetv' ? (this.liveTuning || null) : null,
+      liveTvProgram: this.roomType === 'livetv' ? (this.liveTvProgram || null) : null,
       liveDvr: this.roomType === 'livetv' ? (getDvr(this.id)?.info() || null) : null,
+      liveBufferSec: this.roomType === 'livetv' ? (this.liveTvSource === 'hdhr' ? HDHR_START_BEHIND_SEC : LIVE_START_BEHIND_SEC) : null,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -95,7 +98,7 @@ class Room {
     };
   }
 
-  summary() {
+  summary(admin = false) {
     return {
       id: this.id, name: this.name, hostName: this.hostName,
       roomType: this.roomType,
@@ -103,7 +106,13 @@ class Room {
       viewerCount: this.viewers.size,
       hasMovie: !!this.movieKey,
       youtubeVideoId: this.youtubeVideoId,
-      liveTvChannel: this.liveTvChannel
+      liveTvChannel: this.liveTvChannel,
+      // Who is in the room — only sent to the server owner's sockets, who can kick from the lobby
+      ...(admin ? {
+        viewers: Array.from(this.viewers.values()).map(v => ({
+          socketId: v.socketId, name: v.name, isGuest: !!v.isGuest, isHost: !!v.isHost, isAdmin: !!v.isAdmin
+        }))
+      } : {})
     };
   }
 
@@ -136,8 +145,39 @@ function getRoomByInviteToken(token) {
   return roomId ? rooms.get(roomId) : null;
 }
 
+const roomListFor = (admin) => Array.from(rooms.values()).map(r => r.summary(admin));
+
+// The server owner's sockets sit in the 'admins' socket.io room and get the detailed list.
 function broadcastRoomList(io) {
-  io.emit('room-list', Array.from(rooms.values()).map(r => r.summary()));
+  io.except('admins').emit('room-list', roomListFor(false));
+  io.to('admins').emit('room-list', roomListFor(true));
+}
+
+/** Close a room immediately and send everyone in it back to the lobby. */
+function closeRoom(io, room, reason) {
+  if (room.countdownTimer)    clearTimeout(room.countdownTimer);
+  if (room.intermissionTimer) clearTimeout(room.intermissionTimer);
+  if (room.closeTimer)        clearTimeout(room.closeTimer);
+  room.broadcast(io, 'room-closed', { reason });
+  room.viewers.forEach((_, sid) => socketToRoom.delete(sid));
+  stopRelay(room.id);
+  inviteTokens.delete(room.inviteToken);
+  rooms.delete(room.id);
+  broadcastRoomList(io);
+}
+
+/** Remove one viewer from their room. `ban` also stops that account rejoining this room. */
+function removeViewer(io, room, targetSocketId, byUser, { ban = false } = {}) {
+  const target = room.viewers.get(targetSocketId);
+  if (!target) return false;
+  io.to(targetSocketId).emit('kicked', { byAdmin: !!byUser.isAdmin });
+  room.viewers.delete(targetSocketId);
+  socketToRoom.delete(targetSocketId);
+  if (ban && target.id) (room.bannedIds || (room.bannedIds = new Set())).add(target.id);
+  room.broadcastViewers(io);
+  broadcastRoomList(io);
+  console.log(`[Room] ${byUser.name}${byUser.isAdmin ? ' (admin)' : ''} kicked "${target.name}" from "${room.name}"${ban ? ' (blocked from rejoining)' : ''}`);
+  return true;
 }
 
 
@@ -161,8 +201,11 @@ const chatLimiter          = makeSocketRateLimiter(3, 2000);  // 3 msgs / 2s
 // How far behind the newest recorded segment a freshly tuned room starts. That head start is
 // the buffer that hides the pause while a retune (every ~3:20) swaps in a new Plex session.
 const LIVE_START_BEHIND_SEC = 8;
-// With the HDHomeRun source nothing expires, so there is no retune gap to hide: start closer to live.
-const HDHR_START_BEHIND_SEC = 4;
+// With the HDHomeRun source, how far behind the newest recorded video a room plays. That distance
+// IS the playback buffer (the player can only buffer what the DVR already holds), so a larger value
+// rides out encoder / network hiccups at the cost of more delay from the broadcast and a longer
+// start-up wait (the DVR has to record this much first). Tunable with LIVETV_BUFFER_SEC.
+const HDHR_START_BEHIND_SEC = Math.max(4, Math.min(60, parseInt(process.env.LIVETV_BUFFER_SEC, 10) || 10));
 const SEGMENT_SECS = 2;
 const reactionLimiter      = makeSocketRateLimiter(5, 2000);  // 5 reactions / 2s
 const seekLimiter          = makeSocketRateLimiter(15, 2000); // 15 seeks / 2s (scrubbing)
@@ -176,6 +219,19 @@ function formatEpisodeTitle(showTitle, ep) {
   const e = ep.index != null ? `E${String(ep.index).padStart(2, '0')}` : '';
   const se = (s || e) ? `${s}${e} · ` : '';
   return `${showTitle ? showTitle + ' · ' : ''}${se}${ep.title || ''}`;
+}
+
+// ── Live TV "now playing" — program title for the room's channel, from the Plex guide ──
+async function refreshLiveTvProgram(room, io) {
+  if (room.roomType !== 'livetv' || !room.liveTvChannel) return;
+  try {
+    const { channels } = await require('./livetv-manager').getGuide();
+    const program = channels.find(c => c.number === room.liveTvChannel)?.nowPlaying || null;
+    if (program !== (room.liveTvProgram || null)) {
+      room.liveTvProgram = program;
+      room.broadcast(io, 'livetv-program', { program });
+    }
+  } catch { /* guide unavailable — keep whatever we had */ }
 }
 
 // ── Live TV retune — restarts the server-side relay with a fresh Plex session ──
@@ -231,6 +287,9 @@ function setupSync(io, enabledRoomTypes) {
     });
   }, 5000);
 
+  // Programs change on the hour / half hour; keep each live TV room's title current.
+  setInterval(() => rooms.forEach(room => refreshLiveTvProgram(room, io)), 60000);
+
   // Faster heartbeat for live TV rooms — tighter sync tolerance needs more frequent updates.
   // Plex session keepalives are handled by stream.js; this just calibrates position + broadcasts.
   setInterval(() => {
@@ -257,7 +316,30 @@ function setupSync(io, enabledRoomTypes) {
   io.on('connection', (socket) => {
     const user = socket.user;
 
-    socket.emit('room-list', Array.from(rooms.values()).map(r => r.summary()));
+    const isAdmin = !!user.isAdmin && !user.isGuest;
+    if (isAdmin) socket.join('admins');
+    socket.emit('room-list', roomListFor(isAdmin));
+
+    // ── Admin: close any room (server owner only) ──────────
+    socket.on('admin-close-room', ({ roomId } = {}) => {
+      if (!isAdmin) return;
+      const room = rooms.get(roomId);
+      if (!room) return;
+      console.log(`[Admin] ${user.name} closed room "${room.name}"`);
+      closeRoom(io, room, 'Closed by the server owner');
+    });
+
+    // ── Admin: kick anyone from any room, and block them from rejoining it ──
+    socket.on('admin-kick', ({ targetSocketId } = {}) => {
+      if (!isAdmin || targetSocketId === socket.id) return;
+      const room = socketToRoom.get(targetSocketId);
+      const target = room?.viewers.get(targetSocketId);
+      if (!room || !target || target.isAdmin) return;
+      if (targetSocketId === room.hostSocketId) {
+        return socket.emit('error-msg', 'That is the room host — close the room instead');
+      }
+      removeViewer(io, room, targetSocketId, user, { ban: true });
+    });
 
     // ── Create room (Plex users only) ──────────────────────
     socket.on('create-room', async ({ name, roomType, youtubeUrl } = {}) => {
@@ -278,7 +360,7 @@ function setupSync(io, enabledRoomTypes) {
       if (youtubeVideoId) room.movieTitle = await fetchYoutubeTitle(youtubeVideoId);
       room.hostSocketId = socket.id;
       room.viewers.set(socket.id, {
-        socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null, isGuest: false, isHost: true
+        socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null, isGuest: false, isHost: true, isAdmin
       });
 
       rooms.set(room.id, room);
@@ -295,6 +377,9 @@ function setupSync(io, enabledRoomTypes) {
     socket.on('join-room', ({ roomId }) => {
       const room = rooms.get(roomId);
       if (!room) return socket.emit('room-error', 'Room not found');
+      if (room.bannedIds?.has(user.id) && !isAdmin) {
+        return socket.emit('room-error', 'You have been removed from this room by the server owner');
+      }
 
       // Scheduled room: first *Plex* user to join becomes the host.
       // Guests are not allowed to claim host on a scheduled room — they must
@@ -335,11 +420,11 @@ function setupSync(io, enabledRoomTypes) {
 
       room.viewers.set(socket.id, {
         socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null,
-        isGuest: user.isGuest || false, isHost
+        isGuest: user.isGuest || false, isHost, isAdmin
       });
       socketToRoom.set(socket.id, room);
 
-      socket.emit('room-state', { ...room.state(), isHost, inviteToken: isHost ? room.inviteToken : null });
+      socket.emit('room-state', { ...room.state(), isHost, isAdmin, inviteToken: isHost ? room.inviteToken : null });
       room.broadcastViewers(io);
       console.log(`[Room] ${user.name} joined "${room.name}"`);
     });
@@ -459,11 +544,24 @@ function setupSync(io, enabledRoomTypes) {
       }
       room._tuningInProgress = true;
 
+      // Tell everyone a channel is being tuned so their players can show progress while the DVR
+      // records its first seconds. recorded/needed are DVR seconds (needed is null = unknown).
+      const tuneNeeded = hdhrEnabled() ? HDHR_START_BEHIND_SEC + SEGMENT_SECS : null;
+      const setTuning = (recorded) => {
+        room.liveTuning = {
+          channel: String(channel || '').slice(0, 20),
+          title: sanitizeText((channelTitle || channel || '').slice(0, 60)),
+          recorded, needed: tuneNeeded,
+        };
+        room.broadcast(io, 'livetv-tuning', room.liveTuning);
+      };
+      setTuning(0);
+
       clearRoomManifest(room.id);
       try {
         if (hdhrEnabled()) {
           // Straight from the HDHomeRun via ffmpeg — Plex is only used for the guide.
-          await startHdhr(room.id, { channel, readySec: HDHR_START_BEHIND_SEC + SEGMENT_SECS });
+          await startHdhr(room.id, { channel, readySec: tuneNeeded, onProgress: (rec) => setTuning(rec) });
           room.liveTvChannel      = String(channel || '').slice(0, 20);
           room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
           room.liveTvChannelId    = channelId;
@@ -474,7 +572,9 @@ function setupSync(io, enabledRoomTypes) {
           room.position   = Math.max(d.start, d.edge - HDHR_START_BEHIND_SEC);
           room.playing    = true;
           room.lastUpdate = Date.now();
+          room.liveTvProgram = null;
           room.broadcastState(io);
+          refreshLiveTvProgram(room, io);
           console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} via HDHomeRun`);
           return;
         }
@@ -498,13 +598,17 @@ function setupSync(io, enabledRoomTypes) {
         room.playing    = true;
         room.lastUpdate = Date.now();
 
+        room.liveTvProgram = null;
         room.broadcastState(io);
+        refreshLiveTvProgram(room, io);
         console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey}, sub ${subKey})`);
       } catch (err) {
         console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
         socket.emit('error-message', `Failed to tune channel: ${err.message}`);
+        room.broadcast(io, 'livetv-tune-failed', { message: err.message });
       } finally {
         room._tuningInProgress = false;
+        room.liveTuning = null;
       }
     });
 
@@ -587,11 +691,9 @@ function setupSync(io, enabledRoomTypes) {
       if (!reactionLimiter.allow(socket.id)) return;
       const allowed = ['👍','❤️','😂','😱','😮','👏'];
       if (!allowed.includes(emoji)) return;
-      room.broadcast(io, 'reaction', {
-        emoji,
-        name: user.displayName || user.name,
-        picture: room.viewers.get(socket.id)?.picture || user.picture || null
-      });
+      const picture = room.viewers.get(socket.id)?.picture || user.picture || null;
+      console.log(`[Reaction] ${user.displayName || user.name} (${user.isGuest ? 'guest' : 'plex'}) picture=${picture ? String(picture).slice(0, 90) : 'none'}`);
+      room.broadcast(io, 'reaction', { emoji, name: user.displayName || user.name, picture });
     });
 
     // ── Room settings (host only) ──────────────────────────
@@ -603,18 +705,16 @@ function setupSync(io, enabledRoomTypes) {
       room.broadcast(io, 'room-settings', room.settings);
     });
 
-    // ── Kick viewer (host only) ────────────────────────────
+    // ── Kick viewer (host, or the server owner in any room they are in) ──
+    // The server owner can never be kicked, and a non-host admin can't kick the host (close the room instead).
     socket.on('kick-viewer', ({ targetSocketId }) => {
       const room = socketToRoom.get(socket.id);
-      if (!room || room.hostSocketId !== socket.id) return;
+      if (!room || (room.hostSocketId !== socket.id && !isAdmin)) return;
       if (!room.viewers.has(targetSocketId)) return;
       if (targetSocketId === socket.id) return;
-      const kicked = room.viewers.get(targetSocketId);
-      io.to(targetSocketId).emit('kicked');
-      room.viewers.delete(targetSocketId);
-      socketToRoom.delete(targetSocketId);
-      room.broadcastViewers(io);
-      console.log(`[Room] ${user.name} kicked "${kicked?.name}" from "${room.name}"`);
+      if (room.viewers.get(targetSocketId).isAdmin) return;
+      if (targetSocketId === room.hostSocketId) return;
+      removeViewer(io, room, targetSocketId, user, { ban: isAdmin });
     });
 
     // ── Countdown (host only) ──────────────────────────────

@@ -1314,3 +1314,45 @@ body {
   display: flex; align-items: center; justify-content: center;
   background: var(--pd-accent); color: var(--pd-accent-ink); font: 700 11px/1 var(--pd-font-mono);
 }
+
+/* Live TV tuning overlay */
+.livetv-loading {
+  position: absolute; inset: 0; z-index: 58; display: flex; align-items: center; justify-content: center;
+  background: #000;
+}
+.livetv-loading-card { width: min(320px, 80%); text-align: center; font-family: var(--pd-font-mono); }
+.livetv-loading-spinner {
+  width: 34px; height: 34px; margin: 0 auto 1rem; border-radius: 50%;
+  border: 3px solid var(--pd-border-strong); border-top-color: var(--pd-accent); animation: spin 0.9s linear infinite;
+}
+.livetv-loading-title { color: var(--pd-text-2); font-size: 13px; font-weight: 600; margin-bottom: 0.35rem; }
+.livetv-loading-step { color: var(--pd-text-muted); font-size: 11px; margin-bottom: 0.9rem; }
+.livetv-loading-bar { height: 4px; border-radius: 3px; background: var(--pd-border-strong); overflow: hidden; }
+.livetv-loading-fill { height: 100%; width: 0; background: var(--pd-accent); border-radius: 3px; transition: width 0.4s ease; }
+.livetv-loading-fill.indeterminate { width: 40% !important; animation: tuneSlide 1.2s ease-in-out infinite; }
+@keyframes tuneSlide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+
+/* Live TV: program title beside the LIVE / behind-live readout */
+.livetv-dvr-left { display: flex; align-items: baseline; gap: 0.4rem; min-width: 0; flex: 1; }
+.livetv-behind { flex-shrink: 0; }
+.livetv-program {
+  font: 400 10px/1 var(--pd-font-mono); color: var(--pd-text-2); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.btn-golive { margin-left: 0.5rem; flex-shrink: 0; }
+
+/* Server-owner (admin) controls */
+.admin-badge {
+  display: inline-block; font: 600 9px/1 var(--pd-font-mono); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--pd-accent); border: 1px solid var(--pd-accent); border-radius: 3px; padding: 2px 5px; margin-left: 0.4rem;
+}
+.admin-room-panel { border-top: 1px solid var(--pd-border); margin-top: 0.7rem; padding-top: 0.6rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.admin-viewer { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font: 400 11px/1.3 var(--pd-font-mono); color: var(--pd-text-2); }
+.admin-viewer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-empty { font: 400 10px/1 var(--pd-font-mono); color: var(--pd-text-muted); }
+.btn-close-room {
+  align-self: flex-start; font: 500 11px/1 var(--pd-font-mono); padding: 0.35rem 0.6rem; margin-top: 0.2rem; cursor: pointer;
+  background: transparent; border: 1px solid rgba(220,60,60,0.35); color: #c05050; border-radius: 4px;
+}
+.btn-close-room:hover { border-color: #e05050; color: #e05050; background: rgba(220,60,60,0.1); }
+#admin-close-room-btn { margin: 0.6rem 0; }
