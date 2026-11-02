@@ -171,6 +171,8 @@ Copy `.env.example` to `.env` and fill in the values:
 | `LIVETV_MAX_BITRATE` | No | Peak video bitrate for the encode (default: `8M`) |
 | `LIVETV_HWACCEL` | No | `vaapi` to encode on an Intel or AMD iGPU instead of the CPU (Linux hosts; also run with `docker-compose.vaapi.yml` so `/dev/dri` is available in the container). `intel` and `amd` are accepted as aliases. Falls back to software x264 if no GPU is found or it fails. |
 | `LIVETV_VAAPI_DEVICE` | No | VAAPI render device. Default: the first Intel or AMD node in `/dev/dri` (an NVIDIA card is skipped). Set it explicitly if the box has several GPUs. |
+| `LIVETV_UPSCALE` | No | `720` or `1080` to upscale channels shorter than that (e.g. 480i SD) with Lanczos scaling. HD channels are left alone. It can't add detail, but looks cleaner than the browser stretching SD. Costs some CPU even with GPU encode, since scaling runs before the encode. |
+| `LIVETV_SHARPEN` | No | Sharpen strength applied with `LIVETV_UPSCALE` (default `0.5`, `0` to disable) |
 | `LIVETV_VIDEO_ARGS` | No | Replace the whole video encoder argument list, e.g. `-c:v h264_nvenc -preset p4 -b:v 6M` for hardware encoding |
 
 ---
