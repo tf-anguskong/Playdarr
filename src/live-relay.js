@@ -672,6 +672,10 @@ async function startRelay(roomId, opts) {
  * Start recording a channel straight from the HDHomeRun into a fresh DVR (replaces any
  * previous relay/DVR for the room). Resolves once `readySec` seconds are recorded.
  */
+// A tune that is still waiting for its first seconds of video. Registered so that closing or resetting the
+// room in that window (stopRelay) cancels it, instead of leaving ffmpeg holding a tuner for a room nobody is in.
+const pendingTunes = new Map();   // roomId -> { src, dvr, cancelled }
+
 async function startHdhr(roomId, { channel, readySec, onProgress }) {
   if (!/^\d{1,3}(\.\d{1,3})?$/.test(String(channel))) throw new Error('Invalid channel number');
   const oldRelay = relays.get(roomId);
@@ -679,17 +683,26 @@ async function startHdhr(roomId, { channel, readySec, onProgress }) {
 
   const dvr = new LiveDvr(roomId);
   const src = new HdhrSource(roomId, { channel: String(channel), dvr });
+  const pending = { src, dvr, cancelled: false };
+  pendingTunes.set(roomId, pending);
   src.start();
 
   let lastTick = -1;
   const ready = await new Promise(resolve => {
     const t = setInterval(() => {
+      if (pending.cancelled) { clearInterval(t); resolve(false); return; }
       const tick = Math.floor(Math.min(dvr.total, readySec) * 2); // report in half-second steps
       if (tick !== lastTick) { lastTick = tick; onProgress && onProgress(Math.min(dvr.total, readySec), readySec); }
       if (dvr.total >= readySec) { clearInterval(t); resolve(true); }
     }, 200);
     setTimeout(() => { clearInterval(t); resolve(false); }, 25000);
   });
+  if (pendingTunes.get(roomId) === pending) pendingTunes.delete(roomId);
+  if (pending.cancelled) {   // stopRelay already stopped ffmpeg and removed the recording
+    const err = new Error('Tune cancelled');
+    err.cancelled = true;
+    throw err;
+  }
   if (!ready) {
     src.stop();
     dvr.destroy();
@@ -705,6 +718,8 @@ async function startHdhr(roomId, { channel, readySec, onProgress }) {
 
 /** Stop the relay and delete the DVR for a room. */
 function stopRelay(roomId) {
+  const pend = pendingTunes.get(roomId);
+  if (pend) { pend.cancelled = true; pend.src.stop(); pend.dvr.destroy(); pendingTunes.delete(roomId); }
   const relay = relays.get(roomId);
   if (relay) { relay.stop(); relays.delete(roomId); }
   const dvr = dvrs.get(roomId);

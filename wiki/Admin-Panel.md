@@ -2,7 +2,7 @@
 
 Open it from the **Admin** button in the lobby header, or go straight to `/admin`. Anyone who isn't the server owner is redirected to the lobby (and API calls get `403 Server owner only`).
 
-The page has four sections. Everything refreshes live or on a timer, so you can leave it open.
+The page has five sections. Everything refreshes live or on a timer, so you can leave it open.
 
 ## Webhooks
 
@@ -25,6 +25,10 @@ Every open room, updated in real time:
 - room name, type, host, what's playing, viewer count;
 - each viewer as a chip. Click the **✕** on a chip to **kick and block** that person from the room (not shown for the host or other admins);
 - *Open* jumps into the room; *Close room* ends it for everyone.
+
+## Always-on rooms
+
+Rooms you pin open so they exist with nobody in them (a standing Live TV channel, a drop-in movie room). Add one with *+ Add room*; each row shows whether it's empty or who's hosting, with *Open*, *Copy link* and *Remove*. Live TV ones tune only when someone arrives. Full details: [Always-On Rooms](Always-On-Rooms).
 
 ## People
 

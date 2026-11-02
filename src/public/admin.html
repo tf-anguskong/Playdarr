@@ -64,6 +64,39 @@
       <div id="rooms-list" class="admin-list"><div class="loading">Looking for rooms…</div></div>
     </section>
 
+    <!-- Always-on rooms -->
+    <section class="admin-section">
+      <div class="browser-toolbar">
+        <div>
+          <h2>Always-on rooms</h2>
+          <p class="admin-hint">Rooms that stay open with nobody in them, with a permanent invite link. Whoever arrives first becomes host. Live TV rooms only tune when someone arrives, so they cost nothing while empty.</p>
+        </div>
+        <button id="ao-add-btn" class="btn-create">+ Add room</button>
+      </div>
+
+      <form id="ao-form" class="admin-form" style="display:none" autocomplete="off">
+        <div class="admin-form-grid">
+          <label class="sched-label">Name
+            <input id="ao-name" class="search-input" type="text" maxlength="60" placeholder="Movie channel" required>
+          </label>
+          <label class="sched-label">Type
+            <select id="ao-type" class="filter-select"></select>
+          </label>
+          <label id="ao-channel-wrap" class="sched-label admin-span" style="display:none">Channel
+            <select id="ao-channel" class="filter-select"></select>
+            <span class="admin-hint">Tuned when the first person arrives, and again whenever the room has been empty.</span>
+          </label>
+        </div>
+        <div id="ao-error" class="admin-error" style="display:none"></div>
+        <div class="modal-actions">
+          <button type="button" id="ao-cancel" class="btn-logout">Cancel</button>
+          <button type="submit" class="btn-create">Create</button>
+        </div>
+      </form>
+
+      <div id="ao-list" class="admin-list"><div class="loading">Loading…</div></div>
+    </section>
+
     <!-- People -->
     <section class="admin-section">
       <div class="browser-toolbar">

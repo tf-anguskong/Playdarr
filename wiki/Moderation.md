@@ -34,6 +34,8 @@ A guest's identity is created fresh from the invite link. If you kick and block 
 - A **scheduled** room that has already opened is closed the same way. The *schedule* itself (the next occurrence of a recurring night) is not affected — use *Cancel series* for that.
 - Rooms also close on their own 30 seconds after the host leaves with nobody to take over. If viewers remain, the room moves to another viewer instead, preferring Plex users over guests.
 
+**Always-on rooms** are the exception: *Close room* (shown as *Eject everyone*) sends everyone out and resets the room, which stays open and listed. To get rid of one for good, use *Remove* under Admin → Always-on rooms ([Always-On Rooms](Always-On-Rooms)).
+
 ## Hosts' own controls
 
 Anyone hosting a room can:

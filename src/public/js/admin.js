@@ -140,8 +140,8 @@ socket.on('room-list', (rooms) => {
   $('rooms-list').innerHTML = rooms.map(r => `
     <div class="admin-row">
       <div class="admin-row-main">
-        <div class="admin-row-title">${esc(r.name)} <span class="sched-badge">${esc(r.roomType)}</span></div>
-        <div class="admin-row-sub">hosted by ${esc(r.hostName)}${r.movieTitle ? ` · ${esc(r.movieTitle)}` : ''} · ${r.viewerCount} watching</div>
+        <div class="admin-row-title">${esc(r.name)} <span class="sched-badge">${esc(r.roomType)}</span>${r.alwaysOn ? ' <span class="sched-badge always-on-badge">always on</span>' : ''}</div>
+        <div class="admin-row-sub">${r.alwaysOn && !r.viewerCount ? 'empty — waiting for someone to arrive' : `hosted by ${esc(r.hostName)}`}${r.movieTitle ? ` · ${esc(r.movieTitle)}` : ''}${r.alwaysOn && !r.viewerCount ? '' : ` · ${r.viewerCount} watching`}</div>
         <div class="admin-chips">
           ${(r.viewers || []).map(v => `
             <span class="admin-chip">${esc(v.name)}${v.isHost ? ' 👑' : ''}${v.isGuest ? ' <em>guest</em>' : ''}${v.isHost || v.isAdmin ? '' : ` <button class="chip-x" data-kick="${esc(v.socketId)}" title="Kick and block from this room">✕</button>`}</span>`).join('')}
@@ -149,7 +149,7 @@ socket.on('room-list', (rooms) => {
       </div>
       <div class="admin-row-actions">
         <a class="btn-copy" href="/watch/${esc(r.id)}" style="text-decoration:none">Open</a>
-        <button class="btn-kick" data-close="${esc(r.id)}" data-name="${esc(r.name)}">Close room</button>
+        <button class="btn-kick" data-close="${esc(r.id)}" data-name="${esc(r.name)}"${r.alwaysOn ? ' title="Sends everyone out; the room stays open and resets"' : ''}>${r.alwaysOn ? 'Eject everyone' : 'Close room'}</button>
       </div>
     </div>`).join('');
 });
@@ -158,9 +158,105 @@ $('rooms-list').addEventListener('click', (e) => {
   const kick = e.target.closest('[data-kick]');
   if (kick && confirm('Kick this viewer and block them from rejoining the room?')) socket.emit('admin-kick', { targetSocketId: kick.dataset.kick });
   const close = e.target.closest('[data-close]');
-  if (close && confirm(`Close "${close.dataset.name}" for everyone in it?`)) socket.emit('admin-close-room', { roomId: close.dataset.close });
+  if (close && confirm(`${close.textContent.trim() === 'Eject everyone' ? 'Send everyone out of' : 'Close'} "${close.dataset.name}"?`)) socket.emit('admin-close-room', { roomId: close.dataset.close });
 });
 socket.on('error-msg', msg => alert(msg));
+
+// ── Always-on rooms ────────────────────────────────────────
+const AO_TYPES = { livetv: '📡 Live TV', movie: '🎬 Movie', tv: '📺 TV show' };
+let alwaysOn = [];
+let guideLoaded = false;
+
+async function loadAlwaysOn() {
+  try {
+    const data = await api('GET', '/api/admin/always-on');
+    alwaysOn = data.rooms;
+    $('ao-type').innerHTML = Object.entries(AO_TYPES)
+      .filter(([t]) => data.enabledRoomTypes[t])
+      .map(([t, label]) => `<option value="${t}">${label}</option>`).join('');
+    renderAlwaysOn();
+  } catch (err) {
+    $('ao-list').innerHTML = `<div class="loading">${esc(err.message)}</div>`;
+  }
+}
+
+function renderAlwaysOn() {
+  if (!alwaysOn.length) { $('ao-list').innerHTML = '<div class="loading">No always-on rooms. Add one to keep a room open permanently.</div>'; return; }
+  $('ao-list').innerHTML = alwaysOn.map(r => {
+    const where = r.channel ? `${r.channel.channel} ${r.channel.channelTitle}` : (r.roomType === 'livetv' ? 'pick a channel in the room' : '');
+    const status = !r.open ? 'Not open — that room type is turned off in .env'
+      : r.viewers ? `${esc(r.hostName || 'someone')} hosting · ${r.viewers} watching${r.onChannel ? ` · on ${esc(r.onChannel)}` : ''}`
+      : (r.roomType === 'livetv' ? 'Empty — tunes when someone arrives' : 'Empty — waiting for someone to arrive');
+    return `
+      <div class="admin-row">
+        <div class="admin-row-main">
+          <div class="admin-row-title">${esc(r.name)} <span class="sched-badge">${esc(AO_TYPES[r.roomType] || r.roomType)}</span></div>
+          <div class="admin-row-sub">${where ? esc(where) + ' · ' : ''}${status}</div>
+        </div>
+        <div class="admin-row-actions">
+          ${r.roomId ? `<a class="btn-copy" href="/watch/${esc(r.roomId)}" style="text-decoration:none">Open</a>` : ''}
+          <button class="btn-copy" data-ao="copy" data-url="${esc(r.inviteUrl)}">Copy link</button>
+          <button class="btn-kick" data-ao="remove" data-id="${esc(r.id)}" data-name="${esc(r.name)}">Remove</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function fillChannels() {
+  if (guideLoaded) return;
+  $('ao-channel').innerHTML = '<option value="">Loading channels…</option>';
+  try {
+    const { channels = [] } = await api('GET', '/api/livetv/guide');
+    channels.sort((a, b) => parseFloat(a.number) - parseFloat(b.number));
+    $('ao-channel').innerHTML = '<option value="">No channel — pick one when joining</option>' +
+      channels.map(c => `<option value="${esc(c.number)}">${esc(c.number)} ${esc(c.title || '')}</option>`).join('');
+    guideLoaded = true;
+  } catch {
+    $('ao-channel').innerHTML = '<option value="">Channel guide unavailable</option>';
+  }
+}
+
+function syncAoForm() {
+  const live = $('ao-type').value === 'livetv';
+  $('ao-channel-wrap').style.display = live ? 'flex' : 'none';
+  if (live) fillChannels();
+}
+
+$('ao-add-btn').addEventListener('click', () => {
+  $('ao-form').style.display = 'block';
+  $('ao-name').value = ''; $('ao-error').style.display = 'none';
+  syncAoForm();
+  $('ao-name').focus();
+});
+$('ao-cancel').addEventListener('click', () => { $('ao-form').style.display = 'none'; });
+$('ao-type').addEventListener('change', syncAoForm);
+
+$('ao-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = { name: $('ao-name').value, roomType: $('ao-type').value };
+  if (body.roomType === 'livetv' && $('ao-channel').value) body.channel = $('ao-channel').value;
+  try {
+    await api('POST', '/api/admin/always-on', body);
+    $('ao-form').style.display = 'none';
+    loadAlwaysOn();
+  } catch (err) {
+    $('ao-error').textContent = err.message;
+    $('ao-error').style.display = 'block';
+  }
+});
+
+$('ao-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-ao]');
+  if (!btn) return;
+  if (btn.dataset.ao === 'copy') {
+    await navigator.clipboard.writeText(btn.dataset.url).catch(() => {});
+    btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy link'; }, 1500);
+    return;
+  }
+  if (!confirm(`Remove "${btn.dataset.name}"? It closes now (everyone in it is sent to the lobby) and won't come back.`)) return;
+  try { await api('DELETE', `/api/admin/always-on/${btn.dataset.id}`); loadAlwaysOn(); }
+  catch (err) { alert(err.message); }
+});
 
 // ── People ─────────────────────────────────────────────────
 let people = [];
@@ -264,5 +360,7 @@ $('sched-list').addEventListener('click', async (e) => {
 loadWebhooks();
 loadScheduled();
 loadPeople();
+loadAlwaysOn();
 setInterval(loadScheduled, 60000);
+setInterval(loadAlwaysOn, 10000);
 setInterval(loadPeople, 30000);

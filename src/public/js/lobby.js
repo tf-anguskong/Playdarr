@@ -92,8 +92,8 @@ function renderRooms(rooms) {
   grid.innerHTML = rooms.map(r => `
     <div class="room-card">
       <div class="room-card-header">
-        <span class="room-card-name">${esc(r.name)}</span>
-        <span class="room-host">hosted by ${esc(r.hostName)}</span>
+        <span class="room-card-name">${esc(r.name)}</span>${r.alwaysOn ? ' <span class="sched-badge always-on-badge" title="Stays open all the time">always on</span>' : ''}
+        <span class="room-host">${r.alwaysOn && r.hostName === 'always on' ? 'open all the time' : 'hosted by ' + esc(r.hostName)}</span>
       </div>
       <div class="room-card-movie">
         ${r.roomType === 'youtube'
@@ -112,7 +112,7 @@ function renderRooms(rooms) {
         }
       </div>
       <div class="room-card-footer">
-        <span class="room-viewers">${r.viewerCount} watching</span>
+        <span class="room-viewers">${r.viewerCount ? r.viewerCount + ' watching' : (r.alwaysOn ? (r.roomType === 'livetv' ? 'empty — tunes when you join' : 'empty') : '0 watching')}</span>
         <a class="btn-join" href="/watch/${r.id}">Join →</a>
       </div>
       ${isAdmin && r.viewers ? `

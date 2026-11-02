@@ -12,6 +12,7 @@
 - [Webhooks and Notifications](Webhooks-and-Notifications)
 - [Moderation](Moderation)
 - [Scheduling and Recurring Nights](Scheduling-and-Recurring-Nights)
+- [Always-On Rooms](Always-On-Rooms)
 - [Live TV Administration](Live-TV-Administration)
 
 **Looking after it**

@@ -1504,3 +1504,6 @@ body {
 .livenow-more { border-style: dashed; }
 .livenow-more .livenow-logo { font-size: 1.6rem; color: var(--pd-accent); }
 .recent-modal-poster.recent-modal-logo { object-fit: contain; background: #111316; padding: 0.6rem; box-sizing: border-box; }
+
+/* Always-on rooms */
+.always-on-badge { color: var(--pd-accent); border-color: rgba(240, 165, 0, .4); }
