@@ -14,6 +14,7 @@ let cachedEpgId       = null;
 let cachedDvrKey      = null;
 let nowPlayingCache     = null;
 let nowPlayingFetchedAt = 0;
+let nowPlayingExpiresAt = 0;   // when the first on-air program ends — the list is stale after that
 
 // Simple flags to prevent concurrent fetches
 // Use Promises instead of boolean flags to avoid TOCTOU race conditions.
@@ -73,17 +74,25 @@ async function fetchChannels(headers) {
   }));
 }
 
+// What's on air right now, per channel. The grid is filtered with Plex's own `beginsAt<=` / `endsAt>=`
+// operators (axios would percent-encode them, so the query string is built by hand). Don't pass `type`:
+// type=1 means movies only and drops every TV show; and begintime/endtime are ignored by Plex, which
+// then returns about a week of programs per channel.
 async function fetchNowPlaying(headers) {
   if (!cachedEpgId) await fetchDvrInfo(headers);
   const nowSec = Math.floor(Date.now() / 1000);
-  const { data } = await axios.get(`${PLEX_HOST}/${cachedEpgId}/grid`, {
+  const { data } = await axios.get(`${PLEX_HOST}/${cachedEpgId}/grid?beginsAt<=${nowSec}&endsAt>=${nowSec}`, {
     headers,
-    params: { type: 1, begintime: nowSec, endtime: nowSec + 3600 },
     timeout: 10000,
   });
   const programs = {};
+  let firstEnd = Infinity;
   for (const v of (data?.MediaContainer?.Metadata || [])) {
-    const prog = v.grandparentTitle ? `${v.grandparentTitle}: ${v.title}` : (v.title || '');
+    const media = (v.Media || []).find(m => m.beginsAt <= nowSec && m.endsAt > nowSec);
+    if (!media) continue;
+    firstEnd = Math.min(firstEnd, media.endsAt);
+    const prog = v.grandparentTitle && v.grandparentTitle !== v.title
+      ? `${v.grandparentTitle}: ${v.title}` : (v.title || '');
     for (const ch of (v.Channel || [])) {
       // tag = "4.1 KOMODT (ABC)" — index by both vcn (4.1) and callSign (KOMODT)
       const parts = (ch.tag || '').split(' ');
@@ -91,6 +100,9 @@ async function fetchNowPlaying(headers) {
       if (parts[1]) programs[parts[1]] = prog; // callSign
     }
   }
+  // Refresh as soon as a program ends (usually on the :00/:30), but never more than every 30s
+  nowPlayingExpiresAt = Math.max(Date.now() + 30_000,
+    Math.min(firstEnd * 1000, Date.now() + NOW_PLAYING_TTL_MS));
   return programs;
 }
 
@@ -195,7 +207,7 @@ async function getGuide() {
   }
 
   // Now playing cache with promise-based lock to prevent duplicate fetches
-  if (!nowPlayingCache || now - nowPlayingFetchedAt >= NOW_PLAYING_TTL_MS) {
+  if (!nowPlayingCache || now >= nowPlayingExpiresAt) {
     // If already fetching, await the existing promise
     if (fetchNowPlayingPromise) {
       let attempts = 0;
@@ -204,7 +216,7 @@ async function getGuide() {
         attempts++;
       }
       // Check cache again after waiting
-      if (nowPlayingCache && now - nowPlayingFetchedAt < NOW_PLAYING_TTL_MS) {
+      if (nowPlayingCache && Date.now() < nowPlayingExpiresAt) {
         return formatChannelResponse();
       }
     }
