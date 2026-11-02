@@ -664,20 +664,22 @@ function setupSync(io, enabledRoomTypes) {
         resetPersistentRoom(io, room);
       }
 
-      // Scheduled room: first *Plex* user to join becomes the host.
-      // Guests are not allowed to claim host on a scheduled room — they must
-      // wait until a Plex user has joined and opened the room.
+      // A room waiting for its host: the first person in becomes the host.
+      // - Scheduled room: Plex users only. Guests wait until a Plex user has opened the room.
+      // - Always-on room: open to whoever arrives first, a guest holding the invite link included —
+      //   the point of an always-on room is that people can walk in and start it.
       if (room.awaitingHost) {
-        if (user.isGuest) {
+        const guestMayOpen = room.persistentId && user.inviteToken === room.inviteToken;
+        if (user.isGuest && !guestMayOpen) {
           return socket.emit('room-error', 'Waiting for the host to arrive. Please try again shortly.');
         }
         room.awaitingHost  = false;
-        room.hostId        = user.id;
+        room.hostId        = user.isGuest ? null : user.id;
         room.hostName      = user.displayName || user.name;
         room.hostPicture   = user.picture || null;
-        room.hostIsGuest   = false;
+        room.hostIsGuest   = !!user.isGuest;
         room.hostSocketId  = socket.id;
-        console.log(`[Room] "${room.name}" (scheduled) — first joiner "${user.name}" became host`);
+        console.log(`[Room] "${room.name}" (${room.persistentId ? 'always-on' : 'scheduled'}) — first joiner "${user.name}"${user.isGuest ? ' (guest)' : ''} became host`);
       }
 
       const isHost         = socket.id === room.hostSocketId ||
