@@ -25,6 +25,7 @@ const { setupSync, getRoomByInviteToken, createScheduledRoom, getRoom } = requir
 const scheduler = require('./scheduler');
 const scheduleRouter = require('./routes/schedule');
 const adminRouter = require('./routes/admin');
+const recentRouter = require('./routes/recent');
 const notifier = require('./notifier');
 const { buildIcs, googleCalendarUrl } = require('./ical');
 
@@ -133,6 +134,7 @@ const authLimiter = rateLimit({
 app.use('/auth', authLimiter, authRouter);
 app.use('/api/movies', requirePlexAuth, moviesRouter);
 app.use('/api/shows', requirePlexAuth, showsRouter);
+app.use('/api/recent', requirePlexAuth, recentRouter);
 // Segment proxy is the high-volume path (one request per .ts chunk, every few
 // seconds per viewer). The manifest endpoint is called once per movie load and
 // must never be rate-limited — a 429 there kills the whole stream startup.

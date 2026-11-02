@@ -63,6 +63,10 @@ A channel change always creates a fresh DVR (`startHdhr` / `startRelay({ fresh: 
 - **Webhooks** (`notifier.js`): configured at `/admin` (`routes/admin.js`, `requireAdmin` in server.js), stored in `DATA_PATH/webhooks.json`; the URL never leaves the server (`publicView` returns a hint). Events: `schedule.created`, `schedule.reminder`, `schedule.started`, `room.created`. A 30s ticker sends reminders once per night per webhook (`scheduler.markReminded` persists the mark). Discord and generic-JSON payloads are built in `bodyFor`. Delivery is best-effort and never throws.
 - **Movie vote** (`voting.js` + handlers in `sync.js`): host-only `vote-start` draws a random deck from a 60s-cached library listing with `cleanFilters`/`matches`; votes live on `room.vote` keyed by *user id* (so reconnects keep swipes); `maybeFinalizeVote` reveals when every viewer id has swiped the whole deck (it re-runs on leave/kick/join). Cards sent to browsers never include `partId` or other people's votes; `vote-play` applies the pick through `applyMovie`. UI is `public/js/vote.js` (loaded after `player.js`, reuses its globals).
 
+### Lobby "recently added"
+
+`routes/recent.js` (`GET /api/recent`, 2-minute cache) merges the newest movies across all movie libraries (deduped by title+year, so HD and 4K copies don't both show) and groups Plex's recently-added *episodes* into one card per show, keyed to the first episode of that show's latest drop (episodes added within 3 days of its newest). A card click emits `create-room` with `preload: { kind, ratingKey }` (`kind 'tv'` takes an *episode* key); `preloadRoom()` in sync.js resolves title, part and episode list server-side — the browser never supplies a partId — and the room is named after the title.
+
 ### Multi-room system
 
 - `rooms` Map (roomId → Room) and `inviteTokens` Map (token → roomId) live in memory in `sync.js` — rooms are **not** persisted.

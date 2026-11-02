@@ -33,6 +33,8 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **Server-owner admin** — whoever *owns* the Plex server Playdarr is connected to is detected automatically at login (plex.tv marks the account as owner of that server), with no extra config. Admins get an `admin` badge and can close any room, kick any viewer (and block them from rejoining that room) from the lobby or from inside a room, and cancel any scheduled room. Other users, including hosts, can't kick an admin. Sign out and back in after upgrading for the owner flag to be picked up.
 - **Room persistence** — rooms live in memory; a 30-second grace timer keeps a room alive if the host briefly navigates away
 
+- **Recently added** — the lobby (Plex users) shows a short strip of the newest movies and TV shows from your Plex libraries. Click a card and Playdarr asks whether to create a room with it ready to go. TV cards are shows that just got new episodes ("2 new" badge) and start at the first of the new episodes — for a brand-new show, S1E1. The room is named after the title.
+
 ### Scheduled Rooms
 
 > Scheduling is Plex-only. Guests cannot schedule rooms.

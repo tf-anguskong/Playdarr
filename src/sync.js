@@ -246,6 +246,39 @@ const playPauseLimiter     = makeSocketRateLimiter(10, 2000); // 10 play/pause /
 const positionLimiter      = makeSocketRateLimiter(5, 1000);  // 5 position reports / 1s
 const bufferingLimiter     = makeSocketRateLimiter(10, 2000); // 10 buffering events / 2s
 
+/**
+ * Load a Plex item into a brand-new room (the lobby's "recently added" cards). The browser only says
+ * which item; the title, part and episode list are all looked up server-side.
+ * kind 'movie' → a movie ratingKey; kind 'tv' → an episode ratingKey.
+ */
+async function preloadRoom(room, { kind, ratingKey } = {}) {
+  if (!/^\d+$/.test(String(ratingKey))) throw new Error('bad ratingKey');
+  const item = await plex.getMovieDetails(String(ratingKey));
+  const partId = item?.Media?.[0]?.Part?.[0]?.id;
+  if (!item || partId == null) throw new Error('item has no playable media');
+
+  if (kind === 'movie') {
+    if (item.type !== 'movie') throw new Error('not a movie');
+    room.movieKey = String(item.ratingKey); room.movieTitle = item.title; room.partId = String(partId);
+    return item.title;
+  }
+  if (kind === 'tv') {
+    if (item.type !== 'episode') throw new Error('not an episode');
+    const episodes = await plex.getShowChildren(String(item.parentRatingKey));
+    const list = episodes.map(e => ({ ratingKey: String(e.ratingKey), title: e.title, index: e.index, parentIndex: e.parentIndex }));
+    const idx = list.findIndex(e => e.ratingKey === String(item.ratingKey));
+    room.tvShowKey      = String(item.grandparentRatingKey);
+    room.tvShowTitle    = item.grandparentTitle;
+    room.tvEpisodeList  = list;
+    room.tvEpisodeIndex = idx >= 0 ? idx : 0;
+    room.movieKey       = String(item.ratingKey);
+    room.movieTitle     = formatEpisodeTitle(item.grandparentTitle, list[room.tvEpisodeIndex] || item);
+    room.partId         = String(partId);
+    return item.grandparentTitle;
+  }
+  throw new Error('unknown kind');
+}
+
 function formatEpisodeTitle(showTitle, ep) {
   if (!ep) return showTitle || 'Unknown';
   const s = ep.parentIndex != null ? `S${String(ep.parentIndex).padStart(2, '0')}` : '';
@@ -375,12 +408,15 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Create room (Plex users only) ──────────────────────
-    socket.on('create-room', async ({ name, roomType, youtubeUrl } = {}) => {
+    socket.on('create-room', async ({ name, roomType, youtubeUrl, preload } = {}) => {
       if (user.isGuest) return socket.emit('error-msg', 'Guests cannot create rooms');
       name = sanitizeText((name || '').trim().slice(0, 60)) || undefined;
 
       const VALID_TYPES = Object.keys(_enabledRoomTypes).filter(t => _enabledRoomTypes[t]);
+      // A preloaded title (lobby "recently added") decides the room type itself
+      if (preload) roomType = preload.kind === 'tv' ? 'tv' : 'movie';
       const type = VALID_TYPES.includes(roomType) ? roomType : (VALID_TYPES[0] || 'movie');
+      if (preload && type !== roomType) return socket.emit('error-msg', 'That room type is turned off');
       let youtubeVideoId = null;
       if (type === 'youtube') {
         youtubeVideoId = extractYoutubeId(youtubeUrl || '');
@@ -391,6 +427,15 @@ function setupSync(io, enabledRoomTypes) {
       room.roomType = type;
       room.youtubeVideoId = youtubeVideoId;
       if (youtubeVideoId) room.movieTitle = await fetchYoutubeTitle(youtubeVideoId);
+      if (preload) {
+        try {
+          const title = await preloadRoom(room, preload);
+          if (!name) room.name = sanitizeText(String(title).slice(0, 60));   // "Resident Evil", not "Tyler's Room"
+        } catch (err) {
+          console.error('[Room] preload failed:', err.message);
+          return socket.emit('error-msg', 'Could not load that title from Plex');
+        }
+      }
       room.hostSocketId = socket.id;
       room.viewers.set(socket.id, {
         socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null, isGuest: false, isHost: true, isAdmin

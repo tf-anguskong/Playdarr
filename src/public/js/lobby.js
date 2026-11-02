@@ -33,6 +33,7 @@ async function loadUser() {
     document.getElementById('schedule-room-btn').style.display = 'inline-flex';
     document.getElementById('edit-name-btn').style.display = 'inline';
     loadScheduled();
+    loadRecent();
   }
 }
 
@@ -132,6 +133,79 @@ function renderRooms(rooms) {
     if (confirm(`Close "${btn.dataset.name}" for everyone in it?`)) socket.emit('admin-close-room', { roomId: btn.dataset.close });
   }));
 }
+
+// ── Recently added ─────────────────────────────────────────
+// A short strip of the newest movies and shows; click one to be asked whether to start a room for it.
+function timeAgo(unixSec) {
+  const d = Math.floor((Date.now() / 1000 - unixSec) / 86400);
+  if (d < 1) return 'today';
+  if (d === 1) return '1d ago';
+  if (d < 14) return `${d}d ago`;
+  if (d < 60) return `${Math.floor(d / 7)}w ago`;
+  return `${Math.floor(d / 30)}mo ago`;
+}
+
+function recentCard(kind, item) {
+  const sub = kind === 'movie'
+    ? [item.year, timeAgo(item.addedAt)].filter(Boolean).join(' · ')
+    : [item.episode.split(' · ')[0], timeAgo(item.addedAt)].filter(Boolean).join(' · ');
+  return `
+    <button type="button" class="recent-card" data-kind="${kind}" data-key="${esc(item.ratingKey)}"
+            data-title="${esc(item.title)}" data-sub="${esc(kind === 'movie' ? String(item.year || '') : item.episode)}"
+            data-thumb="${esc(item.thumb || '')}" title="${esc(item.title)}">
+      ${item.thumb ? `<img src="${esc(item.thumb)}" alt="" loading="lazy" draggable="false">` : '<div class="recent-noimg">🎬</div>'}
+      ${kind === 'tv' && item.newCount > 1 ? `<span class="recent-new">${item.newCount} new</span>` : ''}
+      <span class="recent-title">${esc(item.title)}</span>
+      <span class="recent-sub">${esc(sub)}</span>
+    </button>`;
+}
+
+async function loadRecent() {
+  try {
+    const [{ enabledRoomTypes = {} }, data] = await Promise.all([
+      fetch('/api/config').then(r => r.json()),
+      fetch('/api/recent').then(r => r.json()),
+    ]);
+    const fill = (id, kind, list, enabled) => {
+      const wrap = document.getElementById(id);
+      wrap.style.display = enabled && list && list.length ? 'block' : 'none';
+      wrap.querySelector('.recent-row').innerHTML = (list || []).map(i => recentCard(kind, i)).join('');
+      return wrap.style.display !== 'none';
+    };
+    const anyMovies = fill('recent-movies', 'movie', data.movies, enabledRoomTypes.movie !== false);
+    const anyShows  = fill('recent-shows', 'tv', data.shows, enabledRoomTypes.tv !== false);
+    document.getElementById('recent-section').style.display = anyMovies || anyShows ? 'block' : 'none';
+  } catch { /* Plex unreachable — the strip just stays hidden */ }
+}
+
+let recentPick = null;
+document.getElementById('recent-section').addEventListener('click', (e) => {
+  const card = e.target.closest('.recent-card');
+  if (!card) return;
+  recentPick = { kind: card.dataset.kind, ratingKey: card.dataset.key };
+  document.getElementById('recent-modal-title').textContent = card.dataset.title;
+  document.getElementById('recent-modal-sub').textContent = card.dataset.sub;
+  const poster = document.getElementById('recent-modal-poster');
+  poster.src = card.dataset.thumb;
+  poster.style.display = card.dataset.thumb ? 'block' : 'none';
+  const go = document.getElementById('recent-confirm');
+  go.disabled = false; go.textContent = 'Create room';
+  document.getElementById('recent-modal').style.display = 'flex';
+});
+const closeRecentModal = () => { document.getElementById('recent-modal').style.display = 'none'; recentPick = null; };
+document.getElementById('recent-cancel').addEventListener('click', closeRecentModal);
+document.getElementById('recent-modal').addEventListener('click', e => { if (e.target.id === 'recent-modal') closeRecentModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeRecentModal(); });
+document.getElementById('recent-confirm').addEventListener('click', () => {
+  if (!recentPick) return;
+  const go = document.getElementById('recent-confirm');
+  go.disabled = true; go.textContent = 'Creating…';
+  socket.emit('create-room', { preload: recentPick });   // 'room-created' then sends us to the room
+});
+socket.on('error-msg', () => {   // e.g. Plex couldn't load the title — let them try again
+  const go = document.getElementById('recent-confirm');
+  go.disabled = false; go.textContent = 'Create room';
+});
 
 // ── Create room ────────────────────────────────────────────
 let selectedRoomType = 'movie';
