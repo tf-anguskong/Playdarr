@@ -23,6 +23,10 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 No test suite exists. There is no linter configured.
 
+## Admin Guide wiki
+
+`wiki/` holds the operator-facing Admin Guide as GitHub-Wiki pages (`Home.md`, `_Sidebar.md`, one page per topic; `wiki/README.md` explains publishing them to the Wiki tab). When you change behaviour they describe — admin controls, webhook events/payloads, scheduling rules, env vars, files in `DATA_PATH` — update the matching page in the same change (the table in `wiki/README.md` maps changes to pages).
+
 ## Environment Setup
 
 Copy `.env.example` to `.env`. Key variables:

@@ -4,6 +4,8 @@
 
 Playdarr is a self-hosted watch-party app for Plex. It lets you and your friends stream movies from your Plex server in sync, with real-time chat, reactions, and playback controls — all through a browser, no plugins required.
 
+📖 **Running a server?** The **[Admin Guide](wiki/Home.md)** covers setup, the admin panel, Discord webhooks, moderation, recurring watch nights, Live TV, backups and troubleshooting. (The pages are in the [`wiki/`](wiki/) folder and can be published to the GitHub Wiki tab — see [`wiki/README.md`](wiki/README.md).)
+
 ## What is Playdarr?
 
 Playdarr is a self-hosted watch-party app built around Plex. The idea is simple: you own the media, you own the server, and you invite whoever you want to watch with you — no subscriptions, no third-party accounts, no data leaving your infrastructure.
@@ -181,7 +183,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `PLEX_TOKEN` | Yes | Server token from Plex Settings → Troubleshooting |
 | `APP_URL` | Yes | Public-facing URL of this app, used to build the Plex OAuth callback (e.g. `https://playdarr.yourdomain.com` or `http://localhost:3000` for local dev) |
 | `COOKIE_SECURE` | Yes | `true` when running behind HTTPS, `false` for local dev |
-| `PLEX_CLIENT_ID` | No | Identifier sent to Plex — any stable string (default: `playdarr-app`) |
+| `PLEX_CLIENT_ID` | Yes | Unique identifier for this app in Plex sign-in — any stable string (e.g. `my-playdarr`). The server refuses to start without it |
 | `DEFAULT_TIMEZONE` | No | IANA timezone used as the default when scheduling rooms (e.g. `America/New_York`). Falls back to `UTC`. |
 | `PORT` | No | Port to listen on (default: `3000`) |
 | `ROOM_TYPE_MOVIE` | No | Set `false` to hide movie rooms from the lobby (default: `true`) |
