@@ -168,6 +168,8 @@ Copy `.env.example` to `.env` and fill in the values:
 | `LIVETV_BUFFER_SEC` | No | Live TV playback buffer in seconds (default: `10`, range 4–60). Rooms play this far behind the newest recorded video, so larger values ride out hiccups but add delay and lengthen start-up |
 | `LIVETV_X264_PRESET` | No | x264 speed/quality preset for the software encode (default: `veryfast`) |
 | `LIVETV_MAX_BITRATE` | No | Peak video bitrate for the encode (default: `8M`) |
+| `LIVETV_HWACCEL` | No | `vaapi` to encode on an Intel or AMD iGPU instead of the CPU (Linux hosts; also run with `docker-compose.vaapi.yml` so `/dev/dri` is available in the container). `intel` and `amd` are accepted as aliases. Falls back to software x264 if no GPU is found or it fails. |
+| `LIVETV_VAAPI_DEVICE` | No | VAAPI render device. Default: the first Intel or AMD node in `/dev/dri` (an NVIDIA card is skipped). Set it explicitly if the box has several GPUs. |
 | `LIVETV_VIDEO_ARGS` | No | Replace the whole video encoder argument list, e.g. `-c:v h264_nvenc -preset p4 -b:v 6M` for hardware encoding |
 
 ---
@@ -179,5 +181,5 @@ Copy `.env.example` to `.env` and fill in the values:
 - Rooms and chat are **in-memory only** — everything is lost on server restart. This is intentional.
 - The stream proxy restricts forwarded requests to Plex transcode paths only (`/video/:/transcode/universal/` and `/library/parts/`). Arbitrary Plex API access through the proxy is blocked.
 - **Live TV needs an HDHomeRun and a Plex server for the guide.** `ROOM_TYPE_LIVETV=true` does nothing without a Plex server that has a DVR device (e.g. HDHomeRun) configured with channels — Plex provides the channel list and programme info. `LIVETV_PLEX_HOST` and `HDHR_IP` must be LAN addresses reachable from the container.
-- **Live TV encodes on the server's CPU.** Each room runs one ffmpeg (software x264 by default — roughly one core for a 1080i channel at the `veryfast` preset) and occupies one tuner. Hardware encoding is possible via `LIVETV_VIDEO_ARGS` if your Docker host exposes a GPU.
+- **Live TV encodes on the server's CPU.** Each room runs one ffmpeg (software x264 by default — roughly one core for a 1080i channel at the `veryfast` preset) and occupies one tuner. On a Linux host with an Intel or AMD iGPU, set `LIVETV_HWACCEL=vaapi` and start with `docker compose -f docker-compose.yml -f docker-compose.vaapi.yml up --build -d` to move the encode to the GPU (the deinterlace stays on the CPU); other hardware encoders can be used via `LIVETV_VIDEO_ARGS`.
 - **Live TV DVR uses disk.** Each room records up to one hour to `DATA_PATH/dvr` (default `/data/dvr`) — roughly 3–4 GB per room-hour at the default bitrate. It is deleted when the room closes and wiped on server start. Size the Docker volume accordingly.

@@ -1,0 +1,12 @@
+# Optional override: pass the Intel or AMD iGPU into the container for hardware Live TV encoding.
+# Linux Docker hosts only (needs /dev/dri). Use together with LIVETV_HWACCEL=vaapi in .env:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vaapi.yml up --build -d
+#
+# Check it worked:  docker exec playdarr vainfo           (should list H264 encode entrypoints)
+#                   docker compose logs | grep "enc="     (should say enc=vaapi)
+# If the box has several GPUs, set LIVETV_VAAPI_DEVICE=/dev/dri/renderDxxx in .env to pick one.
+services:
+  playdarr:
+    devices:
+      - /dev/dri:/dev/dri
