@@ -228,8 +228,13 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   // because the old session has expired (~3-4 min for LiveTV)
   if (bust && isLive) {
     const channelId = livetvChannelIds.get(roomId);
-    if (channelId) {
-      console.log(`[HLS] LiveTV bust - retuning to channel ${channelId}`);
+    if (!channelId) {
+      // Channel ID not found - likely server restart or stale state.
+      // Return 410 Gone to tell client to re-select the channel.
+      console.log(`[HLS] LiveTV bust but no channelId for room ${roomId} — session expired, client must re-select channel`);
+      return res.status(410).json({ error: 'LiveTV session expired', code: 'SESSION_EXPIRED' });
+    }
+    console.log(`[HLS] LiveTV bust - retuning to channel ${channelId}`);
       // Delete old subscription first to force a fresh session
       // Get subKey from our map (set by prewarmManifest or select-livetv-channel)
       const oldSubKey = livetvSubKeys.get(roomId);
@@ -253,7 +258,6 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
       // Update for new session
       cacheKey = newCacheKey;
       console.log(`[HLS] LiveTV retuned to ratingKey=${actualRatingKey}, sub=${tuneResult.subKey}`);
-    }
   } else if (bust) {
     stopKeepalive(cacheKey);
     manifestCache.delete(cacheKey);
