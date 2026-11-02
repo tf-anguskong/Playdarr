@@ -34,6 +34,8 @@ async function loadUser() {
     document.getElementById('edit-name-btn').style.display = 'inline';
     loadScheduled();
     loadRecent();
+    loadLiveNow();
+    setInterval(loadLiveNow, 120000);   // programs change on the hour / half hour
   }
 }
 
@@ -179,19 +181,29 @@ async function loadRecent() {
 }
 
 let recentPick = null;
-document.getElementById('recent-section').addEventListener('click', (e) => {
-  const card = e.target.closest('.recent-card');
+// One handler for both strips (recently added + live now)
+function onStripClick(e) {
+  const card = e.target.closest('.recent-card, .livenow-card');
   if (!card) return;
-  recentPick = { kind: card.dataset.kind, ratingKey: card.dataset.key };
+  const live = card.dataset.kind === 'livetv';
+  recentPick = live
+    ? { kind: 'livetv', channel: card.dataset.channel || undefined }
+    : { kind: card.dataset.kind, ratingKey: card.dataset.key };
   document.getElementById('recent-modal-title').textContent = card.dataset.title;
   document.getElementById('recent-modal-sub').textContent = card.dataset.sub;
+  document.getElementById('recent-modal-text').textContent = !live
+    ? 'Create a room with this ready to go and start watching?'
+    : card.dataset.channel ? 'Start a Live TV room tuned to this channel?' : 'Start a Live TV room and pick a channel once you’re in?';
   const poster = document.getElementById('recent-modal-poster');
   poster.src = card.dataset.thumb;
+  poster.classList.toggle('recent-modal-logo', live);   // channel logos are wide: fit, don't crop
   poster.style.display = card.dataset.thumb ? 'block' : 'none';
   const go = document.getElementById('recent-confirm');
   go.disabled = false; go.textContent = 'Create room';
   document.getElementById('recent-modal').style.display = 'flex';
-});
+}
+document.getElementById('recent-section').addEventListener('click', onStripClick);
+document.getElementById('livenow-section').addEventListener('click', onStripClick);
 const closeRecentModal = () => { document.getElementById('recent-modal').style.display = 'none'; recentPick = null; };
 document.getElementById('recent-cancel').addEventListener('click', closeRecentModal);
 document.getElementById('recent-modal').addEventListener('click', e => { if (e.target.id === 'recent-modal') closeRecentModal(); });
@@ -206,6 +218,41 @@ socket.on('error-msg', () => {   // e.g. Plex couldn't load the title — let th
   const go = document.getElementById('recent-confirm');
   go.disabled = false; go.textContent = 'Create room';
 });
+
+// ── Live TV: on now ────────────────────────────────────────
+// What's airing right now, from the Plex guide. Main networks (x.1 subchannels) first.
+const LIVENOW_MAX = 14;
+
+function livenowCard(ch) {
+  const title = `${ch.number} ${ch.title || ''}`.trim();
+  return `
+    <button type="button" class="livenow-card" data-kind="livetv" data-channel="${esc(ch.number)}"
+            data-title="${esc(title)}" data-sub="${esc(ch.nowPlaying ? 'Now: ' + ch.nowPlaying : '')}"
+            data-thumb="${esc(ch.thumb || '')}" title="${esc(title + (ch.nowPlaying ? ' — ' + ch.nowPlaying : ''))}">
+      <span class="livenow-logo">${ch.thumb ? `<img src="${esc(ch.thumb)}" alt="" loading="lazy" draggable="false">` : '📡'}</span>
+      <span class="livenow-chan">${esc(title)}</span>
+      <span class="livenow-prog">${esc(ch.nowPlaying || 'On air')}</span>
+    </button>`;
+}
+
+async function loadLiveNow() {
+  const section = document.getElementById('livenow-section');
+  try {
+    const { enabledRoomTypes = {} } = await fetch('/api/config').then(r => r.json());
+    if (!enabledRoomTypes.livetv) { section.style.display = 'none'; return; }
+    const { channels = [] } = await fetch('/api/livetv/guide').then(r => r.json());
+    const live = channels.filter(c => c.nowPlaying);
+    const main = c => (/\.1$/.test(c.number) ? 0 : 1);
+    live.sort((a, b) => main(a) - main(b) || parseFloat(a.number) - parseFloat(b.number));
+    if (!live.length) { section.style.display = 'none'; return; }
+    document.getElementById('livenow-row').innerHTML =
+      live.slice(0, LIVENOW_MAX).map(livenowCard).join('') +
+      `<button type="button" class="livenow-card livenow-more" data-kind="livetv" data-title="Live TV" data-sub="All channels" data-thumb="">
+         <span class="livenow-logo">＋</span><span class="livenow-chan">More channels</span>
+         <span class="livenow-prog">${live.length} on air — pick one in the room</span></button>`;
+    section.style.display = 'block';
+  } catch { /* guide unavailable — leave the strip hidden */ }
+}
 
 // ── Create room ────────────────────────────────────────────
 let selectedRoomType = 'movie';

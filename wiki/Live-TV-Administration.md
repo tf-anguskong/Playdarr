@@ -9,6 +9,14 @@ Live TV rooms let everyone watch the same broadcast channel in sync, with a host
 - **Plex is used only for the channel guide** (channel list and "now playing" titles).
 - Changing channel starts a fresh recording for the room; the old one is thrown away.
 
+## The lobby's "on now" strip
+
+With Live TV enabled, Plex users see a **Live TV · on now** row in the lobby: channel logo, channel name and the program airing right now, main networks (the `.1` subchannels) first. It refreshes about every two minutes and draws on the same guide data as the in-room channel picker, so it needs the guide (Plex) to be reachable and returns nothing if it isn't.
+
+- Clicking a channel asks *"Start a Live TV room tuned to this channel?"*. On *Create room* the room is named after the channel and **tunes as soon as its host's page connects**, so the tuning screen is visible.
+- *More channels* starts an empty Live TV room; pick from the full guide inside it.
+- Starting one uses a tuner like any other Live TV room (see capacity below).
+
 ## Requirements
 
 - An HDHomeRun on your LAN, reachable from the container.

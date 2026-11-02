@@ -279,6 +279,102 @@ async function preloadRoom(room, { kind, ratingKey } = {}) {
   throw new Error('unknown kind');
 }
 
+/**
+ * Lobby "on now" card → a Live TV room. The channel is looked up in the guide server-side (the browser
+ * can't make us tune an arbitrary id) and tuned once the host's watch page connects, because the
+ * tuning overlay needs a viewer on the other end. No channel = an empty Live TV room (pick one inside).
+ */
+async function preloadLiveTv(room, { channel } = {}) {
+  if (channel == null || channel === '') return 'Live TV';
+  const { channels } = await require('./livetv-manager').getGuide();
+  const ch = channels.find(c => c.number === String(channel));
+  if (!ch) throw new Error('unknown channel');
+  room.pendingChannel = { channel: ch.number, channelTitle: ch.title, channelId: ch.channelId };
+  return `${ch.number} ${ch.title}`.trim();
+}
+
+/**
+ * Tune a Live TV room to a channel: start the recording (HDHomeRun or Plex), then point the room at it.
+ * Shared by the host's channel picker and the lobby's "on now" cards (which tune once the host arrives).
+ * Returns an error string for the caller to show, or nothing on success. Failures after the tune starts
+ * are also broadcast to the room as 'livetv-tune-failed'.
+ */
+async function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
+  // Validate channelId is not empty (Plex may return numeric or string IDs)
+  if (!channelId || !String(channelId).trim()) return 'Invalid channelId';
+
+  // Prevent concurrent tune requests (rate limit on channel switching)
+  if (room._tuningInProgress) return 'Channel change in progress';
+  room._tuningInProgress = true;
+
+  // Tell everyone a channel is being tuned so their players can show progress while the DVR
+  // records its first seconds. recorded/needed are DVR seconds (needed is null = unknown).
+  const tuneNeeded = hdhrEnabled() ? HDHR_START_BEHIND_SEC + SEGMENT_SECS : null;
+  const setTuning = (recorded) => {
+    room.liveTuning = {
+      channel: String(channel || '').slice(0, 20),
+      title: sanitizeText((channelTitle || channel || '').slice(0, 60)),
+      recorded, needed: tuneNeeded,
+    };
+    room.broadcast(io, 'livetv-tuning', room.liveTuning);
+  };
+  setTuning(0);
+
+  clearRoomManifest(room.id);
+  try {
+    if (hdhrEnabled()) {
+      // Straight from the HDHomeRun via ffmpeg — Plex is only used for the guide.
+      await startHdhr(room.id, { channel, readySec: tuneNeeded, onProgress: (rec) => setTuning(rec) });
+      room.liveTvChannel      = String(channel || '').slice(0, 20);
+      room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
+      room.liveTvChannelId    = channelId;
+      room.liveTvSubKey       = null;
+      room.liveTvSource       = 'hdhr';
+      room.movieKey           = `hdhr-${room.liveTvChannel}`;
+      const d = getDvr(room.id)?.info() || { start: 0, edge: 0 };
+      room.position   = Math.max(d.start, d.edge - HDHR_START_BEHIND_SEC);
+      room.playing    = true;
+      room.lastUpdate = Date.now();
+      room.liveTvProgram = null;
+      room.broadcastState(io);
+      refreshLiveTvProgram(room, io);
+      console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} via HDHomeRun`);
+      return;
+    }
+    room.liveTvSource = 'plex';
+    const liveTvManager = require('./livetv-manager');
+    const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(channelId);
+    room.liveTvChannel      = String(channel || '').slice(0, 20);
+    room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
+    room.liveTvChannelId    = channelId;
+    room.liveTvSubKey       = subKey;
+    room.movieKey           = String(ratingKey);
+
+    // Start server-side relay — records Plex segments into a fresh per-room DVR
+    // (a channel change discards the previous one). Clients connect to
+    // /api/stream/live/:roomId/index.m3u8.
+    await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io), fresh: true, readySegs: LIVE_START_BEHIND_SEC + 2 });
+
+    // Start a couple of segments behind the newest so playback has buffer ahead of it.
+    const dvr = getDvr(room.id)?.info() || { start: 0, edge: 0 };
+    room.position   = Math.max(dvr.start, dvr.edge - LIVE_START_BEHIND_SEC);
+    room.playing    = true;
+    room.lastUpdate = Date.now();
+
+    room.liveTvProgram = null;
+    room.broadcastState(io);
+    refreshLiveTvProgram(room, io);
+    console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey}, sub ${subKey})`);
+  } catch (err) {
+    console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
+    room.broadcast(io, 'livetv-tune-failed', { message: err.message });
+    return `Failed to tune channel: ${err.message}`;
+  } finally {
+    room._tuningInProgress = false;
+    room.liveTuning = null;
+  }
+}
+
 function formatEpisodeTitle(showTitle, ep) {
   if (!ep) return showTitle || 'Unknown';
   const s = ep.parentIndex != null ? `S${String(ep.parentIndex).padStart(2, '0')}` : '';
@@ -414,7 +510,7 @@ function setupSync(io, enabledRoomTypes) {
 
       const VALID_TYPES = Object.keys(_enabledRoomTypes).filter(t => _enabledRoomTypes[t]);
       // A preloaded title (lobby "recently added") decides the room type itself
-      if (preload) roomType = preload.kind === 'tv' ? 'tv' : 'movie';
+      if (preload) roomType = { tv: 'tv', livetv: 'livetv' }[preload.kind] || 'movie';
       const type = VALID_TYPES.includes(roomType) ? roomType : (VALID_TYPES[0] || 'movie');
       if (preload && type !== roomType) return socket.emit('error-msg', 'That room type is turned off');
       let youtubeVideoId = null;
@@ -429,7 +525,7 @@ function setupSync(io, enabledRoomTypes) {
       if (youtubeVideoId) room.movieTitle = await fetchYoutubeTitle(youtubeVideoId);
       if (preload) {
         try {
-          const title = await preloadRoom(room, preload);
+          const title = preload.kind === 'livetv' ? await preloadLiveTv(room, preload) : await preloadRoom(room, preload);
           if (!name) room.name = sanitizeText(String(title).slice(0, 60));   // "Resident Evil", not "Tyler's Room"
         } catch (err) {
           console.error('[Room] preload failed:', err.message);
@@ -508,6 +604,11 @@ function setupSync(io, enabledRoomTypes) {
 
       socket.emit('room-state', { ...room.state(), isHost, isAdmin, inviteToken: isHost ? room.inviteToken : null });
       room.broadcastViewers(io);
+      if (isHost && room.pendingChannel) {
+        const pending = room.pendingChannel;
+        room.pendingChannel = null;
+        tuneRoomChannel(io, room, pending).catch(() => {});   // progress/failure reach everyone via livetv-tuning events
+      }
       if (room.vote) {
         socket.emit('vote-started', voting.publicState(room.vote, user.id));
         if (room.vote.status === 'done') socket.emit('vote-result', { id: room.vote.id, ...room.vote.result });
@@ -667,84 +768,8 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!channelId) return;
-
-      // Validate channelId is not empty (Plex may return numeric or string IDs)
-      if (!channelId || typeof String(channelId).trim() !== 'string' || !String(channelId).trim()) {
-        return socket.emit('error-message', 'Invalid channelId');
-      }
-
-      // Prevent concurrent tune requests (rate limit on channel switching)
-      if (room._tuningInProgress) {
-        return socket.emit('error-message', 'Channel change in progress');
-      }
-      room._tuningInProgress = true;
-
-      // Tell everyone a channel is being tuned so their players can show progress while the DVR
-      // records its first seconds. recorded/needed are DVR seconds (needed is null = unknown).
-      const tuneNeeded = hdhrEnabled() ? HDHR_START_BEHIND_SEC + SEGMENT_SECS : null;
-      const setTuning = (recorded) => {
-        room.liveTuning = {
-          channel: String(channel || '').slice(0, 20),
-          title: sanitizeText((channelTitle || channel || '').slice(0, 60)),
-          recorded, needed: tuneNeeded,
-        };
-        room.broadcast(io, 'livetv-tuning', room.liveTuning);
-      };
-      setTuning(0);
-
-      clearRoomManifest(room.id);
-      try {
-        if (hdhrEnabled()) {
-          // Straight from the HDHomeRun via ffmpeg — Plex is only used for the guide.
-          await startHdhr(room.id, { channel, readySec: tuneNeeded, onProgress: (rec) => setTuning(rec) });
-          room.liveTvChannel      = String(channel || '').slice(0, 20);
-          room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
-          room.liveTvChannelId    = channelId;
-          room.liveTvSubKey       = null;
-          room.liveTvSource       = 'hdhr';
-          room.movieKey           = `hdhr-${room.liveTvChannel}`;
-          const d = getDvr(room.id)?.info() || { start: 0, edge: 0 };
-          room.position   = Math.max(d.start, d.edge - HDHR_START_BEHIND_SEC);
-          room.playing    = true;
-          room.lastUpdate = Date.now();
-          room.liveTvProgram = null;
-          room.broadcastState(io);
-          refreshLiveTvProgram(room, io);
-          console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} via HDHomeRun`);
-          return;
-        }
-        room.liveTvSource = 'plex';
-        const liveTvManager = require('./livetv-manager');
-        const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(channelId);
-        room.liveTvChannel      = String(channel || '').slice(0, 20);
-        room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
-        room.liveTvChannelId    = channelId;
-        room.liveTvSubKey       = subKey;
-        room.movieKey           = String(ratingKey);
-
-        // Start server-side relay — records Plex segments into a fresh per-room DVR
-        // (a channel change discards the previous one). Clients connect to
-        // /api/stream/live/:roomId/index.m3u8.
-        await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io), fresh: true, readySegs: LIVE_START_BEHIND_SEC + 2 });
-
-        // Start a couple of segments behind the newest so playback has buffer ahead of it.
-        const dvr = getDvr(room.id)?.info() || { start: 0, edge: 0 };
-        room.position   = Math.max(dvr.start, dvr.edge - LIVE_START_BEHIND_SEC);
-        room.playing    = true;
-        room.lastUpdate = Date.now();
-
-        room.liveTvProgram = null;
-        room.broadcastState(io);
-        refreshLiveTvProgram(room, io);
-        console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey}, sub ${subKey})`);
-      } catch (err) {
-        console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
-        socket.emit('error-message', `Failed to tune channel: ${err.message}`);
-        room.broadcast(io, 'livetv-tune-failed', { message: err.message });
-      } finally {
-        room._tuningInProgress = false;
-        room.liveTuning = null;
-      }
+      const err = await tuneRoomChannel(io, room, { channel, channelTitle, channelId });
+      if (err) socket.emit('error-message', err);
     });
 
     // ── Re-tune live TV when session dies (host only) ──────
