@@ -364,25 +364,47 @@ function filterProxyParams(query) {
 // that never expires, and Plex sees continuous consumption.
 router.get('/live/:roomId/index.m3u8', (req, res) => {
   const { roomId } = req.params;
-  const relay = liveRelay.getRelay(roomId);
-  if (!relay) return res.status(503).set('Retry-After', '2').send('Relay not active');
-  const playlist = relay.getPlaylist();
-  if (!playlist) return res.status(503).set('Retry-After', '2').send('Buffering…');
+  const dvr = liveRelay.getDvr(roomId);
+  if (!dvr) {
+    console.log(`[LiveHTTP] ${roomId}: playlist 503 (no DVR) for ${req.session?.user?.name}`);
+    return res.status(503).set('Retry-After', '2').send('Relay not active');
+  }
+  const playlist = dvr.getPlaylist();
+  if (!playlist) {
+    console.log(`[LiveHTTP] ${roomId}: playlist 503 (DVR empty) for ${req.session?.user?.name}`);
+    return res.status(503).set('Retry-After', '2').send('Buffering…');
+  }
+  dvr.playlistHits = (dvr.playlistHits || 0) + 1;
+  if (dvr.playlistHits <= 3 || dvr.playlistHits % 20 === 0) {
+    const { start, edge } = dvr.info();
+    console.log(`[LiveHTTP] ${roomId}: playlist #${dvr.playlistHits} -> ${req.session?.user?.name} (${dvr.entries.length} segs, ${start.toFixed(1)}–${edge.toFixed(1)}s)`);
+  }
   res.setHeader('Content-Type', 'application/x-mpegURL');
   res.setHeader('Cache-Control', 'no-cache');
   res.send(playlist);
 });
 
+// Client-side Live TV debug lines, so they show up in `docker compose logs`.
+router.post('/live-log', (req, res) => {
+  const who = req.session?.user?.name || '?';
+  const lines = Array.isArray(req.body?.lines) ? req.body.lines.slice(0, 50) : [];
+  for (const l of lines) console.log(`[LiveClient ${who}] ${String(l).slice(0, 300).replace(/\s+/g, ' ')}`);
+  res.sendStatus(204);
+});
+
 router.get('/live/:roomId/:segment', (req, res) => {
   const { roomId, segment } = req.params;
   if (!/^[\w.-]+$/.test(segment)) return res.status(400).send('Bad segment name');
-  const relay = liveRelay.getRelay(roomId);
-  if (!relay) return res.status(404).send('Relay not active');
-  const buf = relay.getSegment(segment);
-  if (!buf) return res.status(404).send('Segment not in buffer');
+  const dvr = liveRelay.getDvr(roomId);
+  if (!dvr) return res.status(404).send('Relay not active');
+  const file = dvr.segmentPath(segment);
+  if (!file) {
+    console.log(`[LiveHTTP] ${roomId}: segment ${segment} 404 (not in DVR window) for ${req.session?.user?.name}`);
+    return res.status(404).send('Segment not in DVR window');
+  }
   res.setHeader('Content-Type', 'video/MP2T');
   res.setHeader('Cache-Control', 'no-cache');
-  res.send(buf);
+  res.sendFile(file, err => { if (err && !res.headersSent) res.status(404).end(); });
 });
 
 // ── General Plex proxy (HLS/DASH segments & sub-manifests) ──────

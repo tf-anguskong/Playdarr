@@ -5,8 +5,9 @@
  *
  * Instead of proxying Plex directly to clients (which causes session expiry
  * at ~4 min), the server fetches HLS segments from Plex continuously and
- * buffers them in memory. Clients connect to /api/stream/live/:roomId/index.m3u8
- * and receive segments from this buffer.
+ * records them to disk as a per-room DVR (LiveDvr, capped at DVR_MAX_SEC).
+ * Clients connect to /api/stream/live/:roomId/index.m3u8 and play from the DVR,
+ * so the host can pause/rewind and every viewer shares one timeline.
  *
  * Benefits:
  *   • Plex sees constant active segment consumption → session never expires
@@ -17,6 +18,8 @@
 
 const axios  = require('axios');
 const crypto = require('crypto');
+const fs     = require('fs');
+const path   = require('path');
 
 const PLEX_BASE_URL = process.env.LIVETV_PLEX_HOST  || process.env.PLEX_URL   || '';
 const PLEX_TOKEN    = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN || '';
@@ -25,14 +28,92 @@ const CLIENT_ID     = process.env.PLEX_CLIENT_ID    || 'playdarr-app';
 const POLL_MS      = 2000;   // variant playlist poll interval
 const KEEPALIVE_MS = 3000;   // DVR subscription keepalive interval (~2.6s in native Plex)
 const SEG_TIMEOUT  = 15000;  // max ms to wait for a segment download
-const MAX_SEGS     = 10;     // segments kept in memory (circular buffer)
 const READY_SEGS   = 3;      // segments needed before relay is considered ready
+const MAX_PENDING  = 10;     // segments a warming relay holds before it is promoted
+const DVR_MAX_SEC  = 3600;   // DVR window kept per room (1 hour)
+const DVR_ROOT     = path.join(process.env.DATA_PATH || '/data', 'dvr');
+const DVR_EPOCH_MS = Date.UTC(2020, 0, 1); // synthetic PROGRAM-DATE-TIME origin; clients derive DVR time from it
 const STALL_THRESH        = 2;       // consecutive poll errors before triggering onStall (fallback)
 const PROACTIVE_RETUNE_MS = 200_000; // 3:20 — proactive retune before 4-min DVR session expiry
 
+// ── DVR store ──────────────────────────────────────────────
+// One per room; outlives individual Plex sessions (retunes append with a
+// discontinuity). A channel change creates a fresh one.
+class LiveDvr {
+  constructor(roomId) {
+    this.roomId  = roomId;
+    // Unique dir: a channel change builds the new DVR while the old one is still being served.
+    this.dir     = path.join(DVR_ROOT, `${roomId}-${crypto.randomBytes(4).toString('hex')}`);
+    fs.mkdirSync(this.dir, { recursive: true });
+    this.entries = [];       // { idx, file, dur, start, disc, cc }
+    this.nextIdx = 0;
+    this.total   = 0;        // seconds recorded since DVR start (absolute DVR time)
+    this.cc      = 0;        // running discontinuity counter
+    this.lastArrivalMs = 0;  // when the newest segment was fetched from Plex
+  }
+
+  append(buf, dur, disc, arrivedAt) {
+    const idx  = this.nextIdx++;
+    const file = `s${idx}.ts`;
+    fs.writeFileSync(path.join(this.dir, file), buf);
+    if (disc) this.cc++;
+    this.entries.push({ idx, file, dur, start: this.total, disc: !!disc, cc: this.cc });
+    this.total += dur;
+    this.lastArrivalMs = arrivedAt || Date.now();
+    if (idx < 3 || idx % 5 === 0) {
+      console.log(`[DVR] ${this.roomId}: +${file} ${dur.toFixed(2)}s (${fs.statSync(path.join(this.dir, file)).size} B) total=${this.total.toFixed(1)}s cc=${this.cc}${disc ? ' DISC' : ''}`);
+    }
+    while (this.entries.length > 1 && this.total - this.entries[0].start > DVR_MAX_SEC) {
+      const old = this.entries.shift();
+      fs.unlink(path.join(this.dir, old.file), () => {});
+    }
+  }
+
+  /** { start, edge } in absolute DVR seconds. */
+  info() {
+    return { start: this.entries.length ? this.entries[0].start : 0, edge: this.total };
+  }
+
+  getPlaylist() {
+    if (!this.entries.length) return null;
+    const first = this.entries[0];
+    const lines = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      `#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...this.entries.map(e => e.dur)))}`,
+      `#EXT-X-MEDIA-SEQUENCE:${first.idx}`,
+      `#EXT-X-DISCONTINUITY-SEQUENCE:${first.cc - (first.disc ? 1 : 0)}`,
+    ];
+    for (const e of this.entries) {
+      if (e.disc) lines.push('#EXT-X-DISCONTINUITY');
+      lines.push(`#EXT-X-PROGRAM-DATE-TIME:${new Date(DVR_EPOCH_MS + e.start * 1000).toISOString()}`);
+      lines.push(`#EXTINF:${e.dur.toFixed(3)},`);
+      lines.push(`/api/stream/live/${this.roomId}/${e.file}`);
+    }
+    return lines.join('\n') + '\n';
+  }
+
+  /** Absolute path of a recorded segment, or null if trimmed / unknown. */
+  segmentPath(name) {
+    if (!/^s\d+\.ts$/.test(name)) return null;
+    const idx = parseInt(name.slice(1), 10);
+    return this.entries.some(e => e.idx === idx) ? path.join(this.dir, name) : null;
+  }
+
+  destroy() {
+    this.entries = [];
+    fs.rm(this.dir, { recursive: true, force: true }, () => {});
+  }
+}
+
 class LiveRelay {
-  constructor(roomId, { ratingKey, liveSessionKey, onStall }) {
+  constructor(roomId, { ratingKey, liveSessionKey, onStall, dvr, committing }) {
     this.roomId       = roomId;
+    this.dvr          = dvr;
+    this.committing   = !!committing; // false while warming alongside the live relay
+    this.nextDisc     = false;        // flag the next recorded segment as a discontinuity
+    this.pending      = [];           // { buf, dur, arrivedAt } held until promote()
+    this.fetched      = 0;
     this.ratingKey    = String(ratingKey);
     this.liveSessionKey = liveSessionKey || null; // /livetv/sessions/{uuid}
     this.onStall      = onStall || null;          // called after STALL_THRESH consecutive errors
@@ -46,11 +127,8 @@ class LiveRelay {
     this.bgId       = crypto.randomUUID();
 
     this.variantUrl = null;
-    this.segments   = new Map();   // segmentName → Buffer
-    this.order      = [];          // segment names in current window (oldest first)
-    this.sequence   = 0;           // EXT-X-MEDIA-SEQUENCE for current window start
     this.seen       = new Set();   // all segment names ever fetched (dedup)
-    this.targetDur  = 3;           // EXT-X-TARGETDURATION (updated from playlist)
+    this.targetDur  = 3;           // fallback segment duration (updated from playlist)
     this.running        = false;
     this.pollTimer      = null;
     this.kaTimer        = null;
@@ -135,17 +213,21 @@ class LiveRelay {
     const text = await this._fetchText(this.variantUrl);
     const segs = this._parseSegs(text, this.variantUrl);
 
-    for (const { name, url } of segs) {
+    for (const { name, url, dur } of segs) {
       if (this.seen.has(name)) continue;
       this.seen.add(name);
       try {
         const buf = await this._fetchBin(url);
-        this.segments.set(name, buf);
-        this.order.push(name);
-        // Evict oldest to stay within buffer limit
-        if (this.order.length > MAX_SEGS) {
-          this.segments.delete(this.order.shift());
-          this.sequence++;
+        if (!this.running) return; // stopped (swapped out) while downloading
+        const seg = { buf, dur: dur || this.targetDur, arrivedAt: Date.now() };
+        this.fetched++;
+        if (this.fetched <= 3) console.log(`[Relay] ${this.roomId}: fetched ${name} (${buf.length} B, ${seg.dur}s) committing=${this.committing}`);
+        if (this.committing) {
+          this.dvr.append(seg.buf, seg.dur, this.nextDisc, seg.arrivedAt);
+          this.nextDisc = false;
+        } else {
+          this.pending.push(seg);
+          if (this.pending.length > MAX_PENDING) this.pending.shift();
         }
       } catch (e) {
         console.warn(`[Relay] ${this.roomId}: segment ${name} failed — ${e.message}`);
@@ -188,30 +270,23 @@ class LiveRelay {
   }
 
   // ── Public accessors ───────────────────────────────────────
-  /** True once enough segments are buffered to start playback without gaps. */
+  /** True once enough segments are fetched to start playback without gaps. */
   isReady() {
-    return this.order.length >= READY_SEGS;
+    return this.fetched >= READY_SEGS;
   }
 
-  /** Returns an HLS playlist pointing at our own segment endpoint, or null if no segments yet. */
-  getPlaylist() {
-    if (this.order.length === 0) return null;
-    const lines = [
-      '#EXTM3U',
-      '#EXT-X-VERSION:3',
-      `#EXT-X-TARGETDURATION:${Math.ceil(this.targetDur)}`,
-      `#EXT-X-MEDIA-SEQUENCE:${this.sequence}`,
-    ];
-    for (const name of this.order) {
-      lines.push(`#EXTINF:${this.targetDur.toFixed(3)},`);
-      lines.push(`/api/stream/live/${this.roomId}/${name}`);
-    }
-    return lines.join('\n') + '\n';
-  }
-
-  /** Returns the buffered segment data, or null if evicted / not yet fetched. */
-  getSegment(name) {
-    return this.segments.get(name) || null;
+  /**
+   * Take over recording into the DVR from a relay that is being replaced.
+   * Segments this relay fetched before `cutoffMs` cover content the old relay
+   * already recorded, so they are dropped; the rest follow a discontinuity.
+   */
+  promote(cutoffMs) {
+    const keep = this.pending.filter(sg => sg.arrivedAt > cutoffMs);
+    this.pending = [];
+    this.committing = true;
+    keep.forEach((sg, i) => this.dvr.append(sg.buf, sg.dur, i === 0, sg.arrivedAt));
+    // Nothing newer than the cutoff yet: flag the next segment instead.
+    if (!keep.length) this.nextDisc = true;
   }
 
   // ── Stop ───────────────────────────────────────────────────
@@ -220,8 +295,7 @@ class LiveRelay {
     if (this.pollTimer)      { clearTimeout(this.pollTimer);       this.pollTimer      = null; }
     if (this.kaTimer)        { clearInterval(this.kaTimer);        this.kaTimer        = null; }
     if (this.proactiveTimer) { clearTimeout(this.proactiveTimer);  this.proactiveTimer = null; }
-    this.segments.clear();
-    this.order = [];
+    this.pending = [];
     this.seen.clear();
     // Best-effort stop of the Plex transcode session so it doesn't idle on the server
     axios.get(`${PLEX_BASE_URL}/video/:/transcode/universal/stop`, {
@@ -273,6 +347,7 @@ class LiveRelay {
     const lines  = text.split('\n');
     const out    = [];
     let extinf   = false;
+    let curDur   = 0;
     for (const line of lines) {
       const t = line.trim();
       if (t.startsWith('#EXT-X-TARGETDURATION:')) {
@@ -280,13 +355,15 @@ class LiveRelay {
         if (!isNaN(d)) this.targetDur = d;
       } else if (t.startsWith('#EXTINF:')) {
         extinf = true;
+        const d = parseFloat(t.slice(8));
+        curDur = isNaN(d) ? 0 : d;
       } else if (extinf && t && !t.startsWith('#')) {
         extinf = false;
         // Strip query string for dedup key (tokens may vary); use path only
         const stripped = t.split('?')[0];
         const name     = stripped.split('/').pop();
         const url      = this._resolve(stripped, dirUrl);
-        out.push({ name, url });
+        out.push({ name, url, dur: curDur });
       } else if (t && !t.startsWith('#')) {
         extinf = false;
       }
@@ -302,24 +379,35 @@ class LiveRelay {
 }
 
 // ── Registry ───────────────────────────────────────────────
-const relays = new Map(); // roomId → LiveRelay
+const relays = new Map(); // roomId → active LiveRelay
+const dvrs   = new Map(); // roomId → LiveDvr
+
+// Anything on disk from a previous run belongs to rooms that no longer exist.
+try { fs.rmSync(DVR_ROOT, { recursive: true, force: true }); } catch { /* best effort */ }
 
 /**
  * Start (or restart) the relay for a room.
  *
- * If an existing relay is running, it keeps serving clients while the new relay
- * warms up in the background. Once the new relay has READY_SEGS buffered, the
- * relays are swapped atomically — clients never see a 503 gap.
+ * opts.fresh — true for a channel change: the old DVR is discarded and a new one
+ * started. Otherwise (retune) the new relay warms up beside the live one, then
+ * takes over recording into the same DVR with a discontinuity.
  */
 async function startRelay(roomId, opts) {
-  const existing = relays.get(roomId);
-  const relay = new LiveRelay(roomId, opts);
+  const { fresh, ...relayOpts } = opts;
+  let existing = relays.get(roomId);
+  let dvr = dvrs.get(roomId);
 
-  // Start the new relay — fetches master playlist and begins segment polling.
-  // The existing relay (if any) keeps serving clients during this time.
+  // A channel change records into a brand-new DVR. The old relay keeps running until
+  // the new one is connected — stopping it first makes Plex reject the new session.
+  const replacing = fresh || !dvr;
+  const oldDvr = dvr;
+  const target = replacing ? new LiveDvr(roomId) : dvr;
+  const relay = new LiveRelay(roomId, { ...relayOpts, dvr: target, committing: replacing || !existing });
   try {
     await relay.start();
   } catch (err) {
+    if (replacing) target.destroy();
+    relay.stop();
     throw err;
   }
 
@@ -331,17 +419,28 @@ async function startRelay(roomId, opts) {
     setTimeout(() => { clearInterval(t); resolve(); }, 10000);
   });
 
-  // Atomically swap: new relay takes over, old relay stops.
-  relays.set(roomId, relay);
-  if (existing) existing.stop();
-
+  if (replacing) {
+    dvrs.set(roomId, target);
+    relays.set(roomId, relay);
+    if (existing) existing.stop();
+    if (oldDvr) oldDvr.destroy();
+  } else if (existing) {
+    relay.promote(target.lastArrivalMs);
+    relays.set(roomId, relay);
+    existing.stop();
+  } else {
+    relay.promote(0);
+    relays.set(roomId, relay);
+  }
   return relay;
 }
 
-/** Stop and clean up the relay for a room. */
+/** Stop the relay and delete the DVR for a room. */
 function stopRelay(roomId) {
   const relay = relays.get(roomId);
   if (relay) { relay.stop(); relays.delete(roomId); }
+  const dvr = dvrs.get(roomId);
+  if (dvr) { dvr.destroy(); dvrs.delete(roomId); }
 }
 
 /** Get the active relay for a room, or null. */
@@ -349,4 +448,9 @@ function getRelay(roomId) {
   return relays.get(roomId) || null;
 }
 
-module.exports = { startRelay, stopRelay, getRelay };
+/** Get the DVR for a room, or null. */
+function getDvr(roomId) {
+  return dvrs.get(roomId) || null;
+}
+
+module.exports = { startRelay, stopRelay, getRelay, getDvr };

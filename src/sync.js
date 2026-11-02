@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
-const { startRelay, stopRelay } = require('./live-relay');
+const { startRelay, stopRelay, getDvr } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 
@@ -86,6 +86,7 @@ class Room {
       hasNextEpisode: this.roomType === 'tv' && this.tvEpisodeIndex < this.tvEpisodeList.length - 1,
       liveTvChannel:      this.liveTvChannel,
       liveTvChannelTitle: this.liveTvChannelTitle,
+      liveDvr: this.roomType === 'livetv' ? (getDvr(this.id)?.info() || null) : null,
       playing: this.playing,
       position: this.currentPosition(),
       lastUpdate: Date.now(),
@@ -189,9 +190,6 @@ async function doRetune(room, io) {
     const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(room.liveTvChannelId, freshClientId);
     room.liveTvSubKey = subKey;
     room.movieKey     = String(ratingKey);
-    room.playing      = true;
-    room.position     = 0;
-    room.lastUpdate   = Date.now();
 
     // Warm-swap: new relay buffers alongside the still-valid old relay.
     // Clients never see a 503 gap.
@@ -234,7 +232,10 @@ function setupSync(io, enabledRoomTypes) {
       // This makes currentPosition() return a smooth, deterministic value
       // that advances at real-time speed — same as movie/TV sync.
       const hostViewer = room.viewers.get(room.hostSocketId);
-      if (hostViewer?.reportedTime != null && hostViewer.reportedAt != null) {
+      // Only while playing and the report is fresh — a paused host stops reporting,
+      // and its stale time must not drag the room position backwards.
+      if (room.playing && hostViewer?.reportedTime != null && hostViewer.reportedAt != null
+          && Date.now() - hostViewer.reportedAt < 3000) {
         room.position   = hostViewer.reportedTime;
         room.lastUpdate = hostViewer.reportedAt;
       }
@@ -243,7 +244,7 @@ function setupSync(io, enabledRoomTypes) {
         room.broadcastViewers(io);
       }
     });
-  }, 2000);
+  }, 1000);
 
   io.on('connection', (socket) => {
     const user = socket.user;
@@ -459,13 +460,17 @@ function setupSync(io, enabledRoomTypes) {
         room.liveTvChannelId    = channelId;
         room.liveTvSubKey       = subKey;
         room.movieKey           = String(ratingKey);
-        room.playing            = true;
-        room.position           = 0;
-        room.lastUpdate         = Date.now();
 
-        // Start server-side relay — continuously fetches segments from Plex so
-        // the session never expires. Clients connect to /api/stream/live/:roomId/index.m3u8.
-        await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io) });
+        // Start server-side relay — records Plex segments into a fresh per-room DVR
+        // (a channel change discards the previous one). Clients connect to
+        // /api/stream/live/:roomId/index.m3u8.
+        await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io), fresh: true });
+
+        // Start a couple of segments behind the newest so playback has buffer ahead of it.
+        const dvr = getDvr(room.id)?.info() || { start: 0, edge: 0 };
+        room.position   = Math.max(dvr.start, dvr.edge - 6);
+        room.playing    = true;
+        room.lastUpdate = Date.now();
 
         room.broadcastState(io);
         console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey}, sub ${subKey})`);
@@ -492,11 +497,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      // LiveTV intentionally bypasses playback lock — the stream is shared across
-      // all viewers and cannot be independently paused/resumed by guests. Only the
-      // host can retune to a different channel, but playback state (play/pause)
-      // must stay in sync for everyone watching the same stream.
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
+      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       room.position = position ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
@@ -512,8 +513,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      // LiveTV intentionally bypasses playback lock — see play handler for explanation.
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId && room.roomType !== 'livetv') return;
+      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       room.position = position ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);

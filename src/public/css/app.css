@@ -1296,3 +1296,10 @@ body {
 .view-list .movie-info { padding: 0; display: flex; align-items: baseline; gap: 0.75rem; flex: 1; min-width: 0; }
 .view-list .movie-info h3 { font-size: 13px; margin: 0; flex: 1; min-width: 0; }
 .view-list .movie-info span { font-family: var(--pd-font-mono); flex-shrink: 0; }
+
+/* Live TV DVR readout */
+.livetv-dvr-row { display: flex; align-items: center; justify-content: space-between; margin-top: 0.4rem; }
+.livetv-behind { font: 500 10px/1 var(--pd-font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--pd-text-muted); }
+.livetv-behind.is-live { color: var(--pd-accent); }
+.livetv-behind.is-live::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--pd-accent); margin-right: 6px; animation: pdpulse 1.6s infinite; }
+.btn-golive { background: var(--pd-accent); color: var(--pd-accent-ink); border: none; border-radius: 5px; padding: 0.3rem 0.6rem; font: 600 10px/1 var(--pd-font-mono); cursor: pointer; }
