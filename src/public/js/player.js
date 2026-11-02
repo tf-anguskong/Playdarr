@@ -1319,7 +1319,7 @@ document.getElementById('chat-export').addEventListener('click', () => {
   const title = titleEl.textContent.trim() || '';
   const date  = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
   const header = [
-    `Movie Night Chat Export`,
+    `Playdarr Chat Export`,
     title ? `${room} — ${title}` : room,
     date,
     '─'.repeat(40),
@@ -1335,7 +1335,7 @@ document.getElementById('chat-export').addEventListener('click', () => {
   const a    = document.createElement('a');
   a.href     = URL.createObjectURL(blob);
   const safeName = (title || room).replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_') || 'chat';
-  a.download = `movienight_${safeName}.txt`;
+  a.download = `playdarr_${safeName}.txt`;
   a.click();
   URL.revokeObjectURL(a.href);
 });

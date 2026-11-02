@@ -302,4 +302,4 @@ scheduler.init((scheduled) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`Movie Night running on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Playdarr running on port ${PORT}`));

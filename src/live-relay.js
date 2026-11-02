@@ -20,7 +20,7 @@ const crypto = require('crypto');
 
 const PLEX_BASE_URL = process.env.LIVETV_PLEX_HOST  || process.env.PLEX_URL   || '';
 const PLEX_TOKEN    = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN || '';
-const CLIENT_ID     = process.env.PLEX_CLIENT_ID    || 'movienight-app';
+const CLIENT_ID     = process.env.PLEX_CLIENT_ID    || 'playdarr-app';
 
 const POLL_MS      = 2000;   // variant playlist poll interval
 const KEEPALIVE_MS = 3000;   // DVR subscription keepalive interval (~2.6s in native Plex)
@@ -86,11 +86,11 @@ class LiveRelay {
       'X-Plex-Token'              : PLEX_TOKEN,
       'X-Plex-Client-Identifier'  : CLIENT_ID,
       'X-Plex-Session-Identifier' : this.sessionId,
-      'X-Plex-Product'            : 'Movie Night',
+      'X-Plex-Product'            : 'Playdarr',
       'X-Plex-Platform'           : 'Chrome',
       'X-Plex-Platform-Version'   : '120.0',
       'X-Plex-Device'             : 'Windows',
-      'X-Plex-Device-Name'        : 'Movie Night',
+      'X-Plex-Device-Name'        : 'Playdarr',
       'X-Plex-Playback-Session-Id': this.playbackId,
       'X-Plex-Session-Id'         : this.bgId,
       hasMDE                      : '1',

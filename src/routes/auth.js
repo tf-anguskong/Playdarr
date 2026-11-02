@@ -10,7 +10,7 @@ if (!process.env.PLEX_CLIENT_ID) {
   throw new Error('PLEX_CLIENT_ID env var must be set (use a unique stable identifier for your app)');
 }
 const CLIENT_ID = process.env.PLEX_CLIENT_ID;
-const PLEX_PRODUCT = 'Movie Night';
+const PLEX_PRODUCT = 'Playdarr';
 const PLEX_API    = 'https://plex.tv/api/v2';
 
 // Cache the server's machine identifier so we only fetch it once

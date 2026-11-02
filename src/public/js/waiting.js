@@ -4,7 +4,7 @@ const token  = window.location.pathname.split('/').pop();
 const params = new URLSearchParams(window.location.search);
 
 // Populate from URL params immediately
-document.getElementById('room-name').textContent = params.get('n') || 'Movie Night';
+document.getElementById('room-name').textContent = params.get('n') || 'Watch Party';
 
 const scheduledFor = params.get('t');
 const timezone     = params.get('z') || 'UTC';

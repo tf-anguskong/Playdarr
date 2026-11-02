@@ -4,7 +4,7 @@ const axios = require('axios');
 
 const PLEX_HOST        = process.env.LIVETV_PLEX_HOST || process.env.PLEX_URL || '';
 const PLEX_TOKEN       = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN || '';
-const CLIENT_ID        = 'movienight-app';
+const CLIENT_ID        = 'playdarr-app';
 const GUIDE_TTL_MS       = 300_000; // 5 min — channel lineup is stable
 const NOW_PLAYING_TTL_MS = 120_000; // 2 min — refresh program info frequently
 

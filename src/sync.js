@@ -185,7 +185,7 @@ async function doRetune(room, io) {
     // deduplicating and returning the same stale one. This lets us tune BEFORE
     // stopping the old subscription — the old relay keeps its valid session and
     // can continue fetching new segments during the warm-swap.
-    const freshClientId = `movienight-app-r${Date.now()}`;
+    const freshClientId = `playdarr-app-r${Date.now()}`;
     const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(room.liveTvChannelId, freshClientId);
     room.liveTvSubKey = subKey;
     room.movieKey     = String(ratingKey);

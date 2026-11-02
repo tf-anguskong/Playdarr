@@ -1,11 +1,12 @@
 {
-  "name": "movienight",
+  "name": "playdarr",
   "version": "1.0.0",
   "description": "Synchronized movie watching from Plex",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "axios": "^1.6.2",

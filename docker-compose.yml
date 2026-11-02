@@ -1,7 +1,7 @@
 services:
-  movienight:
+  playdarr:
     build: .
-    container_name: movienight
+    container_name: playdarr
     restart: unless-stopped
     ports:
       - "3000:3000"

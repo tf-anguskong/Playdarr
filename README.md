@@ -152,7 +152,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `PLEX_TOKEN` | Yes | Server token from Plex Settings → Troubleshooting |
 | `APP_URL` | Yes | Public-facing URL of this app, used to build the Plex OAuth callback (e.g. `https://playdarr.yourdomain.com` or `http://localhost:3000` for local dev) |
 | `COOKIE_SECURE` | Yes | `true` when running behind HTTPS, `false` for local dev |
-| `PLEX_CLIENT_ID` | No | Identifier sent to Plex — any stable string (default: `movienight-app`) |
+| `PLEX_CLIENT_ID` | No | Identifier sent to Plex — any stable string (default: `playdarr-app`) |
 | `DEFAULT_TIMEZONE` | No | IANA timezone used as the default when scheduling rooms (e.g. `America/New_York`). Falls back to `UTC`. |
 | `PORT` | No | Port to listen on (default: `3000`) |
 | `ROOM_TYPE_MOVIE` | No | Set `false` to hide movie rooms from the lobby (default: `true`) |

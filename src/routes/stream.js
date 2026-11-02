@@ -8,7 +8,7 @@ const PLEX_URL = process.env.PLEX_URL;
 const PLEX_TOKEN = process.env.PLEX_TOKEN;
 const LIVETV_PLEX_URL   = process.env.LIVETV_PLEX_HOST  || PLEX_URL;
 const LIVETV_PLEX_TOKEN = process.env.LIVETV_PLEX_TOKEN || PLEX_TOKEN;
-const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'movienight-app';
+const CLIENT_ID = process.env.PLEX_CLIENT_ID || 'playdarr-app';
 
 // Map to track LiveTV channelId per room (needed for retune on bust)
 const livetvChannelIds = new Map(); // roomId → channelId
@@ -147,11 +147,11 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
     'X-Plex-Token': plexToken,
     'X-Plex-Client-Identifier': CLIENT_ID,
     'X-Plex-Session-Identifier': sessionId,
-    'X-Plex-Product': 'Movie Night',
+    'X-Plex-Product': 'Playdarr',
     'X-Plex-Platform': 'Chrome',
     'X-Plex-Platform-Version': '120.0',
     'X-Plex-Device': 'Windows',
-    'X-Plex-Device-Name': 'Movie Night',
+    'X-Plex-Device-Name': 'Playdarr',
     'X-Plex-Version': '1.0.0',
     hasMDE: '1',
     path: `/library/metadata/${ratingKey}`,
@@ -184,9 +184,9 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
     headers: {
       Accept: 'application/x-mpegURL',
       'X-Plex-Client-Identifier': CLIENT_ID,
-      'X-Plex-Product': 'Movie Night',
+      'X-Plex-Product': 'Playdarr',
       'X-Plex-Platform': 'Chrome',
-      'X-Plex-Device-Name': 'Movie Night',
+      'X-Plex-Device-Name': 'Playdarr',
       'X-Plex-Token': plexToken
     }
   });
