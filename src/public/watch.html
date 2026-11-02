@@ -24,7 +24,10 @@
       <div id="livetv-info" style="display:none">
         <div id="livetv-channel-title" class="sidebar-title" style="font-size:0.9rem;color:var(--text-muted)"></div>
         <div class="livetv-dvr-row">
-          <span id="livetv-behind" class="livetv-behind"></span>
+          <div class="livetv-dvr-left">
+            <span id="livetv-behind" class="livetv-behind"></span>
+            <span id="livetv-program" class="livetv-program"></span>
+          </div>
           <button id="livetv-golive" class="btn-golive" type="button" style="display:none">Go live</button>
         </div>
       </div>
@@ -169,6 +172,15 @@
       <button id="guide-toggle-btn" class="guide-toggle-btn" style="display:none">📋 Guide</button>
 
       <!-- Shown when browser blocks autoplay -->
+      <div id="livetv-loading" class="livetv-loading" style="display:none">
+        <div class="livetv-loading-card">
+          <div class="livetv-loading-spinner"></div>
+          <div id="livetv-loading-title" class="livetv-loading-title"></div>
+          <div id="livetv-loading-step" class="livetv-loading-step"></div>
+          <div class="livetv-loading-bar"><div id="livetv-loading-fill" class="livetv-loading-fill"></div></div>
+        </div>
+      </div>
+
       <div id="play-overlay" class="play-overlay" style="display:none">
         <button id="play-overlay-btn" class="play-overlay-btn">▶</button>
         <p>Click to start playback</p>

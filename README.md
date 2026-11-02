@@ -165,6 +165,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `HDHR_IP` | No | LAN address of your HDHomeRun tuner. When set, Live TV video is pulled directly from it via ffmpeg and Plex is used only for the guide. If unset, Live TV tunes through Plex's DVR instead. |
 | `HDHR_PORT` | No | HDHomeRun streaming port (default: `5004`) |
 | `LIVETV_SOURCE` | No | `hdhr` (default when `HDHR_IP` is set) or `plex` to force the Plex DVR path |
+| `LIVETV_BUFFER_SEC` | No | Live TV playback buffer in seconds (default: `10`, range 4–60). Rooms play this far behind the newest recorded video, so larger values ride out hiccups but add delay and lengthen start-up |
 | `LIVETV_X264_PRESET` | No | x264 speed/quality preset for the software encode (default: `veryfast`) |
 | `LIVETV_MAX_BITRATE` | No | Peak video bitrate for the encode (default: `8M`) |
 | `LIVETV_VIDEO_ARGS` | No | Replace the whole video encoder argument list, e.g. `-c:v h264_nvenc -preset p4 -b:v 6M` for hardware encoding |

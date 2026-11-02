@@ -31,7 +31,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `COOKIE_SECURE` — set `true` only when behind HTTPS (reverse proxy). Controls the session cookie `secure` flag directly; **not** driven by `NODE_ENV`.
 - `APP_URL` — public-facing URL, used to build the Plex OAuth callback URL.
 - `PLEX_TOKEN` — server token from Plex Settings → Troubleshooting.
-- `HDHR_IP` / `HDHR_PORT` — HDHomeRun tuner address. When set, Live TV video comes directly from the tuner via ffmpeg (Plex is then only used for the guide). `LIVETV_SOURCE=plex` forces the older Plex-DVR tuning path. Optional encode tuning: `LIVETV_X264_PRESET`, `LIVETV_MAX_BITRATE`, `LIVETV_VIDEO_ARGS` (replaces the video encoder args, e.g. for NVENC).
+- `HDHR_IP` / `HDHR_PORT` — HDHomeRun tuner address. When set, Live TV video comes directly from the tuner via ffmpeg (Plex is then only used for the guide). `LIVETV_SOURCE=plex` forces the older Plex-DVR tuning path. `LIVETV_BUFFER_SEC` (default 10) is how far behind the newest recorded segment a room plays — the player can only buffer what the DVR holds, so this *is* the buffer. Optional encode tuning: `LIVETV_X264_PRESET`, `LIVETV_MAX_BITRATE`, `LIVETV_VIDEO_ARGS` (replaces the video encoder args, e.g. for NVENC).
 
 Sessions are stored in `session-file-store` at `/data/sessions` (Docker volume). The `DATA_PATH` env var overrides the base path for local dev.
 

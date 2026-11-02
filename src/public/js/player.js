@@ -418,6 +418,7 @@ function liveEdgeAbs() {
 function loadLiveTvRelay(targetAbs, shouldPlay) {
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   liveTlOffset = null;
+  tuningArmed = true;
   liveLog(`load relay: target=${targetAbs == null ? 'null' : targetAbs.toFixed(1)} play=${shouldPlay} host=${isHost} hls=${Hls.isSupported()}`);
   hidePlayOverlay();
   document.getElementById('yt-player-container').style.display = 'none';
@@ -523,8 +524,19 @@ setInterval(() => {
   }
 }, 250);
 
+// What's on air for the room's channel (from the Plex guide), shown beside the LIVE readout.
+function setLiveProgram(program) {
+  const el = document.getElementById('livetv-program');
+  if (!el) return;
+  el.textContent = program ? `· ${program}` : '';
+  el.title = program || '';
+}
+socket.on('livetv-program', ({ program } = {}) => setLiveProgram(program));
+
 function applyLiveTvState(state) {
   document.getElementById('yt-player-container').style.display = 'none';
+  setLiveProgram(state.liveTvProgram);
+  if (state.liveTuning) showTuning(state.liveTuning);
 
   const guideBtn = document.getElementById('guide-toggle-btn');
   if (guideBtn) guideBtn.style.display = 'block';
@@ -995,8 +1007,41 @@ video.addEventListener('seeked', () => {
   if (pos != null) socket.emit('seek',  { position: pos });
 });
 
+// ── Live TV tuning overlay ─────────────────────────────────
+// Shown from the moment the host picks a channel until video is actually playing.
+const tuningEl = document.getElementById('livetv-loading');
+let tuningHideTimer = null;
+let tuningArmed = false; // set when the new stream starts loading; its first 'playing' ends the overlay
+function showTuning(t) {
+  if (!tuningEl || !t) return;
+  tuningEl.style.display = 'flex';
+  document.getElementById('livetv-loading-title').textContent = [t.channel, t.title].filter(Boolean).join(' ');
+  const known = t.needed > 0;
+  const pct = known ? Math.min(100, Math.round(((t.recorded || 0) / t.needed) * 100)) : 0;
+  document.getElementById('livetv-loading-step').textContent =
+    !known ? 'Tuning…' :
+    pct >= 100 ? 'Starting playback…' :
+    (t.recorded || 0) < 0.5 ? 'Connecting to tuner…' :
+    `Buffering ${Math.min(t.needed, Math.round(t.recorded))}s / ${t.needed}s`;
+  const fill = document.getElementById('livetv-loading-fill');
+  fill.style.width = known ? pct + '%' : '100%';
+  fill.classList.toggle('indeterminate', !known);
+  clearTimeout(tuningHideTimer);
+  tuningHideTimer = setTimeout(hideTuning, 45000); // never leave it stuck
+}
+function hideTuning() {
+  clearTimeout(tuningHideTimer);
+  if (tuningEl) tuningEl.style.display = 'none';
+}
+socket.on('livetv-tuning', showTuning);
+socket.on('livetv-tune-failed', ({ message } = {}) => {
+  hideTuning();
+  noMovieText.textContent = `Couldn't tune that channel${message ? ': ' + message : ''}`;
+});
+
 // Live TV video-element diagnostics (to the docker logs)
 ['waiting', 'playing', 'canplay', 'stalled', 'error', 'loadedmetadata'].forEach(ev => video.addEventListener(ev, () => {
+  if (roomType === 'livetv' && ev === 'playing' && tuningArmed) { tuningArmed = false; hideTuning(); }
   if (roomType === 'livetv') liveLog(`video ${ev} t=${video.currentTime.toFixed(1)} paused=${video.paused} ready=${video.readyState}${ev === 'error' ? ' code=' + video.error?.code : ''}`);
 }));
 
@@ -1008,13 +1053,15 @@ setInterval(() => {
   const edge = liveEdgeAbs(), pos = liveAbs();
   if (edge == null || pos == null) { liveBehindEl.textContent = ''; return; }
   const behind = Math.max(0, edge - pos);
-  liveBehindEl.textContent = behind < 12 ? 'LIVE' : `-${Math.floor(behind / 60)}:${String(Math.floor(behind % 60)).padStart(2, '0')} behind live`;
-  liveBehindEl.classList.toggle('is-live', behind < 12);
-  if (goLiveBtn) goLiveBtn.style.display = (isHost && behind >= 12) ? 'inline-block' : 'none';
+  // "Live" means within the room's normal buffer distance (+ a little slack), not right at the edge.
+  const liveThresh = (liveState?.liveBufferSec ?? 4) + 8;
+  liveBehindEl.textContent = behind < liveThresh ? 'LIVE' : `-${Math.floor(behind / 60)}:${String(Math.floor(behind % 60)).padStart(2, '0')} behind live`;
+  liveBehindEl.classList.toggle('is-live', behind < liveThresh);
+  if (goLiveBtn) goLiveBtn.style.display = (isHost && behind >= liveThresh) ? 'inline-block' : 'none';
 }, 1000);
 goLiveBtn?.addEventListener('click', () => {
   const edge = liveEdgeAbs();
-  if (edge != null) liveSeekAbs(edge - 4); // 'seeked' then tells the room
+  if (edge != null) liveSeekAbs(edge - (liveState?.liveBufferSec ?? 4)); // keep the room's buffer; 'seeked' tells the room
 });
 
 // ── Movie browser modal (host only) ───────────────────────
@@ -1399,7 +1446,9 @@ socket.on('reaction', ({ emoji, name, picture }) => {
     badge.src = picture;
     badge.alt = '';
     badge.referrerPolicy = 'no-referrer';
+    badge.addEventListener('load', () => liveLog(`reaction avatar loaded for ${name}: ${badge.naturalWidth}x${badge.naturalHeight}`));
     badge.addEventListener('error', () => {
+      liveLog(`reaction avatar FAILED for ${name}: ${String(picture).slice(0, 90)}`);
       const fb = document.createElement('span');
       fb.className = 'reaction-avatar reaction-avatar-initial';
       fb.textContent = (name || '?')[0].toUpperCase();
