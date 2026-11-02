@@ -40,6 +40,20 @@ Restart (`docker compose up -d --force-recreate` — a plain restart does **not*
 
 If `HDHR_IP` is unset, or `LIVETV_SOURCE=plex`, Playdarr falls back to tuning through Plex's own DVR. That path is less reliable (Plex live sessions can expire unpredictably) and is kept only as a fallback.
 
+## Limiting how many rooms stream: `LIVETV_MAX_ROOMS`
+
+`LIVETV_MAX_ROOMS` is the most Live TV rooms that can be streaming at the same time. **The default is 2.** Set it in `.env` (and recreate the container) to match your hardware:
+
+```env
+LIVETV_MAX_ROOMS=3
+```
+
+- **What counts:** a Live TV room is "in use" while it is **recording or tuning**, because that's what holds a tuner and an encoder. A room that is merely open, such as an empty [always-on room](Always-On-Rooms) or a Live TV room nobody has picked a channel in yet, costs nothing and doesn't count.
+- **When it's full:** starting another Live TV room is refused with *"Live TV is full right now (2 of 2 rooms in use). Try again when one ends."* In an always-on room, the host who tries to tune a channel gets the same message. Changing channel inside a room that's already streaming is always allowed. It isn't a second slot.
+- **Other room types** (movies, TV, YouTube) are unaffected.
+- **In the lobby**, the *Live TV · on now* row shows how many rooms are in use ("1 of 2 rooms in use"), and its cards are greyed out and disabled while it's full. People can still join Live TV rooms that are already open.
+- **Pick a sensible number:** at most your tuner count (a 4-tuner HDHomeRun means 4), and fewer if your CPU can't encode that many at once. See the capacity table below.
+
 ## Capacity planning
 
 | Resource | What to expect |
@@ -105,6 +119,7 @@ The LXC shares the Proxmox host's kernel, so install nothing GPU-related inside 
 
 | Symptom | Likely cause / fix |
 |---|---|
+| "Live TV is full right now" | You've reached `LIVETV_MAX_ROOMS` (default 2). Wait for a room to end, or raise it (up to your tuner count and what your CPU/GPU can encode) and recreate the container |
 | No Live TV option in the lobby | `ROOM_TYPE_LIVETV=true` not set, or you didn't recreate the container after editing `.env` |
 | Channel list empty / no program titles | Plex guide unreachable. Check `LIVETV_PLEX_HOST` and token; the Plex DVR must have channels |
 | Stuck on "Tuning…" then fails | Tuner busy (all tuners in use) or `HDHR_IP` unreachable from the container |

@@ -48,6 +48,7 @@ See [Live TV Administration](Live-TV-Administration) for what these mean in prac
 | `HDHR_IP` | — | HDHomeRun tuner address. Set = video comes directly from the tuner; unset = tuned through Plex's DVR |
 | `HDHR_PORT` | `5004` | HDHomeRun streaming port |
 | `LIVETV_SOURCE` | `hdhr` if `HDHR_IP` is set | `hdhr` or `plex` (force the Plex DVR path) |
+| `LIVETV_MAX_ROOMS` | `2` | Most Live TV rooms that may be **streaming** at once. Each holds a tuner and an encoder, so keep it at or below your tuner count and what your CPU/GPU can encode. Whole number, 1 or more; anything else logs a warning and uses 2 |
 | `LIVETV_BUFFER_SEC` | `10` | Seconds behind live a room plays (range 4–60) |
 | `LIVETV_UPSCALE` | off | `720` or `1080`: upscale shorter channels to this height |
 | `LIVETV_SHARPEN` | `0.5` | Sharpen strength used with upscaling (`0` = off) |

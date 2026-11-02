@@ -14,4 +14,9 @@ router.get('/guide', async (req, res) => {
   }
 });
 
+// GET /api/livetv/capacity — { max, inUse }: how many Live TV rooms the server allows, and how many are streaming
+router.get('/capacity', (req, res) => {
+  res.json(require('../sync').liveTvCapacity());
+});
+
 module.exports = router;

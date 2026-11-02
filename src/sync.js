@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
-const { startRelay, startHdhr, hdhrEnabled, stopRelay, getDvr } = require('./live-relay');
+const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 const notifier = require('./notifier');
@@ -327,6 +327,37 @@ const LIVE_START_BEHIND_SEC = 8;
 // rides out encoder / network hiccups at the cost of more delay from the broadcast and a longer
 // start-up wait (the DVR has to record this much first). Tunable with LIVETV_BUFFER_SEC.
 const HDHR_START_BEHIND_SEC = Math.max(4, Math.min(60, parseInt(process.env.LIVETV_BUFFER_SEC, 10) || 10));
+
+// How many Live TV rooms may be streaming at once. Each one holds a tuner and an encoder, so this is the
+// server's Live TV capacity. LIVETV_MAX_ROOMS (a whole number, 1 or more); default 2.
+const LIVETV_MAX_ROOMS = (() => {
+  const raw = process.env.LIVETV_MAX_ROOMS;
+  const n = parseInt(raw, 10);
+  if (raw !== undefined && raw !== '' && !(Number.isInteger(n) && n >= 1)) {
+    console.warn(`[LiveTV] LIVETV_MAX_ROOMS="${raw}" is not a whole number of 1 or more — using 2`);
+    return 2;
+  }
+  return Number.isInteger(n) && n >= 1 ? n : 2;
+})();
+console.log(`[LiveTV] Live TV capacity: ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} at a time`);
+
+/**
+ * Live TV rooms currently *streaming* — recording or mid-tune. Those are the ones using a tuner and CPU.
+ * A Live TV room that is merely open (an empty always-on room, or one with no channel picked yet) is free,
+ * so it doesn't count. `except` leaves one room out, so a channel change in a room that's already
+ * streaming isn't treated as taking a second slot.
+ */
+function liveTvInUse(except = null) {
+  let n = 0;
+  for (const r of rooms.values()) {
+    if (r.roomType !== 'livetv' || r === except) continue;
+    if (r._tuningInProgress || getDvr(r.id) || getRelay(r.id)) n++;
+  }
+  return n;
+}
+const liveTvCapacity = () => ({ max: LIVETV_MAX_ROOMS, inUse: liveTvInUse() });
+const liveTvFullMessage = (inUse) =>
+  `Live TV is full right now (${inUse} of ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} in use). Try again when one ends.`;
 const SEGMENT_SECS = 2;
 const reactionLimiter      = makeSocketRateLimiter(5, 2000);  // 5 reactions / 2s
 const seekLimiter          = makeSocketRateLimiter(15, 2000); // 15 seeks / 2s (scrubbing)
@@ -393,6 +424,15 @@ async function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
 
   // Prevent concurrent tune requests (rate limit on channel switching)
   if (room._tuningInProgress) return 'Channel change in progress';
+
+  // Capacity: this room taking a slot must not push the server past LIVETV_MAX_ROOMS. (No await between this
+  // check and setting _tuningInProgress, so two rooms can't both squeeze in.)
+  const others = liveTvInUse(room);
+  if (others >= LIVETV_MAX_ROOMS) {
+    const message = liveTvFullMessage(others);
+    room.broadcast(io, 'livetv-tune-failed', { message });
+    return message;
+  }
   room._tuningInProgress = true;
   const gen = room._tuneGen || 0;
   // True once the room was closed, or reset (always-on) while we were still tuning
@@ -611,6 +651,10 @@ function setupSync(io, enabledRoomTypes) {
       if (preload) roomType = { tv: 'tv', livetv: 'livetv' }[preload.kind] || 'movie';
       const type = VALID_TYPES.includes(roomType) ? roomType : (VALID_TYPES[0] || 'movie');
       if (preload && type !== roomType) return socket.emit('error-msg', 'That room type is turned off');
+      // Courtesy check so nobody builds a Live TV room that can't tune; the real gate is in tuneRoomChannel
+      if (type === 'livetv' && liveTvInUse() >= LIVETV_MAX_ROOMS) {
+        return socket.emit('error-msg', liveTvFullMessage(liveTvInUse()));
+      }
       let youtubeVideoId = null;
       if (type === 'youtube') {
         youtubeVideoId = extractYoutubeId(youtubeUrl || '');
@@ -1257,4 +1301,5 @@ const enabledRoomTypes = () => ({ ..._enabledRoomTypes });
 module.exports = {
   setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, adminCloseRoom, onlineUserIds,
   createPersistentRoom, restorePersistentRooms, getPersistentRoom, removePersistentRoom, enabledRoomTypes,
+  liveTvCapacity,
 };

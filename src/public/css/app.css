@@ -1507,3 +1507,9 @@ body {
 
 /* Always-on rooms */
 .always-on-badge { color: var(--pd-accent); border-color: rgba(240, 165, 0, .4); }
+
+/* Live TV capacity */
+.livenow-cap { font: 400 10px var(--pd-font-mono); color: var(--pd-text-muted); margin-left: 0.6rem; vertical-align: middle; }
+.livenow-cap.is-full { color: #e05050; }
+.livenow-card.is-full { opacity: .45; cursor: not-allowed; }
+.livenow-card.is-full:hover { border-color: var(--pd-border); transform: none; }
