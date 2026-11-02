@@ -895,17 +895,13 @@ function setYoutubeUrl() {
 let lastViewers = [];
 
 function renderViewers(viewers) {
-  // For live TV, log drift to console instead of showing in UI
-  if (roomType === 'livetv') {
-    const drifts = viewers.filter(v => v.drift != null).map(v => `${v.name}: ${v.drift > 0 ? '+' : ''}${v.drift.toFixed(1)}s`);
-    if (drifts.length) console.log('[LiveTV sync]', drifts.join(', '));
-  }
-
   viewersList.innerHTML = viewers.map(v => {
-    const driftHtml = (roomType !== 'livetv' && v.drift != null)
+    // Drift is vs the host's position. Live TV guests are steered tightly, so grade it more strictly.
+    const driftHtml = v.drift != null
       ? (() => {
           const abs = Math.abs(v.drift);
-          const cls = abs < 1 ? 'drift-ok' : abs < 3 ? 'drift-warn' : 'drift-bad';
+          const [okMax, warnMax] = roomType === 'livetv' ? [0.5, 1.5] : [1, 3];
+          const cls = abs < okMax ? 'drift-ok' : abs < warnMax ? 'drift-warn' : 'drift-bad';
           const sign = v.drift > 0 ? '+' : '';
           return `<span class="drift-badge ${cls}">${sign}${v.drift.toFixed(1)}s</span>`;
         })()
@@ -1389,10 +1385,33 @@ document.getElementById('reaction-bar').addEventListener('click', e => {
   if (btn) socket.emit('reaction', { emoji: btn.dataset.emoji });
 });
 
-socket.on('reaction', ({ emoji }) => {
+socket.on('reaction', ({ emoji, name, picture }) => {
   const el = document.createElement('div');
   el.className = 'floating-reaction';
-  el.textContent = emoji;
+  el.title = name || '';
+  const glyph = document.createElement('span');
+  glyph.textContent = emoji;
+  el.appendChild(glyph);
+  // Who reacted: avatar (or initial for guests) at the bottom-left of the emoji
+  let badge;
+  if (picture) {
+    badge = document.createElement('img');
+    badge.src = picture;
+    badge.alt = '';
+    badge.referrerPolicy = 'no-referrer';
+    badge.addEventListener('error', () => {
+      const fb = document.createElement('span');
+      fb.className = 'reaction-avatar reaction-avatar-initial';
+      fb.textContent = (name || '?')[0].toUpperCase();
+      badge.replaceWith(fb);
+    });
+  } else {
+    badge = document.createElement('span');
+    badge.textContent = (name || '?')[0].toUpperCase();
+  }
+  badge.classList.add('reaction-avatar');
+  if (!picture) badge.classList.add('reaction-avatar-initial');
+  el.appendChild(badge);
   el.style.left = (15 + Math.random() * 70) + '%';
   playerContainer.appendChild(el);
   setTimeout(() => el.remove(), 2200);

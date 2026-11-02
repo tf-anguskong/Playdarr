@@ -20,6 +20,7 @@ const axios  = require('axios');
 const crypto = require('crypto');
 const fs     = require('fs');
 const path   = require('path');
+const { spawn } = require('child_process');
 
 const PLEX_BASE_URL = process.env.LIVETV_PLEX_HOST  || process.env.PLEX_URL   || '';
 const PLEX_TOKEN    = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN || '';
@@ -56,12 +57,26 @@ class LiveDvr {
     const idx  = this.nextIdx++;
     const file = `s${idx}.ts`;
     fs.writeFileSync(path.join(this.dir, file), buf);
+    this._record(idx, file, dur, disc, arrivedAt);
+  }
+
+  /** Record a segment file that an encoder already wrote into this DVR's directory as `s<idx>.ts`. */
+  adopt(file, dur, disc) {
+    const idx = parseInt(file.slice(1), 10);
+    if (!/^s\d+\.ts$/.test(file) || !Number.isFinite(idx)) return;
+    this.nextIdx = idx + 1;
+    this._record(idx, file, dur, disc, Date.now());
+  }
+
+  _record(idx, file, dur, disc, arrivedAt) {
     if (disc) this.cc++;
     this.entries.push({ idx, file, dur, start: this.total, disc: !!disc, cc: this.cc });
     this.total += dur;
     this.lastArrivalMs = arrivedAt || Date.now();
     if (idx < 3 || idx % 5 === 0) {
-      console.log(`[DVR] ${this.roomId}: +${file} ${dur.toFixed(2)}s (${fs.statSync(path.join(this.dir, file)).size} B) total=${this.total.toFixed(1)}s cc=${this.cc}${disc ? ' DISC' : ''}`);
+      let size = '?';
+      try { size = fs.statSync(path.join(this.dir, file)).size; } catch { /* trimmed already */ }
+      console.log(`[DVR] ${this.roomId}: +${file} ${dur.toFixed(2)}s (${size} B) total=${this.total.toFixed(1)}s cc=${this.cc}${disc ? ' DISC' : ''}`);
     }
     while (this.entries.length > 1 && this.total - this.entries[0].start > DVR_MAX_SEC) {
       const old = this.entries.shift();
@@ -107,13 +122,16 @@ class LiveDvr {
 }
 
 class LiveRelay {
-  constructor(roomId, { ratingKey, liveSessionKey, onStall, dvr, committing }) {
+  constructor(roomId, { ratingKey, liveSessionKey, onStall, dvr, committing, readySegs }) {
     this.roomId       = roomId;
     this.dvr          = dvr;
     this.committing   = !!committing; // false while warming alongside the live relay
+    this.readySegs    = readySegs || READY_SEGS;
     this.nextDisc     = false;        // flag the next recorded segment as a discontinuity
     this.pending      = [];           // { buf, dur, arrivedAt } held until promote()
     this.fetched      = 0;
+    this.kaOk         = 0;
+    this.kaFail       = 0;
     this.ratingKey    = String(ratingKey);
     this.liveSessionKey = liveSessionKey || null; // /livetv/sessions/{uuid}
     this.onStall      = onStall || null;          // called after STALL_THRESH consecutive errors
@@ -199,6 +217,7 @@ class LiveRelay {
       .catch(err => {
         this.consecErrors++;
         console.warn(`[Relay] ${this.roomId}: poll error (${this.consecErrors}/${STALL_THRESH}) — ${err.message}`);
+        if (err.response?.status === 404 && !this.diagLogged) { this.diagLogged = true; this._logPlexState(err); }
         if (this.consecErrors === STALL_THRESH && this.onStall) {
           console.warn(`[Relay] ${this.roomId}: stall threshold reached — triggering retune`);
           this.onStall();
@@ -235,10 +254,30 @@ class LiveRelay {
     }
   }
 
+  // One-off diagnostics when Plex stops serving this relay's session: what Plex says about it,
+  // how long it lived, and which transcode / live sessions Plex still has. Read-only.
+  async _logPlexState(err) {
+    const age = Math.round((Date.now() - this.startMs) / 1000);
+    console.warn(`[Relay] ${this.roomId}: session ${this.sessionId} (ratingKey ${this.ratingKey}) died after ${age}s; ` +
+      `segments fetched=${this.fetched}, keepalive ok/fail=${this.kaOk}/${this.kaFail}, 404 body=${JSON.stringify(String(err.response?.data || '')).slice(0, 160)}`);
+    const get = async (p) => {
+      try {
+        const r = await axios.get(`${PLEX_BASE_URL}${p}`, { headers: { 'X-Plex-Token': PLEX_TOKEN, Accept: 'application/json' }, timeout: 5000 });
+        return r.data?.MediaContainer || {};
+      } catch (e) { return { error: e.response?.status || e.message }; }
+    };
+    const t = await get('/transcode/sessions');
+    const tl = (t.TranscodeSession || []).map(x => `${String(x.key).slice(0, 12)}:${x.progress != null ? Math.round(x.progress) + '%' : '?'}:${x.speed ?? '?'}x`);
+    const l = await get('/livetv/sessions');
+    const ll = (l.Metadata || []).map(x => `${x.ratingKey}:${x.title || ''}`.slice(0, 40));
+    console.warn(`[Relay] ${this.roomId}: plex transcode sessions=${t.error ? 'ERR ' + t.error : JSON.stringify(tl)} livetv sessions=${l.error ? 'ERR ' + l.error : JSON.stringify(ll)}`);
+  }
+
   // ── DVR subscription keepalive ─────────────────────────────
   // Mirrors what the native Plex web client sends to prevent the ~4 min
   // DVR subscription TTL from expiring.
   _startKeepalive() {
+    this.kaOk = 0; this.kaFail = 0;
     this.kaTimer = setInterval(() => {
       const elapsed = Date.now() - this.startMs;
       const key = this.liveSessionKey || `/library/metadata/${this.ratingKey}`;
@@ -256,7 +295,10 @@ class LiveRelay {
           time    : elapsed,
           hasMDE  : 1,
         }
-      }).catch(() => {});
+      }).then(() => { this.kaOk++; }).catch(e => {
+        this.kaFail++;
+        if (this.kaFail <= 3) console.warn(`[Relay] ${this.roomId}: timeline keepalive failed — ${e.response?.status || e.message}`);
+      });
 
       axios.get(`${PLEX_BASE_URL}/status/sessions/background`, {
         params: {
@@ -272,7 +314,7 @@ class LiveRelay {
   // ── Public accessors ───────────────────────────────────────
   /** True once enough segments are fetched to start playback without gaps. */
   isReady() {
-    return this.fetched >= READY_SEGS;
+    return this.fetched >= this.readySegs;
   }
 
   /**
@@ -378,6 +420,124 @@ class LiveRelay {
   }
 }
 
+// ── HDHomeRun source ───────────────────────────────────────
+// Pulls the channel straight from the tuner box and has ffmpeg turn it into H.264/AAC
+// segments written directly into the room's DVR directory. No Plex session involved, so
+// nothing expires: if ffmpeg dies or the feed stalls it is simply restarted, and the
+// restart is recorded as a discontinuity.
+const HDHR_IP   = process.env.HDHR_IP || '';
+const HDHR_PORT = process.env.HDHR_PORT || '5004';
+const SEG_SECS  = 2;
+
+/** True when an HDHomeRun is configured and the source hasn't been forced back to Plex. */
+function hdhrEnabled() {
+  return !!HDHR_IP && (process.env.LIVETV_SOURCE || 'hdhr').toLowerCase() !== 'plex';
+}
+
+// Overridable for hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M"
+function videoArgs() {
+  if (process.env.LIVETV_VIDEO_ARGS) return process.env.LIVETV_VIDEO_ARGS.split(/\s+/).filter(Boolean);
+  return [
+    '-c:v', 'libx264', '-preset', process.env.LIVETV_X264_PRESET || 'veryfast', '-profile:v', 'high',
+    '-pix_fmt', 'yuv420p', '-crf', '23', '-maxrate', process.env.LIVETV_MAX_BITRATE || '8M', '-bufsize', '16M',
+  ];
+}
+
+class HdhrSource {
+  constructor(roomId, { channel, dvr }) {
+    this.roomId  = roomId;
+    this.channel = channel;
+    this.dvr     = dvr;
+    this.running = false;
+    this.proc    = null;
+    this.timer   = null;      // restart timer
+    this.watchdog = null;
+    this.failures = 0;        // consecutive runs that died without producing a segment
+    this.spawnedAt = 0;
+    this.lastSegAt = 0;
+    this.nextDisc  = false;
+    this.stderrLines = 0;
+  }
+
+  start() {
+    this.running = true;
+    this._spawn();
+    this.watchdog = setInterval(() => {
+      // ffmpeg alive but no segment for a while → the feed hung; kill it and let the exit handler restart it
+      const quietSince = Math.max(this.lastSegAt, this.spawnedAt);
+      if (this.proc && Date.now() - quietSince > 15000) {
+        console.warn(`[HDHR] ${this.roomId}: no segment for 15s — restarting ffmpeg`);
+        this.proc.kill('SIGKILL');
+      }
+    }, 5000);
+  }
+
+  _spawn() {
+    if (!this.running) return;
+    const url = `http://${HDHR_IP}:${HDHR_PORT}/auto/v${this.channel}`;
+    // A restart after earlier segments marks a discontinuity (timestamps start over).
+    this.nextDisc = this.dvr.entries.length > 0;
+    const args = [
+      '-hide_banner', '-loglevel', 'warning', '-nostdin',
+      '-fflags', '+genpts+discardcorrupt', '-analyzeduration', '2000000', '-probesize', '5000000',
+      '-i', url,
+      '-map', '0:v:0', '-map', '0:a:0?',
+      '-vf', 'yadif=mode=0:parity=-1:deint=1',
+      ...videoArgs(),
+      '-force_key_frames', `expr:gte(t,n_forced*${SEG_SECS})`, '-sc_threshold', '0',
+      '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
+      '-f', 'segment', '-segment_time', String(SEG_SECS), '-segment_format', 'mpegts',
+      '-segment_start_number', String(this.dvr.nextIdx),
+      '-segment_list', 'pipe:1', '-segment_list_type', 'csv',
+      path.join(this.dvr.dir, 's%d.ts'),
+    ];
+    console.log(`[HDHR] ${this.roomId}: ffmpeg start ch ${this.channel} (seg #${this.dvr.nextIdx}${this.nextDisc ? ', after restart' : ''})`);
+    this.spawnedAt = Date.now();
+    this.proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let buf = '';
+    let produced = 0;
+    this.proc.stdout.on('data', chunk => {
+      buf += chunk.toString();
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        const [file, start, end] = line.split(',');
+        const dur = parseFloat(end) - parseFloat(start);
+        if (!file || !(dur > 0.2)) continue;
+        this.dvr.adopt(file, dur, this.nextDisc);
+        this.nextDisc = false;
+        this.lastSegAt = Date.now();
+        produced++;
+        this.failures = 0;
+      }
+    });
+    this.proc.stderr.on('data', chunk => {
+      const text = chunk.toString().trim().split('\n');
+      for (const l of text) {
+        if (this.stderrLines++ < 12) console.warn(`[HDHR] ${this.roomId}: ffmpeg: ${l.slice(0, 200)}`);
+      }
+    });
+    this.proc.on('error', err => console.error(`[HDHR] ${this.roomId}: could not run ffmpeg — ${err.message}`));
+    this.proc.on('exit', (code, sig) => {
+      this.proc = null;
+      if (!this.running) return;
+      if (!produced) this.failures++;
+      const delay = Math.min(1000 * 2 ** Math.min(this.failures, 4), 15000);
+      console.warn(`[HDHR] ${this.roomId}: ffmpeg exited (${sig || code}) after ${produced} segments — restarting in ${delay}ms`);
+      this.timer = setTimeout(() => this._spawn(), delay);
+    });
+  }
+
+  stop() {
+    this.running = false;
+    clearTimeout(this.timer);
+    clearInterval(this.watchdog);
+    if (this.proc) { this.proc.kill('SIGKILL'); this.proc = null; }
+    console.log(`[HDHR] ${this.roomId}: stopped`);
+  }
+}
+
 // ── Registry ───────────────────────────────────────────────
 const relays = new Map(); // roomId → active LiveRelay
 const dvrs   = new Map(); // roomId → LiveDvr
@@ -402,7 +562,9 @@ async function startRelay(roomId, opts) {
   const replacing = fresh || !dvr;
   const oldDvr = dvr;
   const target = replacing ? new LiveDvr(roomId) : dvr;
-  const relay = new LiveRelay(roomId, { ...relayOpts, dvr: target, committing: replacing || !existing });
+  const readySegs = relayOpts.readySegs || READY_SEGS;
+  delete relayOpts.readySegs;
+  const relay = new LiveRelay(roomId, { ...relayOpts, dvr: target, committing: replacing || !existing, readySegs });
   try {
     await relay.start();
   } catch (err) {
@@ -411,13 +573,20 @@ async function startRelay(roomId, opts) {
     throw err;
   }
 
-  // Wait until the new relay has enough segments to serve without gaps (max 10s).
-  await new Promise(resolve => {
+  // Wait until the new relay has enough segments to serve without gaps.
+  const ready = await new Promise(resolve => {
     const t = setInterval(() => {
-      if (relay.isReady()) { clearInterval(t); resolve(); }
+      if (relay.isReady()) { clearInterval(t); resolve(true); }
     }, 200);
-    setTimeout(() => { clearInterval(t); resolve(); }, 10000);
+    setTimeout(() => { clearInterval(t); resolve(false); }, 6000 + readySegs * 1500);
   });
+  if (!ready) {
+    // Never swap in a relay that isn't delivering — keep whatever was running.
+    console.warn(`[Relay] ${roomId}: new relay not ready (${relay.fetched}/${readySegs} segments) — abandoning`);
+    relay.stop();
+    if (replacing) target.destroy();
+    throw new Error('New relay did not start producing segments');
+  }
 
   if (replacing) {
     dvrs.set(roomId, target);
@@ -433,6 +602,37 @@ async function startRelay(roomId, opts) {
     relays.set(roomId, relay);
   }
   return relay;
+}
+
+
+/**
+ * Start recording a channel straight from the HDHomeRun into a fresh DVR (replaces any
+ * previous relay/DVR for the room). Resolves once `readySec` seconds are recorded.
+ */
+async function startHdhr(roomId, { channel, readySec }) {
+  if (!/^\d{1,3}(\.\d{1,3})?$/.test(String(channel))) throw new Error('Invalid channel number');
+  const oldRelay = relays.get(roomId);
+  const oldDvr   = dvrs.get(roomId);
+
+  const dvr = new LiveDvr(roomId);
+  const src = new HdhrSource(roomId, { channel: String(channel), dvr });
+  src.start();
+
+  const ready = await new Promise(resolve => {
+    const t = setInterval(() => { if (dvr.total >= readySec) { clearInterval(t); resolve(true); } }, 200);
+    setTimeout(() => { clearInterval(t); resolve(false); }, 25000);
+  });
+  if (!ready) {
+    src.stop();
+    dvr.destroy();
+    throw new Error('HDHomeRun produced no video (tuner busy or channel unavailable?)');
+  }
+
+  dvrs.set(roomId, dvr);
+  relays.set(roomId, src);
+  if (oldRelay) oldRelay.stop();
+  if (oldDvr) oldDvr.destroy();
+  return src;
 }
 
 /** Stop the relay and delete the DVR for a room. */
@@ -453,4 +653,4 @@ function getDvr(roomId) {
   return dvrs.get(roomId) || null;
 }
 
-module.exports = { startRelay, stopRelay, getRelay, getDvr };
+module.exports = { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr };
