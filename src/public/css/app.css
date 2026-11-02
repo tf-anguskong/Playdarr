@@ -1514,19 +1514,22 @@ body {
 .livenow-card.is-full { opacity: .45; cursor: not-allowed; }
 .livenow-card.is-full:hover { border-color: var(--pd-border); transform: none; }
 
-/* ── Keep the player's overlays clear of the browser's own control bar (and its timeline) ── */
-.player-container { --ctl-clear: 4.25rem; }
-.reaction-bar, .guide-toggle-btn { bottom: var(--ctl-clear); }
-.floating-reaction { bottom: calc(var(--ctl-clear) + 0.5rem); }
-/* The Guide slides up from above the controls *and* the reactions / Go live row, so those stay usable while it's open;
-   closed, it parks fully below the player */
-.player-container { --guide-clear: calc(var(--ctl-clear) + 3.4rem); }
-.guide-panel { bottom: var(--guide-clear); transform: translateY(calc(100% + var(--guide-clear))); }
+/* ── Player overlays live along the TOP of the video, clear of the browser's own control bar and timeline ── */
+.player-container { --ovl-top: 1rem; --guide-top: 3.9rem; }
+.reaction-bar, .guide-toggle-btn, .golive-player { top: var(--ovl-top); bottom: auto; }
+.floating-reaction { bottom: 4.75rem; }   /* reactions still float up from just above the controls */
+.guide-toggle-btn { background: rgba(28, 28, 28, .85); border-color: rgba(255, 255, 255, .22); }   /* readable over the black bar above the picture */
+/* The Guide drops down from the top, below that row, so the reactions and Go live stay usable while it's open;
+   closed, it parks fully above the player */
+.guide-panel {
+  top: var(--guide-top); bottom: auto; border-top: 0; border-bottom: 1px solid var(--border);
+  transform: translateY(calc(-100% - var(--guide-top)));
+}
 .guide-panel.open { transform: translateY(0); }
 
-/* Go live, on the player */
+/* Go live, on the player (top-right) */
 .golive-player {
-  position: absolute; right: 1rem; bottom: var(--ctl-clear); z-index: 52; align-items: center; gap: 0.4rem;
+  position: absolute; right: 1rem; z-index: 52; align-items: center; gap: 0.4rem;
   background: var(--pd-accent); color: var(--pd-accent-ink); border: 0; border-radius: 5px; padding: 0.4rem 0.8rem;
   font: 700 11px/1 var(--pd-font-mono); letter-spacing: .04em; cursor: pointer; box-shadow: 0 2px 10px rgba(0, 0, 0, .45);
 }
