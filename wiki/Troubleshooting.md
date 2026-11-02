@@ -36,6 +36,7 @@ docker compose logs | grep -E "Auth|Webhooks|Scheduler|Room|Vote|HDHR"
 |---|---|
 | Video won't load / endless spinner | Check Plex is reachable at `PLEX_URL` from the container: `docker exec playdarr node -e "require('axios').get(process.env.PLEX_URL+'/identity').then(r=>console.log('OK',r.status)).catch(e=>console.log('FAIL',e.message))"`. Also check Plex can transcode that file |
 | Posters/artwork missing | Same Plex connectivity issue |
+| Audio sounds slowed, deep or warbly until you refresh | The page was nudging its playback speed to stay in sync and the speed didn't return to normal (it used to stick when a viewer was promoted to host). Fixed; if you still see it, open the browser console and run `document.getElementById('video-player').playbackRate` — anything other than `1` while the room is in sync is a bug worth reporting |
 | Viewers drift out of sync | Check the viewer list's `+0.3s`-style badges; persistent red usually means a weak connection on that viewer |
 | Chat or sync stops behind a proxy | The proxy isn't forwarding WebSockets. It needs `Upgrade`/`Connection: upgrade` headers and long read timeouts (see the NGINX sample in the README) |
 | Room vanished | Rooms close ~30 s after the host leaves with no one to take over, and on every container restart |

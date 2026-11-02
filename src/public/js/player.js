@@ -97,6 +97,7 @@ function applyRoomSettings(settings) {
 
 socket.on('room-state', (state) => {
   isHost = state.isHost;
+  if (video.playbackRate !== 1) video.playbackRate = 1;   // a (re)join starts from normal speed
   isAdmin = !!state.isAdmin;
   const closeBtn = document.getElementById('admin-close-room-btn');
   if (closeBtn) closeBtn.style.display = isAdmin ? 'block' : 'none';
@@ -497,6 +498,15 @@ function loadLiveTvRelay(targetAbs, shouldPlay) {
   }
 }
 
+// Guests nudge video.playbackRate (a few percent) to stay in sync. Only the guest sync loop ever puts it back to 1,
+// so anything that stops that loop — becoming the host, a paused room, a rejoin — must do it explicitly, or the
+// room plays at e.g. 0.93x indefinitely (slowed, pitch-shifted, warbly audio until the page is refreshed).
+function resetPlaybackRate(why) {
+  if (video.playbackRate === 1) return;
+  if (roomType === 'livetv') liveLog(`playbackRate ${video.playbackRate.toFixed(3)} → 1 (${why})`);
+  video.playbackRate = 1;
+}
+
 // Latest server state and when it arrived (client clock), for continuous drift correction.
 let liveState = null;
 let liveStateAt = 0;
@@ -510,8 +520,11 @@ function liveTarget() {
 // only a large gap triggers a seek.
 let liveDriftLogAt = 0;
 setInterval(() => {
-  if (roomType !== 'livetv' || isHost || isSyncing) return;
-  if (!liveState || !liveState.playing || video.paused || video.readyState < 3) return;
+  if (roomType !== 'livetv') return;
+  if (isHost) { resetPlaybackRate('host does not chase anyone'); return; }
+  if (isSyncing) return;
+  if (!liveState || !liveState.playing || video.paused) { resetPlaybackRate('paused'); return; }
+  if (video.readyState < 3) return;
   const target = liveTarget(), pos = liveAbs();
   if (target == null || pos == null) return;
   const drift = pos - target; // + = ahead of the host
@@ -974,6 +987,7 @@ socket.on('viewers', (viewers) => {
 
 socket.on('became-host', ({ inviteToken }) => {
   isHost = true;
+  resetPlaybackRate('became host');
   setHostUI(true, inviteToken);
   renderViewers(lastViewers);
   // If intermission is active, expose the cancel button to the new host
@@ -985,6 +999,7 @@ socket.on('became-host', ({ inviteToken }) => {
 
 socket.on('lost-host', () => {
   isHost = false;
+  resetPlaybackRate('lost host');
   setHostUI(false);
   renderViewers(lastViewers);
 });

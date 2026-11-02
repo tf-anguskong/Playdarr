@@ -49,7 +49,7 @@ Sessions are stored in `session-file-store` at `/data/sessions` (Docker volume).
 { playing, position, lastUpdate }
 ```
 
-Current position is computed as `position + (Date.now() - lastUpdate) / 1000` when playing. Clients receive a `state` event and snap their video if drift > 1.5s. The `isSyncing` flag in `player.js` prevents feedback loops when the player fires `play/pause/seeked` in response to programmatic changes.
+Current position is computed as `position + (Date.now() - lastUpdate) / 1000` when playing. Clients receive a `state` event and snap their video if drift > 1.5s. Guests also nudge `video.playbackRate` to stay in sync, and only the guest loop ever puts it back to 1 — so anything that stops that loop (becoming host, a paused room, a (re)join) must call `resetPlaybackRate()` in `player.js`, or the room plays at e.g. 0.93x forever (slowed, pitch-shifted audio until a refresh). The `isSyncing` flag in `player.js` prevents feedback loops when the player fires `play/pause/seeked` in response to programmatic changes.
 
 ### Live TV (DVR model)
 
