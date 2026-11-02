@@ -7,6 +7,7 @@ const { sanitizeText } = require('./sanitize');
 const notifier = require('./notifier');
 const voting = require('./voting');
 const alwaysOn = require('./always-on');
+const settings = require('./settings');
 
 const rooms        = new Map(); // roomId -> Room
 const inviteTokens = new Map(); // inviteToken -> roomId
@@ -326,11 +327,13 @@ const LIVE_START_BEHIND_SEC = 8;
 // IS the playback buffer (the player can only buffer what the DVR already holds), so a larger value
 // rides out encoder / network hiccups at the cost of more delay from the broadcast and a longer
 // start-up wait (the DVR has to record this much first). Tunable with LIVETV_BUFFER_SEC.
-const HDHR_START_BEHIND_SEC = Math.max(4, Math.min(60, parseInt(process.env.LIVETV_BUFFER_SEC, 10) || 10));
+const bufferFromEnv = () => Math.max(4, Math.min(60, parseInt(process.env.LIVETV_BUFFER_SEC, 10) || 10));
+let HDHR_START_BEHIND_SEC = bufferFromEnv();
+settings.onChange('bufferSec', () => { HDHR_START_BEHIND_SEC = bufferFromEnv(); });
 
 // How many Live TV rooms may be streaming at once. Each one holds a tuner and an encoder, so this is the
 // server's Live TV capacity. LIVETV_MAX_ROOMS (a whole number, 1 or more); default 2.
-const LIVETV_MAX_ROOMS = (() => {
+const maxRoomsFromEnv = () => {
   const raw = process.env.LIVETV_MAX_ROOMS;
   const n = parseInt(raw, 10);
   if (raw !== undefined && raw !== '' && !(Number.isInteger(n) && n >= 1)) {
@@ -338,8 +341,13 @@ const LIVETV_MAX_ROOMS = (() => {
     return 2;
   }
   return Number.isInteger(n) && n >= 1 ? n : 2;
-})();
+};
+let LIVETV_MAX_ROOMS = maxRoomsFromEnv();
 console.log(`[LiveTV] Live TV capacity: ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} at a time`);
+settings.onChange('maxLiveTvRooms', () => {
+  LIVETV_MAX_ROOMS = maxRoomsFromEnv();
+  console.log(`[LiveTV] Live TV capacity changed: ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} at a time`);
+});
 
 /**
  * Live TV rooms currently *streaming* — recording or mid-tune. Those are the ones using a tuner and CPU.

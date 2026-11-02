@@ -6,6 +6,8 @@ All settings live in `.env` (copy `.env.example` to start). **After editing `.en
 docker compose up -d --force-recreate
 ```
 
+> **Prefer a UI?** Most of the settings below can also be changed from **Admin → Settings** ([Settings Page](Settings-Page)). A value defined in `.env` always takes priority and shows as locked there. The Settings page uses friendly names, so [the mapping table](Settings-Page#which-setting-is-which-variable) lists which is which.
+
 ## Required
 
 | Variable | Description |

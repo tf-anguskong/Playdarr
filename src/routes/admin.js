@@ -6,6 +6,7 @@ const notifier = require('../notifier');
 const users    = require('../users');
 const alwaysOn = require('../always-on');
 const sync     = require('../sync');
+const settings = require('../settings');
 const { onlineUserIds } = sync;
 const { sanitizeText } = require('../sanitize');
 
@@ -66,6 +67,24 @@ router.delete('/users/:id/nickname', (req, res) => {
   console.log(`[Admin] ${req.session.user.name} cleared the nickname of ${u.name}`);
   res.json({ ok: true });
 });
+
+// ── Settings: the friendly, editable view of the server's configuration ──
+// Never exposes variable names or secret values; anything defined in .env is reported as locked.
+router.get('/settings', (req, res) => {
+  res.json({ groups: settings.list() });
+});
+
+function settingResult(req, res, fn, verb) {
+  try {
+    const item = fn();
+    console.log(`[Admin] ${req.session.user.name} ${verb} setting "${item.label}"${item.value !== undefined && item.type !== 'secret' ? ` → ${JSON.stringify(item.value)}` : ''}`);
+    res.json({ setting: item });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+}
+router.put('/settings/:id', (req, res) => settingResult(req, res, () => settings.set(req.params.id, req.body?.value), 'changed'));
+router.delete('/settings/:id', (req, res) => settingResult(req, res, () => settings.reset(req.params.id), 'reset'));
 
 // ── Always-on rooms: rooms the owner pins open (they reset, rather than close, when empty) ──
 const baseUrl = () => (process.env.APP_URL || '').replace(/\/$/, '');

@@ -9,6 +9,7 @@
 
 **Running it**
 - [Admin Panel](Admin-Panel)
+- [Settings Page](Settings-Page)
 - [Webhooks and Notifications](Webhooks-and-Notifications)
 - [Moderation](Moderation)
 - [Scheduling and Recurring Nights](Scheduling-and-Recurring-Nights)

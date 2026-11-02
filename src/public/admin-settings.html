@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playdarr · Settings</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="browser-page">
+  <header class="header">
+    <div class="header-logo">Play<span class="dk">darr</span> <span class="admin-badge">admin</span></div>
+    <div class="header-right">
+      <a href="/admin" class="btn-logout" style="text-decoration:none">← Overview</a>
+      <a href="/" class="btn-logout" style="text-decoration:none">Lobby</a>
+    </div>
+  </header>
+
+  <main class="browser-main admin-page">
+    <div class="browser-toolbar">
+      <div>
+        <h2>Settings</h2>
+        <p class="admin-hint">Changes save as soon as you make them and are kept across restarts. Anything marked
+          <span class="set-tag set-tag-env">🔒 Set in .env</span> is defined in your <code>.env</code> file, which always takes
+          priority, so it can't be changed here.</p>
+      </div>
+    </div>
+
+    <div id="settings-root"><div class="loading">Loading settings…</div></div>
+  </main>
+
+  <datalist id="tz-list"></datalist>
+  <script src="/js/admin-settings.js"></script>
+</body>
+</html>
