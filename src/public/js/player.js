@@ -1075,6 +1075,7 @@ socket.on('livetv-tune-failed', ({ message } = {}) => {
 // Live TV: "behind live" readout + Go live button (host)
 const liveBehindEl = document.getElementById('livetv-behind');
 const goLiveBtn    = document.getElementById('livetv-golive');
+const goLivePlayerBtn = document.getElementById('livetv-golive-player');
 setInterval(() => {
   if (roomType !== 'livetv' || !liveBehindEl) return;
   const edge = liveEdgeAbs(), pos = liveAbs();
@@ -1084,12 +1085,16 @@ setInterval(() => {
   const liveThresh = (liveState?.liveBufferSec ?? 4) + 8;
   liveBehindEl.textContent = behind < liveThresh ? 'LIVE' : `-${Math.floor(behind / 60)}:${String(Math.floor(behind % 60)).padStart(2, '0')} behind live`;
   liveBehindEl.classList.toggle('is-live', behind < liveThresh);
-  if (goLiveBtn) goLiveBtn.style.display = (isHost && behind >= liveThresh) ? 'inline-block' : 'none';
+  const showGoLive = isHost && behind >= liveThresh;
+  if (goLiveBtn) goLiveBtn.style.display = showGoLive ? 'inline-block' : 'none';
+  if (goLivePlayerBtn) goLivePlayerBtn.style.display = showGoLive ? 'flex' : 'none';
 }, 1000);
-goLiveBtn?.addEventListener('click', () => {
+function goLive() {
   const edge = liveEdgeAbs();
   if (edge != null) liveSeekAbs(edge - (liveState?.liveBufferSec ?? 4)); // keep the room's buffer; 'seeked' tells the room
-});
+}
+goLiveBtn?.addEventListener('click', goLive);
+goLivePlayerBtn?.addEventListener('click', goLive);
 
 // ── Movie browser modal (host only) ───────────────────────
 document.getElementById('choose-movie-btn').addEventListener('click', () => {
