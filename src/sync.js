@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
-const { startRelay, stopRelay, getDvr } = require('./live-relay');
+const { startRelay, startHdhr, hdhrEnabled, stopRelay, getDvr } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 
@@ -158,6 +158,12 @@ function makeSocketRateLimiter(maxCalls, windowMs) {
 }
 
 const chatLimiter          = makeSocketRateLimiter(3, 2000);  // 3 msgs / 2s
+// How far behind the newest recorded segment a freshly tuned room starts. That head start is
+// the buffer that hides the pause while a retune (every ~3:20) swaps in a new Plex session.
+const LIVE_START_BEHIND_SEC = 8;
+// With the HDHomeRun source nothing expires, so there is no retune gap to hide: start closer to live.
+const HDHR_START_BEHIND_SEC = 4;
+const SEGMENT_SECS = 2;
 const reactionLimiter      = makeSocketRateLimiter(5, 2000);  // 5 reactions / 2s
 const seekLimiter          = makeSocketRateLimiter(15, 2000); // 15 seeks / 2s (scrubbing)
 const playPauseLimiter     = makeSocketRateLimiter(10, 2000); // 10 play/pause / 2s
@@ -174,7 +180,7 @@ function formatEpisodeTitle(showTitle, ep) {
 
 // ── Live TV retune — restarts the server-side relay with a fresh Plex session ──
 async function doRetune(room, io) {
-  if (!room.liveTvChannelId) return;
+  if (!room.liveTvChannelId || room.liveTvSource === 'hdhr') return; // HDHomeRun source restarts itself
   if (room.retuning) return; // prevent concurrent retunes (e.g. proactive + stall firing together)
   room.retuning = true;
   const liveTvManager = require('./livetv-manager');
@@ -182,12 +188,14 @@ async function doRetune(room, io) {
     const oldSubKey = room.liveTvSubKey;
     clearRoomManifest(room.id);
 
-    // Use a unique clientId so Plex creates a fresh subscription rather than
-    // deduplicating and returning the same stale one. This lets us tune BEFORE
-    // stopping the old subscription — the old relay keeps its valid session and
-    // can continue fetching new segments during the warm-swap.
-    const freshClientId = `playdarr-app-r${Date.now()}`;
-    const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(room.liveTvChannelId, freshClientId);
+    // Plex dedupes a second tune on the same channel to the SAME recording item (same
+    // ratingKey) even with a new client id, and that item stops serving after ~4 minutes —
+    // new sessions on it 400/404. So the old subscription has to be stopped first to get a
+    // fresh item (same order as the proven bust path in routes/stream.js). The DVR already
+    // holds the video the clients are playing, so the gap while the new item spins up is
+    // covered by their buffer; the old relay's last segments are already recorded.
+    if (oldSubKey) await liveTvManager.stopSubscription(oldSubKey).catch(() => {});
+    const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(room.liveTvChannelId);
     room.liveTvSubKey = subKey;
     room.movieKey     = String(ratingKey);
 
@@ -195,14 +203,14 @@ async function doRetune(room, io) {
     // Clients never see a 503 gap.
     await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io) });
 
-    // Old subscription stopped AFTER swap — old relay had a live session right
-    // up until the moment it was replaced.
-    if (oldSubKey) liveTvManager.stopSubscription(oldSubKey).catch(() => {});
-
     room.broadcastState(io);
     console.log(`[Room] "${room.name}" → Retuned ${room.liveTvChannel} → ratingKey=${ratingKey} (sub ${subKey})`);
+    room._retuneFails = 0;
   } catch (err) {
-    console.error(`[Room] Retune failed for ${room.liveTvChannel}:`, err.message);
+    room._retuneFails = (room._retuneFails || 0) + 1;
+    console.error(`[Room] Retune failed for ${room.liveTvChannel} (attempt ${room._retuneFails}):`, err.message);
+    // The relay only reports a stall once, so a failed retune has to schedule its own retry.
+    if (room._retuneFails < 5 && rooms.has(room.id)) setTimeout(() => doRetune(room, io), 3000);
   } finally {
     room.retuning = false;
   }
@@ -453,6 +461,24 @@ function setupSync(io, enabledRoomTypes) {
 
       clearRoomManifest(room.id);
       try {
+        if (hdhrEnabled()) {
+          // Straight from the HDHomeRun via ffmpeg — Plex is only used for the guide.
+          await startHdhr(room.id, { channel, readySec: HDHR_START_BEHIND_SEC + SEGMENT_SECS });
+          room.liveTvChannel      = String(channel || '').slice(0, 20);
+          room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
+          room.liveTvChannelId    = channelId;
+          room.liveTvSubKey       = null;
+          room.liveTvSource       = 'hdhr';
+          room.movieKey           = `hdhr-${room.liveTvChannel}`;
+          const d = getDvr(room.id)?.info() || { start: 0, edge: 0 };
+          room.position   = Math.max(d.start, d.edge - HDHR_START_BEHIND_SEC);
+          room.playing    = true;
+          room.lastUpdate = Date.now();
+          room.broadcastState(io);
+          console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} via HDHomeRun`);
+          return;
+        }
+        room.liveTvSource = 'plex';
         const liveTvManager = require('./livetv-manager');
         const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(channelId);
         room.liveTvChannel      = String(channel || '').slice(0, 20);
@@ -464,11 +490,11 @@ function setupSync(io, enabledRoomTypes) {
         // Start server-side relay — records Plex segments into a fresh per-room DVR
         // (a channel change discards the previous one). Clients connect to
         // /api/stream/live/:roomId/index.m3u8.
-        await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io), fresh: true });
+        await startRelay(room.id, { ratingKey: String(ratingKey), liveSessionKey: sessionKey || null, onStall: () => doRetune(room, io), fresh: true, readySegs: LIVE_START_BEHIND_SEC + 2 });
 
         // Start a couple of segments behind the newest so playback has buffer ahead of it.
         const dvr = getDvr(room.id)?.info() || { start: 0, edge: 0 };
-        room.position   = Math.max(dvr.start, dvr.edge - 6);
+        room.position   = Math.max(dvr.start, dvr.edge - LIVE_START_BEHIND_SEC);
         room.playing    = true;
         room.lastUpdate = Date.now();
 
@@ -561,7 +587,11 @@ function setupSync(io, enabledRoomTypes) {
       if (!reactionLimiter.allow(socket.id)) return;
       const allowed = ['👍','❤️','😂','😱','😮','👏'];
       if (!allowed.includes(emoji)) return;
-      room.broadcast(io, 'reaction', { emoji, name: user.displayName || user.name });
+      room.broadcast(io, 'reaction', {
+        emoji,
+        name: user.displayName || user.name,
+        picture: room.viewers.get(socket.id)?.picture || user.picture || null
+      });
     });
 
     // ── Room settings (host only) ──────────────────────────

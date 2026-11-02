@@ -1303,3 +1303,14 @@ body {
 .livetv-behind.is-live { color: var(--pd-accent); }
 .livetv-behind.is-live::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--pd-accent); margin-right: 6px; animation: pdpulse 1.6s infinite; }
 .btn-golive { background: var(--pd-accent); color: var(--pd-accent-ink); border: none; border-radius: 5px; padding: 0.3rem 0.6rem; font: 600 10px/1 var(--pd-font-mono); cursor: pointer; }
+
+/* Reaction avatar — shows who reacted */
+.floating-reaction { display: inline-block; line-height: 1; }
+.reaction-avatar {
+  position: absolute; left: -10px; bottom: -8px; width: 22px; height: 22px; border-radius: 50%;
+  object-fit: cover; border: 2px solid var(--pd-bg); background: var(--pd-bg-elevated);
+}
+.reaction-avatar-initial {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--pd-accent); color: var(--pd-accent-ink); font: 700 11px/1 var(--pd-font-mono);
+}
