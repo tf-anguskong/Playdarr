@@ -79,6 +79,7 @@ Plex's `/video/:/transcode/universal/start.m3u8` returns an HLS manifest contain
 - Plex OAuth uses PIN-based flow (not standard OAuth redirect). The PIN ID is embedded in the **callback URL path** (`/auth/plex/callback/:pinId`) rather than the session, because the session cookie may not be available across the Plex redirect.
 - After OAuth, the server verifies the user has access to the local Plex server by hitting `PLEX_URL` with their token.
 - Guests get a session with `{ isGuest: true, name, inviteToken }` via `POST /auth/guest-join`.
+- **Admin = Plex server owner.** The plex.tv `/resources` entry matching the server's `machineIdentifier` has `owned: true` only for the owner; login stores that as `session.user.isAdmin`. Admins get: `admin-close-room` / `admin-kick` socket events (sync.js; kicks also block rejoining that room), kick buttons in any room they join, a per-room viewer/close panel in the lobby (admin sockets join the `admins` socket.io room and receive a detailed `room-list`), and may cancel any scheduled room (`DELETE /api/schedule/:id`). Admins can't be kicked and the host can only be removed by closing the room. Existing sessions pick this up on next sign-in.
 - `requireAuth` — any session user (Plex or guest). `requirePlexAuth` — non-guest only.
 
 ### Socket authentication

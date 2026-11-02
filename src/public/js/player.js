@@ -19,6 +19,7 @@ let currentLiveTvChannel = null; // channel number/id — stable across retune (
 let activeLiveTvChannel = null;  // channel number for guide highlighting
 let hlsInstance      = null;
 let isHost           = false;
+let isAdmin          = false;   // Plex server owner: can kick anyone and close the room
 let roomType         = 'movie';
 let roomSettings     = { playbackLocked: false, reactionsEnabled: true };
 let sidebarCollapsed = false;
@@ -96,6 +97,9 @@ function applyRoomSettings(settings) {
 
 socket.on('room-state', (state) => {
   isHost = state.isHost;
+  isAdmin = !!state.isAdmin;
+  const closeBtn = document.getElementById('admin-close-room-btn');
+  if (closeBtn) closeBtn.style.display = isAdmin ? 'block' : 'none';
   roomType = state.roomType || 'movie';
   roomNameEl.textContent = state.name || '';
 
@@ -117,9 +121,13 @@ socket.on('room-state', (state) => {
 
 socket.on('room-settings', applyRoomSettings);
 
-socket.on('kicked', () => {
-  alert('You have been removed from this room by the host.');
+socket.on('kicked', ({ byAdmin } = {}) => {
+  alert(`You have been removed from this room by the ${byAdmin ? 'server owner' : 'host'}.`);
   window.location.href = '/';
+});
+
+document.getElementById('admin-close-room-btn')?.addEventListener('click', () => {
+  if (confirm('Close this room for everyone in it?')) socket.emit('admin-close-room', { roomId });
 });
 
 socket.on('state', applyState);
@@ -927,15 +935,16 @@ function renderViewers(viewers) {
         }
         <span class="viewer-name-wrap">${esc(v.name)}${v.isHost ? ' 👑' : ''}${v.isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span>
         ${bufHtml}${driftHtml}
-        ${isHost && !v.isHost ? `
-          <button class="btn-make-host" data-sid="${esc(v.socketId)}">Host</button>
+        ${v.isAdmin ? ' <span class="admin-badge" title="Plex server owner">admin</span>' : ''}
+        ${(isHost || isAdmin) && !v.isHost && !v.isAdmin ? `
+          ${isHost ? `<button class="btn-make-host" data-sid="${esc(v.socketId)}">Host</button>` : ''}
           <button class="btn-kick" data-sid="${esc(v.socketId)}">Kick</button>
         ` : ''}
       </div>
     `;
   }).join('');
 
-  if (isHost) {
+  if (isHost || isAdmin) {
     viewersList.querySelectorAll('.btn-make-host').forEach(btn => {
       btn.addEventListener('click', () => socket.emit('transfer-host', { targetSocketId: btn.dataset.sid }));
     });

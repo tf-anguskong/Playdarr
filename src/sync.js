@@ -98,7 +98,7 @@ class Room {
     };
   }
 
-  summary() {
+  summary(admin = false) {
     return {
       id: this.id, name: this.name, hostName: this.hostName,
       roomType: this.roomType,
@@ -106,7 +106,13 @@ class Room {
       viewerCount: this.viewers.size,
       hasMovie: !!this.movieKey,
       youtubeVideoId: this.youtubeVideoId,
-      liveTvChannel: this.liveTvChannel
+      liveTvChannel: this.liveTvChannel,
+      // Who is in the room — only sent to the server owner's sockets, who can kick from the lobby
+      ...(admin ? {
+        viewers: Array.from(this.viewers.values()).map(v => ({
+          socketId: v.socketId, name: v.name, isGuest: !!v.isGuest, isHost: !!v.isHost, isAdmin: !!v.isAdmin
+        }))
+      } : {})
     };
   }
 
@@ -139,8 +145,39 @@ function getRoomByInviteToken(token) {
   return roomId ? rooms.get(roomId) : null;
 }
 
+const roomListFor = (admin) => Array.from(rooms.values()).map(r => r.summary(admin));
+
+// The server owner's sockets sit in the 'admins' socket.io room and get the detailed list.
 function broadcastRoomList(io) {
-  io.emit('room-list', Array.from(rooms.values()).map(r => r.summary()));
+  io.except('admins').emit('room-list', roomListFor(false));
+  io.to('admins').emit('room-list', roomListFor(true));
+}
+
+/** Close a room immediately and send everyone in it back to the lobby. */
+function closeRoom(io, room, reason) {
+  if (room.countdownTimer)    clearTimeout(room.countdownTimer);
+  if (room.intermissionTimer) clearTimeout(room.intermissionTimer);
+  if (room.closeTimer)        clearTimeout(room.closeTimer);
+  room.broadcast(io, 'room-closed', { reason });
+  room.viewers.forEach((_, sid) => socketToRoom.delete(sid));
+  stopRelay(room.id);
+  inviteTokens.delete(room.inviteToken);
+  rooms.delete(room.id);
+  broadcastRoomList(io);
+}
+
+/** Remove one viewer from their room. `ban` also stops that account rejoining this room. */
+function removeViewer(io, room, targetSocketId, byUser, { ban = false } = {}) {
+  const target = room.viewers.get(targetSocketId);
+  if (!target) return false;
+  io.to(targetSocketId).emit('kicked', { byAdmin: !!byUser.isAdmin });
+  room.viewers.delete(targetSocketId);
+  socketToRoom.delete(targetSocketId);
+  if (ban && target.id) (room.bannedIds || (room.bannedIds = new Set())).add(target.id);
+  room.broadcastViewers(io);
+  broadcastRoomList(io);
+  console.log(`[Room] ${byUser.name}${byUser.isAdmin ? ' (admin)' : ''} kicked "${target.name}" from "${room.name}"${ban ? ' (blocked from rejoining)' : ''}`);
+  return true;
 }
 
 
@@ -279,7 +316,30 @@ function setupSync(io, enabledRoomTypes) {
   io.on('connection', (socket) => {
     const user = socket.user;
 
-    socket.emit('room-list', Array.from(rooms.values()).map(r => r.summary()));
+    const isAdmin = !!user.isAdmin && !user.isGuest;
+    if (isAdmin) socket.join('admins');
+    socket.emit('room-list', roomListFor(isAdmin));
+
+    // ── Admin: close any room (server owner only) ──────────
+    socket.on('admin-close-room', ({ roomId } = {}) => {
+      if (!isAdmin) return;
+      const room = rooms.get(roomId);
+      if (!room) return;
+      console.log(`[Admin] ${user.name} closed room "${room.name}"`);
+      closeRoom(io, room, 'Closed by the server owner');
+    });
+
+    // ── Admin: kick anyone from any room, and block them from rejoining it ──
+    socket.on('admin-kick', ({ targetSocketId } = {}) => {
+      if (!isAdmin || targetSocketId === socket.id) return;
+      const room = socketToRoom.get(targetSocketId);
+      const target = room?.viewers.get(targetSocketId);
+      if (!room || !target || target.isAdmin) return;
+      if (targetSocketId === room.hostSocketId) {
+        return socket.emit('error-msg', 'That is the room host — close the room instead');
+      }
+      removeViewer(io, room, targetSocketId, user, { ban: true });
+    });
 
     // ── Create room (Plex users only) ──────────────────────
     socket.on('create-room', async ({ name, roomType, youtubeUrl } = {}) => {
@@ -300,7 +360,7 @@ function setupSync(io, enabledRoomTypes) {
       if (youtubeVideoId) room.movieTitle = await fetchYoutubeTitle(youtubeVideoId);
       room.hostSocketId = socket.id;
       room.viewers.set(socket.id, {
-        socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null, isGuest: false, isHost: true
+        socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null, isGuest: false, isHost: true, isAdmin
       });
 
       rooms.set(room.id, room);
@@ -317,6 +377,9 @@ function setupSync(io, enabledRoomTypes) {
     socket.on('join-room', ({ roomId }) => {
       const room = rooms.get(roomId);
       if (!room) return socket.emit('room-error', 'Room not found');
+      if (room.bannedIds?.has(user.id) && !isAdmin) {
+        return socket.emit('room-error', 'You have been removed from this room by the server owner');
+      }
 
       // Scheduled room: first *Plex* user to join becomes the host.
       // Guests are not allowed to claim host on a scheduled room — they must
@@ -357,11 +420,11 @@ function setupSync(io, enabledRoomTypes) {
 
       room.viewers.set(socket.id, {
         socketId: socket.id, id: user.id, name: user.displayName || user.name, picture: user.picture || null,
-        isGuest: user.isGuest || false, isHost
+        isGuest: user.isGuest || false, isHost, isAdmin
       });
       socketToRoom.set(socket.id, room);
 
-      socket.emit('room-state', { ...room.state(), isHost, inviteToken: isHost ? room.inviteToken : null });
+      socket.emit('room-state', { ...room.state(), isHost, isAdmin, inviteToken: isHost ? room.inviteToken : null });
       room.broadcastViewers(io);
       console.log(`[Room] ${user.name} joined "${room.name}"`);
     });
@@ -642,18 +705,16 @@ function setupSync(io, enabledRoomTypes) {
       room.broadcast(io, 'room-settings', room.settings);
     });
 
-    // ── Kick viewer (host only) ────────────────────────────
+    // ── Kick viewer (host, or the server owner in any room they are in) ──
+    // The server owner can never be kicked, and a non-host admin can't kick the host (close the room instead).
     socket.on('kick-viewer', ({ targetSocketId }) => {
       const room = socketToRoom.get(socket.id);
-      if (!room || room.hostSocketId !== socket.id) return;
+      if (!room || (room.hostSocketId !== socket.id && !isAdmin)) return;
       if (!room.viewers.has(targetSocketId)) return;
       if (targetSocketId === socket.id) return;
-      const kicked = room.viewers.get(targetSocketId);
-      io.to(targetSocketId).emit('kicked');
-      room.viewers.delete(targetSocketId);
-      socketToRoom.delete(targetSocketId);
-      room.broadcastViewers(io);
-      console.log(`[Room] ${user.name} kicked "${kicked?.name}" from "${room.name}"`);
+      if (room.viewers.get(targetSocketId).isAdmin) return;
+      if (targetSocketId === room.hostSocketId) return;
+      removeViewer(io, room, targetSocketId, user, { ban: isAdmin });
     });
 
     // ── Countdown (host only) ──────────────────────────────

@@ -30,6 +30,7 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **Guest invite links** — hosts share a link; guests enter a display name and join without a Plex account; guests cannot see the lobby or create rooms
 - **Host transfer** — the host can promote any viewer (including guests) to host mid-session, giving them playback control for that room; guests granted host cannot create new rooms or scheduled events
 - **Auto host migration** — if the host leaves and other viewers remain, the room automatically promotes the next best viewer (preferring Plex users over guests) rather than closing
+- **Server-owner admin** — whoever *owns* the Plex server Playdarr is connected to is detected automatically at login (plex.tv marks the account as owner of that server), with no extra config. Admins get an `admin` badge and can close any room, kick any viewer (and block them from rejoining that room) from the lobby or from inside a room, and cancel any scheduled room. Other users, including hosts, can't kick an admin. Sign out and back in after upgrading for the owner flag to be picked up.
 - **Room persistence** — rooms live in memory; a 30-second grace timer keeps a room alive if the host briefly navigates away
 
 ### Scheduled Rooms

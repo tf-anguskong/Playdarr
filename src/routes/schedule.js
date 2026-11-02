@@ -71,10 +71,13 @@ router.delete('/:id', (req, res) => {
   }
 
   const user = req.session.user;
-  if (scheduled.createdBy.id !== user.id) {
-    return res.status(403).json({ error: 'Only the creator can cancel a scheduled room' });
+  if (scheduled.createdBy.id !== user.id && !user.isAdmin) {
+    return res.status(403).json({ error: 'Only the creator or the server owner can cancel a scheduled room' });
   }
 
+  if (user.isAdmin && scheduled.createdBy.id !== user.id) {
+    console.log(`[Admin] ${user.name} cancelled scheduled room "${scheduled.name}"`);
+  }
   scheduler.deleteScheduled(req.params.id);
   res.json({ ok: true });
 });
