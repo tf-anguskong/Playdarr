@@ -17,9 +17,9 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 ### Watching
 - **Synchronised playback** — play, pause, and seek are broadcast to everyone in the room; clients drift-correct every 5 seconds using gradual playback rate nudging before falling back to a hard seek
 - **Plex HLS proxy** — transcodes via your local Plex server and routes all HLS traffic through the app server, so your Plex token is never exposed to clients
-- **Movie browser** — searchable, filterable (genre, rating, year) grid of your Plex library, host-only
+- **Movie browser** — searchable, filterable (genre, rating, year) picker for your Plex library, host-only; switch between a poster grid and a compact list view (remembered per browser)
 - **YouTube rooms** — create a YouTube room instead of a movie room; the host pastes any `youtube.com` or `youtu.be` URL and the video embeds for all viewers via the YouTube IFrame API, fully synchronised; the video title is fetched automatically and shown in the sidebar and room list
-- **Live TV rooms** — watch live television together using Plex DVR; the host picks a channel from an EPG guide (with now-playing programme info), Plex tunes and transcodes via your HDHomeRun or other DVR device, and the HLS stream is proxied through the app server; guests sync to the host's position
+- **Live TV rooms** — watch live television together. The host picks a channel from an EPG guide (Plex supplies the channel list and now-playing programme info, also shown in the channel picker). Video comes **straight from your HDHomeRun** — ffmpeg (bundled in the Docker image) converts the broadcast MPEG-2/AC3 feed to H.264/AAC — and is recorded to a per-room **DVR on disk** (rolling 1 hour). The host controls playback: pause, rewind and seek within the DVR, or hit **Go live**; guests follow, with a "LIVE / -m:ss behind live" readout. A channel change starts a fresh DVR. If no HDHomeRun is configured, Live TV falls back to tuning through Plex's DVR
 - **Multi-room** — multiple watch parties can run simultaneously, each with their own state
 
 ### Rooms & Access
@@ -47,7 +47,8 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **Real-time chat** — all viewers can send messages; chat includes the sender's current movie timestamp for context
 - **Chat export** — download the full chat log as a `.txt` file with video timestamps
 - **Play/pause attribution** — a system message appears in chat whenever someone plays or pauses, showing who did it and at what position
-- **Emoji reactions** — a reaction bar (👍 ❤️ 😂 😱 😮 👏) overlays the video on hover; reactions float up the screen for all viewers
+- **Emoji reactions** — a reaction bar (👍 ❤️ 😂 😱 😮 👏) overlays the video on hover; reactions float up the screen for all viewers, each tagged with the avatar (or initial) of whoever sent it
+- **Sync indicators** — the viewer list shows each viewer's offset from the host (e.g. `+0.3s`), colour-coded green / amber / red
 - **Countdown timer** — host can fire a countdown (3 s, 5 s, 10 s, or custom) before playback begins; all viewers see a film-leader overlay with beep tones; host can cancel mid-count
 - **Intermission** — host can start a timed intermission (1–120 minutes); the video pauses for everyone and an overlay displays the movie poster with a live MM:SS countdown; the movie resumes automatically when the timer ends, or the host can end it early
 
@@ -57,7 +58,7 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 
 - **Backend** — Node.js, Express, Socket.io
 - **Frontend** — vanilla JS, no framework
-- **Streaming** — Plex HLS transcoding proxied server-side; [HLS.js](https://github.com/video-dev/hls.js) on the client
+- **Streaming** — Plex HLS transcoding proxied server-side for movies/TV; Live TV via ffmpeg from an HDHomeRun into an on-disk HLS DVR; [HLS.js](https://github.com/video-dev/hls.js) on the client
 - **Auth** — Plex PIN-based OAuth for Plex users; session-based guest tokens for invited viewers
 - **Sessions** — `express-session` with `session-file-store`
 - **Deployment** — Docker + reverse proxy of your choice
@@ -159,8 +160,14 @@ Copy `.env.example` to `.env` and fill in the values:
 | `ROOM_TYPE_TV` | No | Set `false` to hide TV show rooms from the lobby (default: `true`) |
 | `ROOM_TYPE_YOUTUBE` | No | Set `false` to hide YouTube rooms from the lobby (default: `true`) |
 | `ROOM_TYPE_LIVETV` | No | Set `true` to enable Live TV rooms (default: `false`) |
-| `LIVETV_PLEX_HOST` | No | LAN address of the Plex server used for Live TV / DVR (e.g. `http://192.168.1.100:32400`). Required when `ROOM_TYPE_LIVETV=true`. Falls back to `PLEX_URL` if unset — only needed when your DVR is on a different Plex server. |
+| `LIVETV_PLEX_HOST` | No | LAN address of the Plex server used for the Live TV channel guide / now-playing data (e.g. `http://192.168.1.100:32400`). Required when `ROOM_TYPE_LIVETV=true`. Falls back to `PLEX_URL` if unset — only needed when your DVR is on a different Plex server. |
 | `LIVETV_PLEX_TOKEN` | No | Plex token for the Live TV server. Falls back to `PLEX_TOKEN` if unset. |
+| `HDHR_IP` | No | LAN address of your HDHomeRun tuner. When set, Live TV video is pulled directly from it via ffmpeg and Plex is used only for the guide. If unset, Live TV tunes through Plex's DVR instead. |
+| `HDHR_PORT` | No | HDHomeRun streaming port (default: `5004`) |
+| `LIVETV_SOURCE` | No | `hdhr` (default when `HDHR_IP` is set) or `plex` to force the Plex DVR path |
+| `LIVETV_X264_PRESET` | No | x264 speed/quality preset for the software encode (default: `veryfast`) |
+| `LIVETV_MAX_BITRATE` | No | Peak video bitrate for the encode (default: `8M`) |
+| `LIVETV_VIDEO_ARGS` | No | Replace the whole video encoder argument list, e.g. `-c:v h264_nvenc -preset p4 -b:v 6M` for hardware encoding |
 
 ---
 
@@ -170,4 +177,6 @@ Copy `.env.example` to `.env` and fill in the values:
 - **COOKIE_SECURE must match your protocol.** `true` behind HTTPS, `false` over plain HTTP. Getting this wrong will silently break all sessions.
 - Rooms and chat are **in-memory only** — everything is lost on server restart. This is intentional.
 - The stream proxy restricts forwarded requests to Plex transcode paths only (`/video/:/transcode/universal/` and `/library/parts/`). Arbitrary Plex API access through the proxy is blocked.
-- **Live TV requires a Plex DVR.** `ROOM_TYPE_LIVETV=true` does nothing without a Plex server that has a DVR device (e.g. HDHomeRun) configured with channels. `LIVETV_PLEX_HOST` must be a LAN address for the same reason as `PLEX_URL` — live TV sessions are ephemeral and only accessible locally.
+- **Live TV needs an HDHomeRun and a Plex server for the guide.** `ROOM_TYPE_LIVETV=true` does nothing without a Plex server that has a DVR device (e.g. HDHomeRun) configured with channels — Plex provides the channel list and programme info. `LIVETV_PLEX_HOST` and `HDHR_IP` must be LAN addresses reachable from the container.
+- **Live TV encodes on the server's CPU.** Each room runs one ffmpeg (software x264 by default — roughly one core for a 1080i channel at the `veryfast` preset) and occupies one tuner. Hardware encoding is possible via `LIVETV_VIDEO_ARGS` if your Docker host exposes a GPU.
+- **Live TV DVR uses disk.** Each room records up to one hour to `DATA_PATH/dvr` (default `/data/dvr`) — roughly 3–4 GB per room-hour at the default bitrate. It is deleted when the room closes and wiped on server start. Size the Docker volume accordingly.

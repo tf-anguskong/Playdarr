@@ -31,6 +31,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `COOKIE_SECURE` — set `true` only when behind HTTPS (reverse proxy). Controls the session cookie `secure` flag directly; **not** driven by `NODE_ENV`.
 - `APP_URL` — public-facing URL, used to build the Plex OAuth callback URL.
 - `PLEX_TOKEN` — server token from Plex Settings → Troubleshooting.
+- `HDHR_IP` / `HDHR_PORT` — HDHomeRun tuner address. When set, Live TV video comes directly from the tuner via ffmpeg (Plex is then only used for the guide). `LIVETV_SOURCE=plex` forces the older Plex-DVR tuning path. Optional encode tuning: `LIVETV_X264_PRESET`, `LIVETV_MAX_BITRATE`, `LIVETV_VIDEO_ARGS` (replaces the video encoder args, e.g. for NVENC).
 
 Sessions are stored in `session-file-store` at `/data/sessions` (Docker volume). The `DATA_PATH` env var overrides the base path for local dev.
 
@@ -46,11 +47,21 @@ Sessions are stored in `session-file-store` at `/data/sessions` (Docker volume).
 
 Current position is computed as `position + (Date.now() - lastUpdate) / 1000` when playing. Clients receive a `state` event and snap their video if drift > 1.5s. The `isSyncing` flag in `player.js` prevents feedback loops when the player fires `play/pause/seeked` in response to programmatic changes.
 
+### Live TV (DVR model)
+
+`src/live-relay.js` owns Live TV media. Each livetv room has a `LiveDvr`: segments on disk under `DATA_PATH/dvr/<roomId>-<rand>/` (`s<N>.ts`), capped at 1 hour, served as a sliding HLS playlist at `/api/stream/live/:roomId/index.m3u8` (segments via `/live/:roomId/:segment`). Every segment carries `EXT-X-PROGRAM-DATE-TIME` derived from a fixed synthetic epoch, so a client converts its own `video.currentTime` ⇄ **DVR seconds** (`liveAbs()` / `liveSeekAbs()` in `player.js`). Room `position` for livetv rooms is in DVR seconds.
+
+Two sources feed a DVR:
+- **`HdhrSource`** (default when `HDHR_IP` is set): ffmpeg reads `http://HDHR_IP:HDHR_PORT/auto/v<channel>` (MPEG-2/AC3), deinterlaces, encodes H.264/AAC and writes 2s segments directly into the DVR dir (`-f segment`, csv segment list on stdout → `dvr.adopt()`). A watchdog restarts ffmpeg if no segment arrives for 15s; restarts are recorded as `EXT-X-DISCONTINUITY`. Nothing expires, so there is no retune cycle.
+- **`LiveRelay`** (fallback, `LIVETV_SOURCE=plex`): polls Plex's transcode variant playlist and downloads segments. Plex live sessions die unpredictably, so `doRetune` (sync.js) stops the old subscription *then* tunes (Plex dedupes a second tune to the same dead item otherwise) and warm-swaps a new relay into the same DVR with a discontinuity. Rooms start 8s behind live to hide that gap.
+
+A channel change always creates a fresh DVR (`startHdhr` / `startRelay({ fresh: true })`); the old one is destroyed after the new one is producing. Playback is **host-controlled**: only the host's play/pause/seek events are emitted; the server calibrates `room.position` from the host's reported DVR time every second, and guests steer onto it with a 250 ms proportional playback-rate loop (the `setInterval` drift loop in `player.js`; snap-seek only beyond 1.5 s). Guest targets use time since *receipt* of a state, not `state.lastUpdate`, so client/server clock skew doesn't leak into sync. Client Live TV debug lines are posted to `POST /api/stream/live-log` and appear in `docker compose logs` as `[LiveClient …]`.
+
 ### Multi-room system
 
 - `rooms` Map (roomId → Room) and `inviteTokens` Map (token → roomId) live in memory in `sync.js` — rooms are **not** persisted.
 - `socketToRoom` Map enables O(1) lookup when any socket event arrives.
-- Host disconnect triggers an **8-second grace timer** before closing the room, to survive lobby→watch page navigation (which creates a new socket). The timer is cancelled if the host rejoins before it fires.
+- Host disconnect triggers a **30-second grace timer** before closing the room, to survive lobby→watch page navigation (which creates a new socket). The timer is cancelled if the host rejoins before it fires.
 - Guests are validated by comparing `user.inviteToken` (stored in session) against `room.inviteToken`.
 
 ### Plex HLS proxy
@@ -81,4 +92,4 @@ Session middleware is shared between Express and Socket.io (both use the same `s
 - `join.html` — public invite landing page; fetches `/join/:inviteToken/info` for roomId, then POSTs guest session
 - `login.html` — Plex-only login page
 
-All styling is in a single `src/public/css/app.css` with CSS custom properties for the dark cinema theme.
+All styling is in a single `src/public/css/app.css`. The theme is the "Homelab Console" look (dark, hairline borders, one amber accent, monospace for technical text) defined as `--pd-*` tokens at the top of the file; the older variable names (`--bg`, `--accent`, …) are aliases onto those tokens. Movie/show pickers share a grid/list toggle (`js/viewtoggle.js`, preference kept in `localStorage`).
