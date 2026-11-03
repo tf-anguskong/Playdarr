@@ -261,6 +261,9 @@ function removePersistentRoom(defId) {
 }
 
 /** Point a room at a movie (host pick, or the winner of a vote). */
+// A playback position from a client: a finite, non-negative number of seconds, else null
+const validPosition = p => (typeof p === 'number' && Number.isFinite(p) && p >= 0 && p < 7 * 86400 ? p : null);
+
 function applyMovie(io, room, movieKey, movieTitle, partId) {
   clearRoomManifest(room.id); // Evict cached manifest so next request starts fresh
   room.movieKey = movieKey; room.movieTitle = movieTitle; room.partId = partId;
@@ -639,6 +642,22 @@ function setupSync(io, enabledRoomTypes) {
   io.on('connection', (socket) => {
     const user = socket.user;
 
+    // Every handler below runs untrusted client payloads. Socket.io dispatches them on process.nextTick,
+    // so one throw (e.g. `emit('play', null)` hitting `({ position })`) is an uncaught exception that
+    // kills the server and every in-memory room. Give handlers an object instead of null/undefined,
+    // and log (never rethrow) anything they throw or reject with.
+    const rawOn = socket.on.bind(socket);
+    socket.on = (event, handler) => rawOn(event, (...args) => {
+      if (!args.length) args = [undefined];
+      args = args.map(a => (a === null || a === undefined || typeof a !== 'object' ? (typeof a === 'function' ? a : {}) : a));
+      if (event === 'disconnect' || event === 'disconnecting') args = [];
+      const fail = err => console.error(`[Socket] "${event}" from ${user?.name || '?'} failed:`, err?.message || err);
+      try {
+        const r = handler(...args);
+        if (r && typeof r.catch === 'function') r.catch(fail);
+      } catch (err) { fail(err); }
+    });
+
     const isAdmin = !!user.isAdmin && !user.isGuest;
     if (isAdmin) socket.join('admins');
     socket.emit('room-list', roomListFor(isAdmin));
@@ -964,7 +983,7 @@ function setupSync(io, enabledRoomTypes) {
       if (room.resyncTimer) return;   // a resync is counting down; it will resume everyone itself
       if (!playPauseLimiter.allow(socket.id)) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
-      room.position = position ?? room.currentPosition();
+      room.position = validPosition(position) ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
       room.broadcast(io, 'chat', {
@@ -988,7 +1007,7 @@ function setupSync(io, enabledRoomTypes) {
         if (wait > 0) { socket.emit('pause-denied', { waitSec: Math.ceil(wait / 1000) }); return; }
       }
       if (room.roomType === 'livetv') room.lastPauseAt = Date.now();
-      room.position = position ?? room.currentPosition();
+      room.position = validPosition(position) ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
       room.broadcast(io, 'chat', {
@@ -1005,6 +1024,7 @@ function setupSync(io, enabledRoomTypes) {
       if (room.resyncTimer) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       if (!seekLimiter.allow(socket.id)) return;
+      if (validPosition(position) == null) return;
       room.position = position; room.lastUpdate = Date.now();
       room.broadcastState(io);
     });

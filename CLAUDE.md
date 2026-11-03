@@ -114,17 +114,23 @@ Plex's `/video/:/transcode/universal/start.m3u8` returns an HLS manifest contain
 2. `GET /api/stream/proxy/*` — forwards requests to Plex (adding the token server-side). m3u8 files are buffered and rewritten; `.ts` segments are piped directly.
 3. The `baseDir` variable is critical for resolving **relative** paths in sub-manifests (Plex returns paths like `session/xxx/base/index.m3u8` with no leading slash).
 
+**Proxy path check**: `resolveProxyUrl()` resolves the target with WHATWG `URL`, the same way axios does (which collapses `..`, `%2e`, etc.), and runs the allow-list on *that* pathname. Never test the raw `req.params[0]`: Express decodes `%2F`, so `…/universal/..%2F..%2F..%2F..%2Fmyplex/account` would reach any Plex endpoint with the server token.
+
 **Important quirk**: axios encodes `/` as `%2F` in query params. The `path` param sent to Plex requires literal slashes, so the query string is built manually in `stream.js`.
 
 ### Auth flow
 
-- Plex OAuth uses PIN-based flow (not standard OAuth redirect). The PIN ID is embedded in the **callback URL path** (`/auth/plex/callback/:pinId`) rather than the session, because the session cookie may not be available across the Plex redirect.
+- Plex OAuth uses PIN-based flow (not standard OAuth redirect). The PIN ID is in the **callback URL path** (`/auth/plex/callback/:pinId`) *and* stored in the session (`plexPinId`) when `/auth/plex` starts. The callback refuses a PIN that this browser didn't start, because PIN IDs are guessable and anyone could otherwise claim someone else's approved sign-in. The `SameSite=Lax` cookie survives Plex's top-level redirect back. Since that redirect lands on `APP_URL`, `/auth/plex` started on any other host first bounces once to `APP_URL/auth/plex?h=1`.
+- Guest join calls `session.regenerate`. A guest's stream access is scoped in `stream.js` (`guestRoom()`): `/hls` only for their invite's room and its current `movieKey` (no `?live`), `/live/:roomId` only for that room, and `/proxy*` only for transcode session ids seen in that room's manifests (`roomTranscodeSessions`). Plex users aren't scoped.
 - After OAuth, the server verifies the user has access to the local Plex server by hitting `PLEX_URL` with their token.
 - Guests get a session with `{ isGuest: true, name, inviteToken }` via `POST /auth/guest-join`.
 - **Admin = Plex server owner.** The plex.tv `/resources` entry matching the server's `machineIdentifier` has `owned: true` only for the owner; login stores that as `session.user.isAdmin`. Admins get: `admin-close-room` / `admin-kick` socket events (sync.js; kicks also block rejoining that room), kick buttons in any room they join, a per-room viewer/close panel in the lobby (admin sockets join the `admins` socket.io room and receive a detailed `room-list`), and may cancel any scheduled room (`DELETE /api/schedule/:id`). Admins can't be kicked and the host can only be removed by closing the room. Existing sessions pick this up on next sign-in.
 - `requireAuth` — any session user (Plex or guest). `requirePlexAuth` — non-guest only.
 
 ### Socket authentication
+
+In `io.on('connection')`, sync.js wraps `socket.on`. Every handler gets `{}` in place of a null, missing or non-object payload, and anything a handler throws or rejects with is logged as `[Socket] "event" … failed`. Socket.io dispatches handlers on `process.nextTick`, so without this, one `emit('play', null)` from any guest is an uncaught exception that kills the server and every in-memory room. Keep socket payloads as objects. `validPosition()` rejects non-numeric play/pause/seek positions.
+
 
 Session middleware is shared between Express and Socket.io (both use the same `sessionMiddleware` instance). A Socket.io middleware layer reads `socket.request.session.user` and attaches it as `socket.user`.
 
