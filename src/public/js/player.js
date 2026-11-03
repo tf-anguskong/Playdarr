@@ -997,7 +997,7 @@ function renderViewers(viewers) {
       : '';
     const bufHtml = v.buffering ? '<span class="buffering-dot" title="Buffering…"></span>' : '';
     return `
-      <div class="viewer-item">
+      <div class="viewer-item" data-name="${esc(v.name)}">
         ${v.picture
           ? `<img src="${v.picture}" alt="${esc(v.name)}">`
           : `<div class="viewer-avatar-placeholder">${esc(v.name[0]?.toUpperCase() || '?')}</div>`
@@ -1519,16 +1519,27 @@ function formatVideoTime(s) {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
-socket.on('chat', ({ name, text, isGuest, videoTime, isSystem }) => {
+// Escape a chat line and highlight @mentions of people in the room (and @everyone / @all)
+function chatHtml(text) {
+  const names = lastViewers.map(v => v.name).filter(Boolean).concat(['everyone', 'all'])
+    .sort((a, b) => b.length - a.length)
+    .map(n => esc(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const html = esc(text);
+  const re = new RegExp('(^|[\\s(\\[])(@(?:' + names.join('|') + '))(?![\\p{L}\\p{N}_])', 'giu');
+  return html.replace(re, (m, pre, tag) => `${pre}<span class="chat-mention-tag">${tag}</span>`);
+}
+
+socket.on('chat', ({ name, text, isGuest, videoTime, isSystem, mentions }) => {
   chatLog.push({ name, text, isGuest, videoTime, isSystem, wallTime: new Date() });
+  const mentionsMe = !isSystem && Array.isArray(mentions) && mentions.includes(socket.id);
   const div = document.createElement('div');
   const ts  = videoTime != null ? `<span class="chat-ts">[${esc(formatVideoTime(videoTime))}]</span> ` : '';
   if (isSystem) {
     div.className = 'chat-msg chat-system';
     div.innerHTML = `${esc(name)} <span class="chat-system-action">${esc(text)}</span> ${ts}`;
   } else {
-    div.className = 'chat-msg';
-    div.innerHTML = `<span class="chat-name">${esc(name)}${isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span> ${ts}${esc(text)}`;
+    div.className = 'chat-msg' + (mentionsMe ? ' chat-msg-mention' : '');
+    div.innerHTML = `<span class="chat-name">${esc(name)}${isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span> ${ts}${chatHtml(text)}`;
   }
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -1538,7 +1549,11 @@ socket.on('chat', ({ name, text, isGuest, videoTime, isSystem }) => {
     chatBadge.textContent = unreadChats > 99 ? '99+' : String(unreadChats);
     chatBadge.style.display = 'flex';
     const preview = text.length > 55 ? text.slice(0, 55) + '…' : text;
-    showNotif(`💬 ${name}: ${preview}`);
+    showNotif(`${mentionsMe ? '🔔' : '💬'} ${name}: ${preview}`);
+  } else if (mentionsMe && (document.hidden || window.matchMedia('(max-width: 760px)').matches)) {
+    // tagged while the chat is off-screen (phone layout) or the tab is in the background
+    const preview = text.length > 55 ? text.slice(0, 55) + '…' : text;
+    showNotif(`🔔 ${name}: ${preview}`);
   }
 });
 
@@ -1557,7 +1572,78 @@ function sendChat() {
 }
 
 document.getElementById('chat-send').addEventListener('click', sendChat);
-chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+// ── @mention picker ────────────────────────────────────────
+const mentionBox = document.getElementById('mention-box');
+let mentionItems = [];   // names currently offered
+let mentionIdx   = 0;
+let mentionStart = -1;   // index of the '@' being completed
+
+function closeMentions() { mentionBox.style.display = 'none'; mentionItems = []; mentionStart = -1; }
+
+function updateMentions() {
+  const pos = chatInput.selectionStart ?? chatInput.value.length;
+  const before = chatInput.value.slice(0, pos);
+  const m = /(^|\s)@([^\s@]*)$/.exec(before);
+  if (!m) return closeMentions();
+  const q = m[2].toLowerCase();
+  mentionStart = pos - m[2].length - 1;
+  const others = [...new Set(lastViewers.filter(v => v.socketId !== socket.id && v.name).map(v => v.name))];
+  const pool = others.concat(others.length ? ['everyone'] : []);
+  mentionItems = pool.filter(n => n.toLowerCase().split(/\s+/).some(w => w.startsWith(q)) || n.toLowerCase().startsWith(q)).slice(0, 6);
+  if (!mentionItems.length) return closeMentions();
+  mentionIdx = Math.min(mentionIdx, mentionItems.length - 1);
+  mentionBox.innerHTML = mentionItems.map((n, i) =>
+    `<button type="button" class="mention-opt${i === mentionIdx ? ' active' : ''}" data-i="${i}">@${esc(n)}</button>`).join('');
+  mentionBox.style.display = 'flex';
+}
+
+function pickMention(i) {
+  const name = mentionItems[i];
+  if (name == null || mentionStart < 0) return;
+  const pos = chatInput.selectionStart ?? chatInput.value.length;
+  chatInput.value = chatInput.value.slice(0, mentionStart) + '@' + name + ' ' + chatInput.value.slice(pos);
+  const caret = mentionStart + name.length + 2;
+  chatInput.setSelectionRange(caret, caret);
+  closeMentions();
+  chatInput.focus();
+}
+
+// pointerdown (not click) so the input keeps focus and blur doesn't close the picker first
+mentionBox.addEventListener('pointerdown', e => {
+  const b = e.target.closest('.mention-opt');
+  if (!b) return;
+  e.preventDefault();
+  pickMention(Number(b.dataset.i));
+});
+
+chatInput.addEventListener('input', () => { mentionIdx = 0; updateMentions(); });
+chatInput.addEventListener('click', updateMentions);
+chatInput.addEventListener('blur', () => setTimeout(closeMentions, 150));
+chatInput.addEventListener('keydown', e => {
+  if (mentionItems.length) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      mentionIdx = (mentionIdx + (e.key === 'ArrowDown' ? 1 : mentionItems.length - 1)) % mentionItems.length;
+      updateMentions();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mentionIdx); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closeMentions(); return; }
+  }
+  if (e.key === 'Enter') sendChat();
+});
+
+// Clicking someone's name in the Watching list tags them
+viewersList.addEventListener('click', e => {
+  const item = e.target.closest('.viewer-item');
+  if (!item || e.target.closest('button')) return;
+  const nm = item.dataset.name;
+  if (!nm || nm === lastViewers.find(v => v.socketId === socket.id)?.name) return;
+  const cur = chatInput.value;
+  chatInput.value = cur + (cur && !/\s$/.test(cur) ? ' ' : '') + '@' + nm + ' ';
+  chatInput.focus();
+});
 
 document.getElementById('chat-export').addEventListener('click', () => {
   if (!chatLog.length) return;

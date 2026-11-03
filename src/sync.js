@@ -1020,11 +1020,28 @@ function setupSync(io, enabledRoomTypes) {
         && data.videoTime >= 0 && data.videoTime < 86400)
         ? Math.floor(data.videoTime)
         : null;
+      // @name (or @everyone) tags viewers in this room; the client highlights and notifies them
+      const mentions = [];
+      const lower = trimmed.toLowerCase();
+      const mentionedAt = (name) => {
+        const needle = '@' + name.toLowerCase();
+        for (let i = lower.indexOf(needle); i !== -1; i = lower.indexOf(needle, i + 1)) {
+          const after = lower[i + needle.length];
+          if ((i === 0 || /\s|[(\[]/.test(lower[i - 1])) && (after === undefined || !/[\p{L}\p{N}_]/u.test(after))) return true;
+        }
+        return false;
+      };
+      if (mentionedAt('everyone') || mentionedAt('all')) {
+        for (const v of room.viewers.values()) mentions.push(v.socketId);
+      } else {
+        for (const v of room.viewers.values()) if (v.name && mentionedAt(v.name)) mentions.push(v.socketId);
+      }
       room.broadcast(io, 'chat', {
         name: user.displayName || user.name,
         text: trimmed,
         isGuest: user.isGuest || false,
-        videoTime
+        videoTime,
+        mentions
       });
     });
 

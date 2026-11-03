@@ -106,7 +106,8 @@
         </div>
         <div id="chat-messages" class="chat-messages"></div>
         <div class="chat-input-row">
-          <input type="text" id="chat-input" class="chat-input" placeholder="Message…" maxlength="300" autocomplete="off">
+          <div id="mention-box" class="mention-box" style="display:none"></div>
+          <input type="text" id="chat-input" class="chat-input" placeholder="Message… (@ to tag)" maxlength="300" autocomplete="off" enterkeyhint="send">
           <button id="chat-send" class="btn-chat-send">↵</button>
         </div>
         <!-- Host only: pause everyone and resume them together from the same spot -->
