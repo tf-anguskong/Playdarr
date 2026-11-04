@@ -1,0 +1,14 @@
+# Only package*.json and src/ are copied into the image; keep the build context small and secret-free
+.git
+.github
+.claude
+.env
+.env.*
+node_modules
+npm-debug.log*
+test
+wiki
+images
+data
+sessions
+*.md

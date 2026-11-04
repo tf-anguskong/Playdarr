@@ -17,6 +17,10 @@ docker compose up --build -d
 docker compose logs -f
 docker compose down
 
+# Release: build x86-64 + ARM64 locally with buildx, push ghcr.io/tf-anguskong/playdarr:<version>/:<x.y>/:latest,
+# tag v<version>. Version comes from package.json; must be on a clean master equal to origin/master.
+npm run release            # scripts/release.sh; --dry-run builds both arches without pushing/tagging
+
 # Generate a session secret
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
