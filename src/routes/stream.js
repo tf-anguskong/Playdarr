@@ -77,6 +77,10 @@ function stopKeepalive(cacheKey) {
 
 
 function clearRoomManifest(roomId) {
+  // Plex's /transcode/universal/stop takes the *transcode* session key (the id in the manifests' session/<id>/ URLs),
+  // not our X-Plex-Session-Identifier — stopping by the latter is a no-op, and a transcode left running makes Plex
+  // refuse every new session for that title (400) until it times out.
+  const transcodeKeys = [...(roomTranscodeSessions.get(roomId) || [])];
   for (const key of manifestCache.keys()) {
     if (key.startsWith(roomId + '-')) {
       stopKeepalive(key);
@@ -85,9 +89,11 @@ function clearRoomManifest(roomId) {
       // potentially stuck/terminating one with the same session ID.
       const session = activeSessions.get(key);
       if (session) {
-        axios.get(`${session.plexBaseUrl}/video/:/transcode/universal/stop`, {
-          params: { 'X-Plex-Token': session.plexToken, session: session.sessionId }
-        }).catch(() => {}); // ignore errors — best effort
+        for (const id of [session.sessionId, ...(session.isLive ? [] : transcodeKeys)]) {
+          axios.get(`${session.plexBaseUrl}/video/:/transcode/universal/stop`, {
+            params: { 'X-Plex-Token': session.plexToken, session: id }, timeout: 5000
+          }).catch(() => {}); // ignore errors — best effort
+        }
       }
       manifestCache.delete(key);
       activeSessions.delete(key);

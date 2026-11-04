@@ -2,6 +2,7 @@
   "name": "playdarr",
   "version": "1.0.0",
   "description": "Synchronized movie watching from Plex",
+  "license": "MIT",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

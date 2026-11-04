@@ -150,6 +150,16 @@ const authLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later' }
 });
 
+// The TV app polls this every few seconds while someone enters its code at plex.tv/link, which would use up the
+// /auth limit above in a couple of minutes, so it gets its own (a code lasts ~15 min; 5 s polling is 180 calls).
+const deviceStatusLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' }
+});
+app.get('/auth/plex/device/status', deviceStatusLimiter, authRouter.deviceStatus);
 app.use('/auth', authLimiter, authRouter);
 app.use('/api/movies', requirePlexAuth, moviesRouter);
 app.use('/api/shows', requirePlexAuth, showsRouter);

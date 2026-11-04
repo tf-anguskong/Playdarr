@@ -4,6 +4,8 @@
 
 Playdarr is a self-hosted watch-party app for Plex. It lets you and your friends stream movies from your Plex server in sync, with real-time chat, reactions, and playback controls — all through a browser, no plugins required.
 
+📺 **On the couch?** [Playdarr for Android TV](https://github.com/tf-anguskong/Playdarr-AndroidTV) brings rooms to Google TV / Android TV.
+
 📖 **Running a server?** The **[Admin Guide](wiki/Home.md)** covers setup, the admin panel, Discord webhooks, moderation, recurring watch nights, Live TV, backups and troubleshooting. (The pages are in the [`wiki/`](wiki/) folder and can be published to the GitHub Wiki tab — see [`wiki/README.md`](wiki/README.md).)
 
 ## What is Playdarr?
@@ -102,6 +104,9 @@ Whoever owns the Plex server is the admin (see *Server-owner admin* above) and g
 - **Force resync** — the host has a *⟳ Force resync* button under the message box. It pauses everyone at the host's position, shows a 2-second "Resyncing" countdown to everyone, then resumes all viewers together from that same spot. Handy when someone drifts or buffers. It works in every room type (for Live TV it uses the host's own player position), is host-only, and is limited to once every 10 seconds so it can't be spammed.
 - **Countdown timer** — host can fire a countdown (3 s, 5 s, 10 s, or custom) before playback begins; all viewers see a film-leader overlay with beep tones; host can cancel mid-count
 - **Intermission** — host can start a timed intermission (1–120 minutes); the video pauses for everyone and an overlay displays the movie poster with a live MM:SS countdown; the movie resumes automatically when the timer ends, or the host can end it early
+
+### TV apps
+- **Android TV / Google TV** — **[Playdarr for Android TV](https://github.com/tf-anguskong/Playdarr-AndroidTV)** joins an existing Playdarr server from the couch (tested on an NVIDIA Shield). Sign in by entering a code at plex.tv/link on your phone, or join a room with an invite. It covers the lobby, movie / TV / Live TV rooms kept in sync with everyone in the browser, host controls, split-view audio, a people & chat pane and floating reactions. It hosts nothing itself; it needs a server recent enough to have TV sign-in (`/auth/plex/device`)
 
 ---
 
@@ -250,3 +255,7 @@ Copy `.env.example` to `.env` and fill in the values:
 - **GPU encode checklist.** The kernel driver on the Docker host does the work (`i915`/`xe` for Intel, `amdgpu` for AMD); the image already carries the userspace drivers and `vainfo`. Verify with `ls -l /dev/dri` on the host, then after starting with the override, `docker exec playdarr vainfo` (should list H.264 `EncSlice`) and `docker compose logs | grep "enc="` (should say `enc=vaapi`). If the GPU path fails twice with no output, Playdarr logs a warning and drops back to software x264. Tested on an Intel iGPU (iHD driver) in a Proxmox LXC; AMD is wired the same way but untested here.
 - **Docker in a Proxmox LXC.** The LXC shares the Proxmox host's kernel, so only the passthrough is needed: in the LXC's Resources add a *Device Passthrough* for `/dev/dri/renderD128` (set the GID to the container's `render` group, usually 104), or add `dev0: /dev/dri/renderD128,gid=104` to `/etc/pve/lxc/<ID>.conf`, and restart it. Docker inside the LXC also needs `nesting=1` (and usually `keyctl=1`). The Playdarr container runs as root, so no `group_add` is needed.
 - **Live TV DVR uses disk.** Each room records up to one hour to `DATA_PATH/dvr` (default `/data/dvr`) — roughly 3–4 GB per room-hour at the default bitrate. It is deleted when the room closes and wiped on server start. Size the Docker volume accordingly.
+
+## License
+
+Playdarr is released under the [MIT License](LICENSE).

@@ -19,6 +19,7 @@ What protects your server, what to configure, and what to be aware of.
 | **Guest** | Invite link + a display name | Join that room, chat, react; can be given host of it. Cannot create or schedule rooms or see the lobby |
 
 - Sign-in uses Plex's PIN flow. The PIN is tied to the browser that started the sign-in, so only that browser can finish it. At sign-in Playdarr confirms the account actually has access to *your* server; if not, it's refused.
+- The Android TV app signs in with a short code entered at **plex.tv/link** (`POST /auth/plex/device`, then the TV polls `/auth/plex/device/status`). The code's PIN is tied to the TV's own session in the same way, and it goes through the same server-access check. The status endpoint has its own limit (300 per 15 minutes per IP), because the TV polls it every few seconds while you type the code.
 - When a host picks a movie or episode (or a night is scheduled with one), the server looks the title and file up in Plex itself; the browser only says which item.
 - A guest's session only works for **the room its invite points at**, and only for what that room is playing. It can't stream other titles or other rooms, and it stops working when the room closes.
 - The admin flag lives in the **server-side session**, and every admin route and socket action re-checks it. Browsers can't grant it to themselves.
