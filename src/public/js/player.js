@@ -547,6 +547,7 @@ function loadLiveTvRelay(targetAbs, shouldPlay) {
       if (f && f.programDateTime != null) liveTlOffset = fragDvrStart(f) - f.start;
     });
     hlsInstance.on(Hls.Events.ERROR, (event, data) => {
+      liveHlsErrors++;
       liveLog(`hls ${data.fatal ? 'FATAL' : 'error'}: ${data.type} / ${data.details}${data.response ? ' http ' + data.response.code : ''}`);
       if (!data.fatal) return;
       console.error('[LiveTV] HLS fatal error:', data.type, data.details);
@@ -625,6 +626,21 @@ setInterval(() => {
     liveLog(`sync drift=${drift.toFixed(2)}s rate=${rate.toFixed(3)}`);
   }
 }, 250);
+
+// Live TV health line every 60 s (host and guests) into the server log as [LiveClient …], so a playback problem
+// someone hears (e.g. slowed or warbly audio) can be matched to the player's state at that moment: speed, buffer
+// ahead/behind, holes in the audio/video buffers, audio track, dropped frames and hls.js errors so far.
+let liveHlsErrors = 0;
+setInterval(() => {
+  if (roomType !== 'livetv' || !hlsInstance || video.style.display === 'none') return;
+  const holes = kind => { try { const b = hlsInstance.bufferController?.sourceBuffer?.[kind]; return b ? b.buffered.length : '-'; } catch { return '?'; } };
+  const b = video.buffered, t = video.currentTime;
+  const ahead = b.length ? (b.end(b.length - 1) - t).toFixed(0) : 0, behind = b.length ? (t - b.start(0)).toFixed(0) : 0;
+  const q = video.getVideoPlaybackQuality?.();
+  liveLog(`health ${new Date().toLocaleTimeString()} ${isHost ? 'host' : 'guest'} rate=${video.playbackRate} pitch=${video.preservesPitch !== false} `
+    + `${video.paused ? 'paused' : 'playing'} rs=${video.readyState} buf=-${behind}/+${ahead}s ranges a=${holes('audio')} v=${holes('video')} `
+    + `audio=${liveSplit ? splitAudioIndex() + 1 + '/' + liveSplit.length : '1'} drop=${q ? q.droppedVideoFrames + '/' + q.totalVideoFrames : '?'} hlsErr=${liveHlsErrors}`);
+}, 60000);
 
 // What's on air for the room's channel (from the Plex guide), shown beside the LIVE readout.
 function setLiveProgram(program) {
