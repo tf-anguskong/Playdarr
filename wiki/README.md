@@ -32,6 +32,8 @@ When you change behaviour that these pages describe — admin controls, webhook 
 | New or changed `.env` setting | [Configuration-Reference.md](Configuration-Reference.md) |
 | Admin panel section or control | [Admin-Panel.md](Admin-Panel.md) |
 | Webhook event or payload | [Webhooks-and-Notifications.md](Webhooks-and-Notifications.md) |
-| Kick/close/nickname rules | [Moderation.md](Moderation.md) |
+| Kick/close/nickname/rename/mute rules, word filter, chat images or deletes | [Moderation.md](Moderation.md) |
+| New admin setting (Settings page) | [Settings-Page.md](Settings-Page.md) and [Configuration-Reference.md](Configuration-Reference.md) |
+| Link previews, what data is kept, new public endpoints | [Security-Notes.md](Security-Notes.md) |
 | Scheduling or recurrence rules | [Scheduling-and-Recurring-Nights.md](Scheduling-and-Recurring-Nights.md) |
 | New file in the data folder | [Data-Backups-and-Updates.md](Data-Backups-and-Updates.md) |
