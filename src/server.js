@@ -203,14 +203,6 @@ app.use('/api/livetv', requireAuth,
   (req, res, next) => (enabledRoomTypes.livetv ? next() : res.status(404).json({ error: 'Live TV is turned off' })),
   require('./routes/livetv'));
 
-// "Send from your phone" for the Android TV app: the TV shows a code / QR for /tv/<code>, the phone pastes an
-// invite link there (tvlink.js). Public on purpose: neither side has to be signed in.
-app.use('/api/tv', require('./routes/tvlink'));
-app.get(['/tv', '/tv/:code'], (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(path.join(__dirname, 'public', 'tv-send.html'));
-});
-
 app.get('/api/me', (req, res) => {
     const user = req.session?.user || null;
     if (!user) return res.json({ user: null });
