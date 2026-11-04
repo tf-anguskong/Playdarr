@@ -124,6 +124,7 @@ socket.on('room-state', (state) => {
 socket.on('room-settings', applyRoomSettings);
 
 socket.on('kicked', ({ byAdmin } = {}) => {
+  leavePip();
   alert(`You have been removed from this room by the ${byAdmin ? 'server owner' : 'host'}.`);
   window.location.href = '/';
 });
@@ -143,11 +144,13 @@ socket.on('livetv-reload', () => {
 });
 
 socket.on('room-error', (msg) => {
+  leavePip();
   alert(msg + '\n\nRedirecting to lobby.');
   window.location.href = '/';
 });
 
 socket.on('room-closed', ({ reason }) => {
+  leavePip();
   alert(reason || 'Room closed.');
   window.location.href = '/';
 });
@@ -1087,8 +1090,9 @@ socket.on('pause-denied', ({ waitSec } = {}) => {   // the server's word wins if
 
 video.addEventListener('pause',  () => {
   if (isSyncing) return;
-  if (livetvGuest()) return;
-  if (roomSettings.playbackLocked && !isHost) return;
+  // A viewer who can't steer the room (Live TV guest, guest in a locked room) can still pause their own copy from a
+  // Picture-in-Picture window, where the native controls can't be hidden. Put them straight back on the room.
+  if (followsOnly()) { if (roomIsPlaying() && !video.ended) resumeWithRoom(); return; }
   if (roomType === 'livetv' && liveState && liveState.playing) {
     const left = pauseCooldownMsLeft();
     if (left > 0) { undoPause(Math.ceil(left / 1000)); return; }
@@ -1104,6 +1108,70 @@ video.addEventListener('seeked', () => {
   const pos = playbackPos();
   if (pos != null) socket.emit('seek',  { position: pos });
 });
+
+// ── Picture in Picture ─────────────────────────────────────
+// The PiP window shows this same <video>, so the room's play/pause/seek (applyState / applyLiveTvState) and the
+// chase loops drive it exactly as they drive the page. What it adds is a play/pause button that can't be hidden, so:
+// viewers who may steer the room (host, guests in an unlocked Movie/TV room) send it to the room like the native
+// controls do; viewers who only follow get it bounced back onto the room (media-session handlers in Chromium, the
+// 'pause' listener above everywhere else).
+const followsOnly = () => livetvGuest() || (roomSettings.playbackLocked && !isHost && (roomType === 'movie' || roomType === 'tv'));
+const roomIsPlaying = () => !!(roomType === 'livetv' ? liveState?.playing : movieState?.playing);
+function resumeWithRoom() {
+  isSyncing = true; clearTimeout(syncTimer);
+  const t = roomType === 'livetv' ? liveTarget() : movieTarget();
+  if (t != null) { if (roomType === 'livetv') liveSeekAbs(t); else video.currentTime = t; }
+  video.play().catch(() => {});
+  releaseSyncLock();
+}
+
+const pipBtn = document.getElementById('pip-btn');
+const pipStandard = !!(document.pictureInPictureEnabled && !video.disablePictureInPicture);
+const pipWebkit = !pipStandard && typeof video.webkitSupportsPresentationMode === 'function'
+  && video.webkitSupportsPresentationMode('picture-in-picture');   // older iOS Safari
+const inPip = () => document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture';
+
+function leavePip() {
+  try {
+    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    else if (video.webkitPresentationMode === 'picture-in-picture') video.webkitSetPresentationMode('inline');
+  } catch {}
+}
+
+function refreshPipBtn() {
+  if (!pipBtn) return;
+  const videoShown = video.style.display !== 'none' && roomType !== 'youtube';
+  const show = (pipStandard || pipWebkit) && videoShown;
+  pipBtn.style.display = show ? 'flex' : 'none';
+  pipBtn.closest('.player-container')?.classList.toggle('has-pip', show);
+  pipBtn.classList.toggle('is-active', inPip());
+  pipBtn.title = inPip() ? 'Exit Picture in Picture' : 'Picture in Picture';
+  if (!videoShown && inPip()) leavePip();   // nothing loaded any more (room reset, switched to YouTube)
+}
+
+pipBtn?.addEventListener('click', () => {
+  if (inPip()) { leavePip(); return; }
+  if (pipStandard) video.requestPictureInPicture().catch(err => showNotif(`Picture in Picture failed: ${err.message}`));
+  else if (pipWebkit) video.webkitSetPresentationMode('picture-in-picture');
+});
+video.addEventListener('enterpictureinpicture', refreshPipBtn);
+video.addEventListener('leavepictureinpicture', refreshPipBtn);
+video.addEventListener('webkitpresentationmodechanged', refreshPipBtn);
+new MutationObserver(refreshPipBtn).observe(video, { attributes: true, attributeFilter: ['style'] });
+refreshPipBtn();
+
+// Chromium's PiP window calls these instead of pausing the element itself. No seek handlers → no ±10 s buttons.
+if ('mediaSession' in navigator) {
+  const setHandler = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} };
+  setHandler('play', () => {
+    if (followsOnly()) { if (roomIsPlaying()) resumeWithRoom(); return; }   // can't start a paused room
+    video.play().catch(() => {});   // the 'play' listener tells the room
+  });
+  setHandler('pause', () => {
+    if (followsOnly()) return;   // keep watching with the room
+    video.pause();               // the 'pause' listener tells the room (and applies the Live TV cooldown)
+  });
+}
 
 // ── Force resync ───────────────────────────────────────────
 // Host: pause everyone and resume them together from the same spot. The server parks the room at the host's

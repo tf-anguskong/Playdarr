@@ -1535,6 +1535,18 @@ body {
 }
 .golive-player:hover { filter: brightness(1.1); }
 
+/* Picture in Picture, on the player (top-right corner; Go live sits just left of it when both show) */
+.pip-btn {
+  position: absolute; top: var(--ovl-top); right: 1rem; z-index: 52;
+  align-items: center; justify-content: center; width: 2.1rem; height: 2.1rem; padding: 0;
+  background: rgba(28, 28, 28, .85); color: var(--text); border: 1px solid rgba(255, 255, 255, .22); border-radius: 5px;
+  cursor: pointer; opacity: 0; transition: opacity 0.2s;
+}
+.player-container:hover .pip-btn, .pip-btn.is-active { opacity: 1; }
+.pip-btn:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
+.pip-btn.is-active { color: var(--pd-accent); border-color: var(--pd-accent); }
+.player-container.has-pip .golive-player { right: 3.6rem; }
+
 /* Admin settings */
 .set-group-title { font: 600 12px var(--pd-font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--pd-text-2); margin-bottom: 0.4rem; }
 .set-row { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; background: var(--pd-surface, var(--bg-card)); border: 1px solid var(--pd-border); border-radius: 6px; padding: 0.8rem 0.9rem; }
@@ -1604,7 +1616,7 @@ body {
 /* ── Touch screens have no hover: keep the on-player buttons visible ── */
 @media (hover: none) {
   .reaction-bar { opacity: .85; }
-  .guide-toggle-btn { opacity: 1; }
+  .guide-toggle-btn, .pip-btn { opacity: 1; }
 }
 
 /* ── Phones, portrait: player on top, sidebar (with chat first) underneath ── */

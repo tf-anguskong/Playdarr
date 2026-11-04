@@ -191,6 +191,11 @@
       <!-- Go live (livetv host, only while behind live) — same rule and action as the sidebar button -->
       <button id="livetv-golive-player" class="golive-player" type="button" style="display:none">● Go live</button>
 
+      <!-- Picture in Picture (shown only when the browser supports it and a video is on screen) -->
+      <button id="pip-btn" class="pip-btn" type="button" title="Picture in Picture" aria-label="Picture in Picture" style="display:none">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="12" y="11" width="7.5" height="6" rx="1" fill="currentColor"/></svg>
+      </button>
+
       <!-- Shown when browser blocks autoplay -->
       <div id="livetv-loading" class="livetv-loading" style="display:none">
         <div class="livetv-loading-card">
