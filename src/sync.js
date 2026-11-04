@@ -1,4 +1,4 @@
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
 const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr } = require('./live-relay');
@@ -261,6 +261,9 @@ function removePersistentRoom(defId) {
 }
 
 /** Point a room at a movie (host pick, or the winner of a vote). */
+// A playback position from a client: a finite, non-negative number of seconds, else null
+const validPosition = p => (typeof p === 'number' && Number.isFinite(p) && p >= 0 && p < 7 * 86400 ? p : null);
+
 function applyMovie(io, room, movieKey, movieTitle, partId) {
   clearRoomManifest(room.id); // Evict cached manifest so next request starts fresh
   room.movieKey = movieKey; room.movieTitle = movieTitle; room.partId = partId;
@@ -639,6 +642,22 @@ function setupSync(io, enabledRoomTypes) {
   io.on('connection', (socket) => {
     const user = socket.user;
 
+    // Every handler below runs untrusted client payloads. Socket.io dispatches them on process.nextTick,
+    // so one throw (e.g. `emit('play', null)` hitting `({ position })`) is an uncaught exception that
+    // kills the server and every in-memory room. Give handlers an object instead of null/undefined,
+    // and log (never rethrow) anything they throw or reject with.
+    const rawOn = socket.on.bind(socket);
+    socket.on = (event, handler) => rawOn(event, (...args) => {
+      if (!args.length) args = [undefined];
+      args = args.map(a => (a === null || a === undefined || typeof a !== 'object' ? (typeof a === 'function' ? a : {}) : a));
+      if (event === 'disconnect' || event === 'disconnecting') args = [];
+      const fail = err => console.error(`[Socket] "${event}" from ${user?.name || '?'} failed:`, err?.message || err);
+      try {
+        const r = handler(...args);
+        if (r && typeof r.catch === 'function') r.catch(fail);
+      } catch (err) { fail(err); }
+    });
+
     const isAdmin = !!user.isAdmin && !user.isGuest;
     if (isAdmin) socket.join('admins');
     socket.emit('room-list', roomListFor(isAdmin));
@@ -793,10 +812,16 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select movie (host only) ───────────────────────────
-    socket.on('select-movie', ({ movieKey, movieTitle, partId }) => {
+    // The browser only names the item; title and part are looked up in Plex (preloadRoom), so a host
+    // (who may be a guest in an always-on room) can't inject a title or point the room at another file.
+    socket.on('select-movie', async ({ movieKey } = {}) => {
       const room = socketToRoom.get(socket.id);
       if (!room || room.hostSocketId !== socket.id) return;
-      applyMovie(io, room, movieKey, movieTitle, partId);
+      const picked = {};
+      try { await preloadRoom(picked, { kind: 'movie', ratingKey: movieKey }); }
+      catch (err) { return socket.emit('error-msg', 'Could not load that movie from Plex'); }
+      if (room.hostSocketId !== socket.id) return;   // host changed while Plex answered
+      applyMovie(io, room, picked.movieKey, picked.movieTitle, picked.partId);
     });
 
     // ── Movie vote: swipe through a filtered deck, most-liked movie wins ──────────
@@ -853,38 +878,27 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select TV episode (host only, TV rooms) ────────────
-    socket.on('select-show', async ({ showKey, showTitle, seasonRatingKey, episodeRatingKey, episodeTitle, partId }) => {
+    // Only the episode key is taken from the browser; show, title, part and the episode list come from Plex.
+    socket.on('select-show', async ({ episodeRatingKey } = {}) => {
       const room = socketToRoom.get(socket.id);
       if (!room || room.hostSocketId !== socket.id) return;
       if (room.roomType !== 'tv') return;
+      const picked = {};
       try {
-        const episodes = await plex.getShowChildren(String(seasonRatingKey));
-        const episodeList = episodes.map(e => ({
-          ratingKey: String(e.ratingKey),
-          title: e.title,
-          index: e.index,
-          parentIndex: e.parentIndex
-        }));
-        const episodeIndex = episodeList.findIndex(e => e.ratingKey === String(episodeRatingKey));
-
-        clearRoomManifest(room.id);
-        room.tvShowKey      = String(showKey);
-        room.tvShowTitle    = showTitle;
-        room.tvEpisodeList  = episodeList;
-        room.tvEpisodeIndex = episodeIndex >= 0 ? episodeIndex : 0;
-        room.movieKey       = String(episodeRatingKey);
-        room.movieTitle     = formatEpisodeTitle(showTitle, episodeList[room.tvEpisodeIndex] || { title: episodeTitle, parentIndex: null, index: null });
-        room.partId         = String(partId);
-        room.playing        = false;
-        room.position       = 0;
-        room.lastUpdate     = Date.now();
-        console.log(`[Room] "${room.name}" → TV "${room.movieTitle}"`);
-        room.broadcastState(io);
-        broadcastRoomList(io);
+        await preloadRoom(picked, { kind: 'tv', ratingKey: episodeRatingKey });
       } catch (err) {
         console.error('[Room] select-show error:', err.message);
-        socket.emit('error-msg', 'Failed to load episode list');
+        return socket.emit('error-msg', 'Failed to load episode list');
       }
+      if (room.hostSocketId !== socket.id) return;
+      clearRoomManifest(room.id);
+      Object.assign(room, picked);   // tvShowKey/Title, tvEpisodeList/Index, movieKey, movieTitle, partId
+      room.playing    = false;
+      room.position   = 0;
+      room.lastUpdate = Date.now();
+      console.log(`[Room] "${room.name}" → TV "${room.movieTitle}"`);
+      room.broadcastState(io);
+      broadcastRoomList(io);
     });
 
     // ── Episode ended — advance to next (host only, TV rooms) ──
@@ -964,7 +978,7 @@ function setupSync(io, enabledRoomTypes) {
       if (room.resyncTimer) return;   // a resync is counting down; it will resume everyone itself
       if (!playPauseLimiter.allow(socket.id)) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
-      room.position = position ?? room.currentPosition();
+      room.position = validPosition(position) ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
       room.broadcast(io, 'chat', {
@@ -988,7 +1002,7 @@ function setupSync(io, enabledRoomTypes) {
         if (wait > 0) { socket.emit('pause-denied', { waitSec: Math.ceil(wait / 1000) }); return; }
       }
       if (room.roomType === 'livetv') room.lastPauseAt = Date.now();
-      room.position = position ?? room.currentPosition();
+      room.position = validPosition(position) ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
       room.broadcast(io, 'chat', {
@@ -1005,6 +1019,7 @@ function setupSync(io, enabledRoomTypes) {
       if (room.resyncTimer) return;
       if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
       if (!seekLimiter.allow(socket.id)) return;
+      if (validPosition(position) == null) return;
       room.position = position; room.lastUpdate = Date.now();
       room.broadcastState(io);
     });
@@ -1020,11 +1035,28 @@ function setupSync(io, enabledRoomTypes) {
         && data.videoTime >= 0 && data.videoTime < 86400)
         ? Math.floor(data.videoTime)
         : null;
+      // @name (or @everyone) tags viewers in this room; the client highlights and notifies them
+      const mentions = [];
+      const lower = trimmed.toLowerCase();
+      const mentionedAt = (name) => {
+        const needle = '@' + name.toLowerCase();
+        for (let i = lower.indexOf(needle); i !== -1; i = lower.indexOf(needle, i + 1)) {
+          const after = lower[i + needle.length];
+          if ((i === 0 || /\s|[(\[]/.test(lower[i - 1])) && (after === undefined || !/[\p{L}\p{N}_]/u.test(after))) return true;
+        }
+        return false;
+      };
+      if (mentionedAt('everyone') || mentionedAt('all')) {
+        for (const v of room.viewers.values()) mentions.push(v.socketId);
+      } else {
+        for (const v of room.viewers.values()) if (v.name && mentionedAt(v.name)) mentions.push(v.socketId);
+      }
       room.broadcast(io, 'chat', {
         name: user.displayName || user.name,
         text: trimmed,
         isGuest: user.isGuest || false,
-        videoTime
+        videoTime,
+        mentions
       });
     });
 

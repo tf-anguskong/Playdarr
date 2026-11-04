@@ -111,7 +111,7 @@ Notes:
 - With several GPUs, set `LIVETV_VAAPI_DEVICE=/dev/dri/renderD128` to pick one. Otherwise the first Intel or AMD device is used (NVIDIA cards are skipped; VAAPI can't use them).
 - If the GPU is missing or fails twice in a row with no output, Playdarr **logs a warning and falls back to software x264** automatically.
 - GPU encodes can look a touch softer at the same bitrate. Raise `LIVETV_VAAPI_BITRATE` (default `6M`) if you see blockiness.
-- NVIDIA/other encoders: use `LIVETV_VIDEO_ARGS`, e.g. `-c:v h264_nvenc -preset p4 -b:v 6M`, and pass the GPU to Docker your own way.
+- NVIDIA/other encoders: use `LIVETV_VIDEO_ARGS`, e.g. `-c:v h264_nvenc -preset p4 -b:v 6M`, and pass the GPU to Docker your own way. Only video-encoder options with one value each are accepted; if yours is refused, the log says `[HDHR] Ignoring LIVETV_VIDEO_ARGS: …` and names the option.
 - Tested with an Intel iGPU (iHD driver) in a Proxmox LXC. AMD is wired the same way but has not been tested.
 
 ### Proxmox LXC

@@ -1583,3 +1583,78 @@ body {
 .resync-title { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--pd-accent); }
 .resync-count { font-size: 54px; font-weight: 700; line-height: 1.1; color: var(--pd-text); margin: 0.2rem 0; }
 .resync-by { font-size: 11px; color: var(--pd-text-muted); min-height: 1em; }
+
+/* ── @mentions in chat ── */
+.chat-input-row { position: relative; }
+.mention-box {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); z-index: 20;
+  flex-direction: column; background: var(--pd-bg-elevated, var(--bg-card)); border: 1px solid var(--pd-border-strong, var(--border));
+  border-radius: 6px; overflow: hidden; box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+}
+.mention-opt {
+  background: none; border: 0; text-align: left; color: var(--pd-text-2, var(--text)); cursor: pointer;
+  padding: 0.45rem 0.7rem; font: 500 12px var(--pd-font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mention-opt:hover, .mention-opt.active { background: var(--pd-accent-tint-2, rgba(240, 165, 0, .15)); color: var(--pd-accent); }
+.chat-mention-tag { color: var(--pd-accent); font-weight: 600; background: var(--pd-accent-tint-2, rgba(240, 165, 0, .15)); border-radius: 3px; padding: 0 0.15rem; }
+.chat-msg-mention { border-left: 2px solid var(--pd-accent); background: var(--pd-accent-tint-2, rgba(240, 165, 0, .08)); padding-left: 0.4rem; border-radius: 0 4px 4px 0; }
+.viewer-item[data-name] .viewer-name-wrap { cursor: pointer; }
+.viewer-item[data-name] .viewer-name-wrap:hover { color: var(--pd-accent); }
+
+/* ── Touch screens have no hover: keep the on-player buttons visible ── */
+@media (hover: none) {
+  .reaction-bar { opacity: .85; }
+  .guide-toggle-btn { opacity: 1; }
+}
+
+/* ── Phones, portrait: player on top, sidebar (with chat first) underneath ── */
+@media (max-width: 760px) and (orientation: portrait) {
+  .watch-layout { flex-direction: column; }
+  .player-container { order: -1; flex: 0 0 auto; width: 100%; aspect-ratio: 16 / 9; max-height: 46dvh; --ovl-top: 0.45rem; --guide-top: 3rem; }
+  .sidebar.collapsed ~ .player-container { flex: 1 1 0; aspect-ratio: auto; max-height: none; }
+  .sidebar {
+    width: 100%; flex: 1 1 0; min-height: 0; border-right: 0; border-top: 1px solid var(--pd-border, var(--border));
+    padding: 0.7rem 0.9rem calc(0.9rem + env(safe-area-inset-bottom)); gap: 0.85rem;
+  }
+  .sidebar.collapsed { width: 100%; flex: 0 0 0; height: 0; padding: 0; border-top-color: transparent; }
+  /* chat right under the title, the host tools and the rest below it */
+  .sidebar-header { order: -5; }
+  .sidebar-room-name { order: -4; }
+  .sidebar-title, .btn-choose-movie, #livetv-info, #yt-controls-section { order: -3; }
+  .chat-section { order: -2; flex: 0 0 auto; height: 40dvh; min-height: 220px; }
+  .sidebar-back, .sidebar-collapse-btn { padding: 0.4rem 0.2rem; font-size: 0.95rem; }
+  .btn-choose-movie, .btn-chat-send, .btn-sidebar-action, .btn-resync, .btn-countdown-preset { min-height: 40px; }
+  .chat-input { font-size: 16px; padding: 0.55rem 0.65rem; }   /* 16px stops iOS zooming the page when the field is focused */
+  .btn-chat-send { padding: 0.3rem 1rem; }
+  .chat-messages { font-size: 0.9rem; }
+  .sidebar-text-input, .countdown-custom-input { font-size: 16px; }
+  .viewer-item { padding: 0.15rem 0; }
+  .btn-make-host, .btn-kick { padding: 0.35rem 0.6rem; }
+  /* player furniture, scaled for a small picture */
+  .reaction-bar { padding: 0.2rem 0.4rem; gap: 0.1rem; }
+  .reaction-btn { font-size: 1.15rem; padding: 0.15rem; }
+  .guide-toggle-btn, .golive-player { padding: 0.35rem 0.6rem; font-size: 11px; }
+  .guide-panel { height: 170px; }
+  .floating-reaction { bottom: 3rem; font-size: 1.8rem; }
+  .notif-area { bottom: 0.5rem; right: 0.5rem; left: 0.5rem; max-width: none; align-items: flex-end; }
+  .intermission-card { gap: 1rem; padding: 1rem; }
+  .intermission-poster, .intermission-poster-placeholder { display: none; }
+  .intermission-timer { font-size: 2.2rem; }
+  .resync-count { font-size: 36px; }
+  .sidebar-expand-btn { height: 44px; }
+}
+
+/* ── Phones everywhere else (lobby, admin, pickers) ── */
+@media (max-width: 640px) {
+  .header { padding: 0.7rem 0.9rem; }
+  .header-right { gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+  .rooms-grid { grid-template-columns: 1fr; gap: 0.9rem; }
+  .movies-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 0.7rem; }
+  .modal { padding: 1.1rem; max-width: 100%; max-height: 92dvh; overflow-y: auto; }
+  .modal-wide { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; padding: 0.9rem; }
+  .modal-overlay { padding: 0; }
+  .browser-toolbar { flex-wrap: wrap; gap: 0.5rem; }
+  .toolbar-filters { flex-wrap: wrap; width: 100%; }
+  .toolbar-filters .search-input, .toolbar-filters .filter-select { flex: 1 1 100%; font-size: 16px; }
+  .search-input, .filter-select { font-size: 16px; }
+}

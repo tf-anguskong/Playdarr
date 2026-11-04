@@ -96,6 +96,7 @@ function clearRoomManifest(roomId) {
   for (const key of manifestPending.keys()) {
     if (key.startsWith(roomId + '-')) manifestPending.delete(key);
   }
+  roomTranscodeSessions.delete(roomId);
 }
 
 
@@ -198,6 +199,14 @@ async function callPlexStartM3u8({ plexBaseUrl, plexToken, sessionId, ratingKey,
 router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   const { roomId, ratingKey } = req.params;
   if (!/^[\w-]+$/.test(ratingKey)) return res.status(400).send('Invalid ratingKey');
+  // Guests: only their own room, only what it is playing, and never the Plex Live TV path
+  // (bust+live would retune the room's channel; the guest player never uses it)
+  const gRoom = guestRoom(req);
+  if (gRoom !== undefined) {
+    if (!gRoom || gRoom.id !== roomId || req.query.live || String(gRoom.movieKey) !== ratingKey) {
+      return res.status(403).send('Not playing in your room');
+    }
+  }
   let actualRatingKey = ratingKey; // may be updated by bust+retune below
   let cacheKey        = `${roomId}-${ratingKey}`;
 
@@ -306,6 +315,7 @@ router.get('/hls/:roomId/:ratingKey/master.m3u8', async (req, res) => {
   try {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
+    rememberTranscodeSessions(roomId, manifest);
     activeSessions.set(cacheKey, { sessionId, ratingKey: actualRatingKey, isLive, plexBaseUrl, plexToken, playbackSessionId, bgSessionId });
     startKeepalive(cacheKey, sessionId, actualRatingKey, isLive, plexBaseUrl, plexToken, roomId);
     manifestPending.delete(cacheKey);
@@ -335,6 +345,7 @@ async function prewarmManifest(roomId, ratingKey, isLive = false) {
   try {
     const manifest = await promise;
     manifestCache.set(cacheKey, { manifest, cachedAt: Date.now() });
+    rememberTranscodeSessions(roomId, manifest);
     activeSessions.set(cacheKey, { sessionId, ratingKey, isLive: false, plexBaseUrl, plexToken });
     startKeepalive(cacheKey, sessionId, ratingKey, false, plexBaseUrl, plexToken);
     manifestPending.delete(cacheKey);
@@ -345,7 +356,58 @@ async function prewarmManifest(roomId, ratingKey, isLive = false) {
 }
 
 // Only transcode segments/manifests and direct-play part files are valid proxy targets.
+// Checked against the *resolved* URL pathname (see resolveProxyUrl), never the raw request path.
 const ALLOWED_PROXY_PATH = /^\/(video\/:\/transcode\/universal\/|library\/parts\/)/;
+// Guests only ever need the segments/sub-manifests of a transcode their room started
+const GUEST_PROXY_PATH = /^\/video\/:\/transcode\/universal\/session\/([^/]+)\//;
+
+/**
+ * Resolve the proxied Plex URL exactly the way axios will (WHATWG URL parsing, which collapses
+ * `..`, `%2e%2e` and friends) and return it only if it is still on the Plex host and inside the
+ * allow-list. Testing the raw path let `…/universal/..%2F..%2F..%2F..%2Fmyplex/account` reach any
+ * Plex endpoint with the server token.
+ */
+function resolveProxyUrl(plexBaseUrl, rawPath) {
+  try {
+    const base   = new URL(plexBaseUrl);
+    const target = new URL(plexBaseUrl.replace(/\/+$/, '') + '/' + rawPath);
+    if (target.origin !== base.origin) return null;
+    if (/\\|%2e|%2f|%5c/i.test(target.pathname)) return null;   // leftover encoded dots/slashes: refuse outright
+    if (!ALLOWED_PROXY_PATH.test(target.pathname)) return null;
+    target.search = '';   // query is rebuilt from filterProxyParams
+    target.hash = '';
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+// ── Guest scoping ──────────────────────────────────────────
+// A guest session is only good for the room its invite token points at, and only for what that
+// room is playing. Plex users are authenticated against this server and may browse it anyway.
+const roomTranscodeSessions = new Map(); // roomId → Set of Plex transcode session ids its manifests use
+
+function rememberTranscodeSessions(roomId, manifest) {
+  const re = /\/video\/:\/transcode\/universal\/session\/([^/]+)\//g;
+  let set = roomTranscodeSessions.get(roomId);
+  if (!set) roomTranscodeSessions.set(roomId, set = new Set());
+  for (let m; (m = re.exec(manifest));) set.add(m[1]);
+}
+
+function guestRoom(req) {
+  const user = req.session?.user;
+  if (!user?.isGuest) return undefined;               // not a guest: no restriction
+  const { getRoomByInviteToken } = require('../sync'); // lazy: sync.js requires this module
+  return (user.inviteToken && getRoomByInviteToken(user.inviteToken)) || null;
+}
+
+function guestDenied(req, res, roomId) {
+  const room = guestRoom(req);
+  if (room === undefined) return false;
+  if (room && room.id === roomId) return false;
+  res.status(403).send('Not your room');
+  return true;
+}
 
 // Strip any query params that could be used for open redirect or SSRF manipulation
 const BLOCKED_PROXY_PARAMS = new Set(['redirect', 'url', 'callback', 'next', 'forward', 'dest', 'destination', 'return', 'returnurl', 'returnto']);
@@ -364,6 +426,7 @@ function filterProxyParams(query) {
 // that never expires, and Plex sees continuous consumption.
 router.get('/live/:roomId/index.m3u8', (req, res) => {
   const { roomId } = req.params;
+  if (guestDenied(req, res, roomId)) return;
   const dvr = liveRelay.getDvr(roomId);
   if (!dvr) {
     console.log(`[LiveHTTP] ${roomId}: playlist 503 (no DVR) for ${req.session?.user?.name}`);
@@ -394,6 +457,7 @@ router.post('/live-log', (req, res) => {
 
 router.get('/live/:roomId/:segment', (req, res) => {
   const { roomId, segment } = req.params;
+  if (guestDenied(req, res, roomId)) return;
   if (!/^[\w.-]+$/.test(segment)) return res.status(400).send('Bad segment name');
   const dvr = liveRelay.getDvr(roomId);
   if (!dvr) return res.status(404).send('Relay not active');
@@ -409,10 +473,16 @@ router.get('/live/:roomId/:segment', (req, res) => {
 
 // ── General Plex proxy (HLS/DASH segments & sub-manifests) ──────
 async function handleProxy(req, res, plexBaseUrl, plexToken, proxyPrefix) {
-  const plexPath = '/' + req.params[0];
+  const target = resolveProxyUrl(plexBaseUrl, req.params[0]);
+  if (!target) return res.status(403).send('Forbidden');
+  const plexPath = target.pathname;
 
-  if (!ALLOWED_PROXY_PATH.test(plexPath)) {
-    return res.status(403).send('Forbidden');
+  const room = guestRoom(req);
+  if (room !== undefined) {
+    const sid = GUEST_PROXY_PATH.exec(plexPath)?.[1];
+    if (!room || !sid || !roomTranscodeSessions.get(room.id)?.has(sid)) {
+      return res.status(403).send('Forbidden');
+    }
   }
 
   const looksLikeM3u8 =
@@ -421,7 +491,7 @@ async function handleProxy(req, res, plexBaseUrl, plexToken, proxyPrefix) {
   try {
     const response = await axios({
       method: 'GET',
-      url: `${plexBaseUrl}${plexPath}`,
+      url: target.toString(),
       params: { ...filterProxyParams(req.query), 'X-Plex-Token': plexToken },
       responseType: 'stream',
       timeout: 5 * 60 * 1000,

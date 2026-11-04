@@ -2,11 +2,8 @@
 
 const socket = io();
 
-const esc = (s = '') => {
-  const d = document.createElement('div');
-  d.appendChild(document.createTextNode(String(s)));
-  return d.innerHTML;
-};
+// Escapes for text *and* attribute values (quotes included)
+const esc = (s = '') => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
 
 async function api(method, url, body) {

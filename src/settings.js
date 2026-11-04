@@ -15,6 +15,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const { parseVideoArgs } = require('./ffmpeg-args');
 
 const dataPath = process.env.DATA_PATH || '/data';
 const FILE     = path.join(dataPath, 'settings.json');
@@ -91,8 +92,8 @@ const DEFS = [
     label: 'Hardware video bitrate', description: 'The target bitrate when encoding on the graphics chip, for example 6M.',
     validate: v => { if (!BITRATE.test(v)) throw new Error('Use a number with an optional K or M, for example 6M'); } },
   { id: 'videoArgs', group: 'hardware', env: 'LIVETV_VIDEO_ARGS', type: 'text', default: '', maxLength: 300, advanced: true, placeholder: '-c:v h264_nvenc -preset p4 -b:v 6M',
-    label: 'Custom encoder options (advanced)', description: 'Replace the video encoder options completely, for example to use an NVIDIA GPU. Leave empty unless you know you need it.',
-    validate: v => { if (/[\r\n;|&`$<>]/.test(v)) throw new Error('Those characters are not allowed'); } },
+    label: 'Custom encoder options (advanced)', description: 'Replace the video encoder options completely, for example to use an NVIDIA GPU. Only video encoder options (such as -c:v, -preset, -b:v, -maxrate) are accepted, each followed by one value. Leave empty unless you know you need it.',
+    validate: v => { parseVideoArgs(v); } },   // allow-listed encoder options only (ffmpeg-args.js)
 
   // ── Server connection (read-only) ──
   { id: 'plexUrl',     group: 'server', env: 'PLEX_URL',      type: 'info', urlHost: true, label: 'Plex server address', description: 'Where Playdarr reaches your Plex server. Use its address on your own network, not your public domain.' },
@@ -133,6 +134,9 @@ const editable = d => d.type !== 'info' && d.type !== 'secret';
       for (const [id, value] of Object.entries(saved || {})) {
         const d = byId.get(id);
         if (!d || !editable(d) || typeof value !== 'string') continue;
+        // Re-check saved values with today's rules, so one saved before a rule was tightened can't slip in
+        try { normalize(d, value); }
+        catch (err) { console.warn(`[Settings] Ignoring saved "${d.label}": ${err.message}`); continue; }
         overrides[id] = value;
         if (!lockedByEnv.has(id)) process.env[d.env] = value;   // .env wins
       }

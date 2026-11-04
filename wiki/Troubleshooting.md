@@ -14,6 +14,7 @@ docker compose logs | grep -E "Auth|Webhooks|Scheduler|Room|Vote|HDHR"
 |---|---|
 | Sign in "works" then returns to the login page | `COOKIE_SECURE=true` while using plain `http://`, or the reverse. Match `COOKIE_SECURE` to how you actually serve the site, then recreate the container |
 | `…/login?error=access` | That Plex account doesn't have access to **your** server. Share the library with them in Plex, or check `PLEX_URL` points at the right server |
+| `…/login?error=auth` right after approving in Plex | The sign-in finished in a different browser, or on a different address, from where it started (the PIN is tied to the browser's cookie). Start from your `APP_URL` address. If `APP_URL` is right and it still happens, check the reverse proxy passes the `Host` header through |
 | `…/login?error=plex` or `error=no_token` | Playdarr couldn't reach plex.tv, or the sign-in wasn't completed. Check outbound internet from the container and try again |
 | Server won't start: "SESSION_SECRET … at least 32 characters" | Set a longer `SESSION_SECRET` |
 | Server won't start: "PLEX_CLIENT_ID env var must be set" | Add any stable string as `PLEX_CLIENT_ID` |

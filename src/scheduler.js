@@ -2,7 +2,7 @@
 
 const fs   = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const { addLocalDays } = require('./timeutil');
 const { RECURRENCE } = require('./ical');
 
