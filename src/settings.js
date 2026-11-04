@@ -85,7 +85,7 @@ const DEFS = [
 
   // ── Capacity ──
   { id: 'maxLiveTvRooms', group: 'capacity', env: 'LIVETV_MAX_ROOMS', type: 'int', default: 2, min: 1, max: 32,
-    label: 'Most Live TV rooms at once', description: 'How many Live TV rooms can stream at the same time. Each one uses a tuner and an encoder, so keep this at or below your tuner count.' },
+    label: 'Most Live TV channels at once', description: 'How many Live TV channels can stream at the same time, across all rooms. A room normally uses one; a split-view room uses one per channel on screen (up to 4). Each channel holds a tuner, so keep this at or below your tuner count.' },
   { id: 'pauseCooldown', group: 'capacity', env: 'LIVETV_PAUSE_COOLDOWN_SEC', type: 'int', default: 10, min: 0, max: 120, unit: 'seconds',
     label: 'Live TV pause cooldown', description: 'How long to wait before a Live TV room can be paused again. Stops rapid play/pause from disrupting the stream. 0 turns it off.' },
   { id: 'bufferSec', group: 'capacity', env: 'LIVETV_BUFFER_SEC', type: 'int', default: 10, min: 4, max: 60, unit: 'seconds',

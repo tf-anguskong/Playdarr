@@ -253,7 +253,7 @@ async function loadLiveNow() {
     ]);
     const full = !!cap && cap.inUse >= cap.max;
     const capEl = document.getElementById('livenow-cap');
-    capEl.textContent = cap ? (full ? `full · ${cap.inUse} of ${cap.max} rooms in use` : `${cap.inUse} of ${cap.max} rooms in use`) : '';
+    capEl.textContent = cap ? (full ? `full · ${cap.inUse} of ${cap.max} tuners in use` : `${cap.inUse} of ${cap.max} tuners in use`) : '';
     capEl.classList.toggle('is-full', full);
     const live = channels.filter(c => c.nowPlaying);
     const main = c => (/\.1$/.test(c.number) ? 0 : 1);

@@ -657,8 +657,10 @@ function applyLiveTvState(state) {
 
   // Only reload the HLS player when the channel itself changes (not on retune,
   // which keeps the same DVR — the relay URL and timeline are stable).
-  if (state.movieKey && state.liveTvChannel !== currentLiveTvChannel) {
-    currentLiveTvChannel = state.liveTvChannel;
+  // liveTvKey names every channel on screen, so a split-view change to any tile reloads too.
+  const liveKey = state.liveTvKey || state.liveTvChannel;
+  if (state.movieKey && liveKey !== currentLiveTvChannel) {
+    currentLiveTvChannel = liveKey;
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
     loadLiveTvRelay(targetTime, state.playing);
     return;

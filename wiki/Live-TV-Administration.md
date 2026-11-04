@@ -42,16 +42,17 @@ If `HDHR_IP` is unset, or `LIVETV_SOURCE=plex`, Playdarr falls back to tuning th
 
 ## Limiting how many rooms stream: `LIVETV_MAX_ROOMS`
 
-`LIVETV_MAX_ROOMS` is the most Live TV rooms that can be streaming at the same time. **The default is 2.** Set it in `.env` (and recreate the container) to match your hardware:
+`LIVETV_MAX_ROOMS` is the most Live TV **channels** that can be streaming at the same time, across all rooms. **The default is 2.** A room normally streams one channel; a room in split view streams one per channel on screen. Set it in `.env` (and recreate the container) to match your hardware:
 
 ```env
 LIVETV_MAX_ROOMS=3
 ```
 
-- **What counts:** a Live TV room is "in use" while it is **recording or tuning**, because that's what holds a tuner and an encoder. A room that is merely open, such as an empty [always-on room](Always-On-Rooms) or a Live TV room nobody has picked a channel in yet, costs nothing and doesn't count.
-- **When it's full:** starting another Live TV room is refused with *"Live TV is full right now (2 of 2 rooms in use). Try again when one ends."* In an always-on room, the host who tries to tune a channel gets the same message. Changing channel inside a room that's already streaming is always allowed. It isn't a second slot.
+- **What counts:** a Live TV room uses its tuners while it is **recording or tuning**. A room that is merely open, such as an empty [always-on room](Always-On-Rooms) or a Live TV room nobody has picked a channel in yet, costs nothing and doesn't count.
+- **When it's full:** starting another Live TV room is refused with *"Live TV is full right now (2 of 2 tuners in use). Try again when one ends."* In an always-on room, the host who tries to tune a channel gets the same message. Changing channel inside a room that's already streaming is always allowed, since it swaps one channel for another. Adding a split-view tile needs a free tuner (*"Not enough Live TV tuners free for 3 channels"*).
+- **Seamless or not:** when there are enough tuners for the old and new channels at once, a channel change keeps the old one playing until the new one is ready. Otherwise (usually in split view) the old recording stops first and the room shows the tuning screen for a few seconds.
 - **Other room types** (movies, TV, YouTube) are unaffected.
-- **In the lobby**, the *Live TV · on now* row shows how many rooms are in use ("1 of 2 rooms in use"), and its cards are greyed out and disabled while it's full. People can still join Live TV rooms that are already open.
+- **In the lobby**, the *Live TV · on now* row shows how many tuners are in use ("1 of 2 tuners in use"), and its cards are greyed out and disabled while it's full. People can still join Live TV rooms that are already open.
 - **Pick a sensible number:** at most your tuner count (a 4-tuner HDHomeRun means 4), and fewer if your CPU can't encode that many at once. See the capacity table below.
 
 ## Pause cooldown: `LIVETV_PAUSE_COOLDOWN_SEC`

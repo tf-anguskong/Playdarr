@@ -1,7 +1,7 @@
 const { randomUUID: uuidv4 } = require('crypto');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
-const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr } = require('./live-relay');
+const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, SPLIT_MAX } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 const wordfilter = require('./wordfilter');
@@ -63,6 +63,10 @@ class Room {
     this.liveTvChannelTitle = null;  // e.g. 'KIRO/CBS'
     this.liveTvChannelId    = null;  // DVR channel ID for re-tuning
     this.liveTvSubKey       = null;  // Plex MediaSubscription key for current tune
+    // Every channel on screen, in tile order: [{ channel, title, channelId }]. One entry normally; 2–4 is
+    // split view. liveTvChannel / Title / Id above always mirror the first one (lobby, link previews).
+    this.liveTvChannels     = [];
+    this.liveTvPrograms     = [];    // what's on each of them (guide), same order
     this.retuning           = false; // guard against concurrent retunes
     this.movieKey       = null;
     this.movieTitle     = null;
@@ -98,6 +102,10 @@ class Room {
       hasNextEpisode: this.roomType === 'tv' && this.tvEpisodeIndex < this.tvEpisodeList.length - 1,
       liveTvChannel:      this.liveTvChannel,
       liveTvChannelTitle: this.liveTvChannelTitle,
+      // Changes whenever the set of channels does (the player reloads the stream on it)
+      liveTvKey: this.liveTvChannels.length ? this.liveTvChannels.map(c => c.channel).join('+') : this.liveTvChannel,
+      liveTvSplit: this.roomType === 'livetv' ? splitState(this) : null,
+      liveTvSplitMax: this.roomType === 'livetv' ? liveSplitMax() : 0,
       liveTuning: this.roomType === 'livetv' ? (this.liveTuning || null) : null,
       liveTvProgram: this.roomType === 'livetv' ? (this.liveTvProgram || null) : null,
       liveDvr: this.roomType === 'livetv' ? (getDvr(this.id)?.info() || null) : null,
@@ -232,8 +240,9 @@ function resetPersistentRoom(io, room) {
   if (room.roomType === 'livetv') {
     stopRelay(room.id);
     clearRoomManifest(room.id);
-    room.liveTvChannel = room.liveTvChannelTitle = room.liveTvChannelId = room.liveTvSubKey = room.liveTvSource = null;
-    room.liveTuning = null; room.liveTvProgram = null; room._tuningInProgress = false; room.retuning = false;
+    setLiveChannels(room, []);
+    room.liveTvSubKey = room.liveTvSource = null;
+    room.liveTuning = null; room._tuningInProgress = false; room.retuning = false;
     room.movieKey = null;
     const ch = room.persistentChannel;
     room.pendingChannel = ch ? { ...ch } : null;
@@ -374,7 +383,8 @@ const bufferFromEnv = () => Math.max(4, Math.min(60, parseInt(process.env.LIVETV
 let HDHR_START_BEHIND_SEC = bufferFromEnv();
 settings.onChange('bufferSec', () => { HDHR_START_BEHIND_SEC = bufferFromEnv(); });
 
-// How many Live TV rooms may be streaming at once. Each one holds a tuner and an encoder, so this is the
+// How many Live TV channels may be streaming at once, across all rooms (a split-view room counts each tile).
+// Each one holds a tuner and its share of the encoder, so this is the
 // server's Live TV capacity. LIVETV_MAX_ROOMS (a whole number, 1 or more); default 2.
 const maxRoomsFromEnv = () => {
   const raw = process.env.LIVETV_MAX_ROOMS;
@@ -386,10 +396,10 @@ const maxRoomsFromEnv = () => {
   return Number.isInteger(n) && n >= 1 ? n : 2;
 };
 let LIVETV_MAX_ROOMS = maxRoomsFromEnv();
-console.log(`[LiveTV] Live TV capacity: ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} at a time`);
+console.log(`[LiveTV] Live TV capacity: ${LIVETV_MAX_ROOMS} channel${LIVETV_MAX_ROOMS === 1 ? "" : "s"} at a time`);
 settings.onChange('maxLiveTvRooms', () => {
   LIVETV_MAX_ROOMS = maxRoomsFromEnv();
-  console.log(`[LiveTV] Live TV capacity changed: ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} at a time`);
+  console.log(`[LiveTV] Live TV capacity changed: ${LIVETV_MAX_ROOMS} channel${LIVETV_MAX_ROOMS === 1 ? "" : "s"} at a time`);
 });
 
 /**
@@ -409,17 +419,58 @@ const pauseCooldownMs = () => {
   return (Number.isFinite(n) ? Math.max(0, Math.min(120, n)) : 10) * 1000;
 };
 
+// Live TV capacity is counted in *channels* (each holds a tuner and its share of the encoder): a normal room
+// holds one, a split-view room one per tile. LIVETV_MAX_ROOMS is the most channels streaming at once.
+/** Tuners a Live TV room holds right now (mid-tune: what that tune was allowed to take). */
+function liveTvSlots(r) {
+  if (r.roomType !== 'livetv') return 0;
+  if (r._tuningInProgress) return r._tuningSlots || 1;
+  return (getDvr(r.id) || getRelay(r.id)) ? Math.max(1, r.liveTvChannels.length) : 0;
+}
 function liveTvInUse(except = null) {
   let n = 0;
-  for (const r of rooms.values()) {
-    if (r.roomType !== 'livetv' || r === except) continue;
-    if (r._tuningInProgress || getDvr(r.id) || getRelay(r.id)) n++;
-  }
+  for (const r of rooms.values()) if (r !== except) n += liveTvSlots(r);
   return n;
 }
 const liveTvCapacity = () => ({ max: LIVETV_MAX_ROOMS, inUse: liveTvInUse() });
-const liveTvFullMessage = (inUse) =>
-  `Live TV is full right now (${inUse} of ${LIVETV_MAX_ROOMS} room${LIVETV_MAX_ROOMS === 1 ? '' : 's'} in use). Try again when one ends.`;
+const liveTvFullMessage = (inUse, wanted = 1) => wanted > 1
+  ? `Not enough Live TV tuners free for ${wanted} channels (${inUse} of ${LIVETV_MAX_ROOMS} in use).`
+  : `Live TV is full right now (${inUse} of ${LIVETV_MAX_ROOMS} tuner${LIVETV_MAX_ROOMS === 1 ? '' : 's'} in use). Try again when one ends.`;
+
+/** Most channels one room may tile (split view). Needs the HDHomeRun source; capped by capacity. */
+const liveSplitMax = () => hdhrEnabled() ? Math.min(SPLIT_MAX, LIVETV_MAX_ROOMS) : 1;
+
+/** Point a room at a set of channels ([{ channel, channelTitle|title, channelId }]); [] clears it. */
+function setLiveChannels(room, list) {
+  room.liveTvChannels = list.map(c => ({
+    channel: String(c.channel || '').slice(0, 20),
+    title: sanitizeText(String(c.channelTitle || c.title || c.channel || '').slice(0, 60)),
+    channelId: c.channelId,
+  }));
+  const first = room.liveTvChannels[0];
+  room.liveTvChannel      = first ? first.channel : null;
+  room.liveTvChannelTitle = first ? first.title : null;
+  room.liveTvChannelId    = first ? first.channelId : null;
+  room.liveTvPrograms     = room.liveTvChannels.map(() => null);
+  room.liveTvProgram      = null;
+}
+
+/** Split view for state(): each tile's channel, what's on, and where it sits (fractions of the picture). */
+function splitState(room) {
+  const n = room.liveTvChannels.length;
+  if (n < 2) return null;
+  const full = splitLayout(1)[0];
+  return splitLayout(n).map((t, i) => ({
+    slot: i,
+    channel: room.liveTvChannels[i].channel,
+    title: room.liveTvChannels[i].title,
+    program: room.liveTvPrograms[i] || null,
+    x: t.x / full.w, y: t.y / full.h, w: t.w / full.w, h: t.h / full.h,
+  }));
+}
+
+/** The room's channels in the shape tuneRoomChannels takes. */
+const currentChannelList = room => room.liveTvChannels.map(c => ({ channel: c.channel, channelTitle: c.title, channelId: c.channelId }));
 const SEGMENT_SECS = 2;
 const reactionLimiter      = makeSocketRateLimiter(5, 2000);  // 5 reactions / 2s
 const seekLimiter          = makeSocketRateLimiter(15, 2000); // 15 seeks / 2s (scrubbing)
@@ -480,34 +531,53 @@ async function preloadLiveTv(room, { channel } = {}) {
  * Returns an error string for the caller to show, or nothing on success. Failures after the tune starts
  * are also broadcast to the room as 'livetv-tune-failed'.
  */
-async function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
-  // Validate channelId is not empty (Plex may return numeric or string IDs)
-  if (!channelId || !String(channelId).trim()) return 'Invalid channelId';
+function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
+  return tuneRoomChannels(io, room, [{ channel, channelTitle, channelId }]);
+}
+
+/**
+ * Tune a Live TV room to one channel, or (split view, HDHomeRun only) 2–liveSplitMax() channels tiled into
+ * one picture, each with its own audio track. Any change to the set re-records everything into a fresh DVR.
+ */
+async function tuneRoomChannels(io, room, list) {
+  if (!Array.isArray(list) || !list.length) return 'No channel given';
+  // Validate channelIds are not empty (Plex may return numeric or string IDs)
+  if (list.some(c => !c || !c.channelId || !String(c.channelId).trim())) return 'Invalid channelId';
+  const split = list.length > 1;
+  if (split && !hdhrEnabled()) return 'Split view needs the HDHomeRun tuner source';
+  if (list.length > liveSplitMax()) return `At most ${liveSplitMax()} channels can be shown at once`;
 
   // Prevent concurrent tune requests (rate limit on channel switching)
   if (room._tuningInProgress) return 'Channel change in progress';
 
-  // Capacity: this room taking a slot must not push the server past LIVETV_MAX_ROOMS. (No await between this
+  // Capacity: this room's channels must not push the server past LIVETV_MAX_ROOMS. (No await between this
   // check and setting _tuningInProgress, so two rooms can't both squeeze in.)
   const others = liveTvInUse(room);
-  if (others >= LIVETV_MAX_ROOMS) {
-    const message = liveTvFullMessage(others);
+  if (others + list.length > LIVETV_MAX_ROOMS) {
+    const message = liveTvFullMessage(others, list.length);
     room.broadcast(io, 'livetv-tune-failed', { message });
     return message;
   }
+  // Normally the old recording keeps playing until the new one is ready (a seamless switch). That holds
+  // the old tuners as well as the new ones, so when there aren't enough for both — the usual case for
+  // split view — the old recording is stopped first and the room shows the tuning overlay meanwhile.
+  const held = liveTvSlots(room);
+  const overlap = others + held + list.length <= LIVETV_MAX_ROOMS;
   room._tuningInProgress = true;
+  room._tuningSlots = overlap ? held + list.length : list.length;
   room.lastPauseAt = 0;
   const gen = room._tuneGen || 0;
   // True once the room was closed, or reset (always-on) while we were still tuning
   const stale = () => rooms.get(room.id) !== room || (room._tuneGen || 0) !== gen;
+  const label = list.map(c => String(c.channel || '').slice(0, 20)).join(' + ');
 
   // Tell everyone a channel is being tuned so their players can show progress while the DVR
   // records its first seconds. recorded/needed are DVR seconds (needed is null = unknown).
   const tuneNeeded = hdhrEnabled() ? HDHR_START_BEHIND_SEC + SEGMENT_SECS : null;
   const setTuning = (recorded) => {
     room.liveTuning = {
-      channel: String(channel || '').slice(0, 20),
-      title: sanitizeText((channelTitle || channel || '').slice(0, 60)),
+      channel: label.slice(0, 60),
+      title: sanitizeText(list.map(c => c.channelTitle || c.channel || '').join(' + ').slice(0, 120)),
       recorded, needed: tuneNeeded,
     };
     room.broadcast(io, 'livetv-tuning', room.liveTuning);
@@ -515,34 +585,33 @@ async function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
   setTuning(0);
 
   clearRoomManifest(room.id);
+  let stoppedOld = false;
+  if (!overlap && held) { stopRelay(room.id); stoppedOld = true; }
   try {
     if (hdhrEnabled()) {
       // Straight from the HDHomeRun via ffmpeg — Plex is only used for the guide.
-      await startHdhr(room.id, { channel, readySec: tuneNeeded, onProgress: (rec) => { if (!stale()) setTuning(rec); } });
+      const names = list.map(c => `${c.channel} ${c.channelTitle || ''}`.trim());
+      await startHdhr(room.id, { channels: list.map(c => c.channel), names, readySec: tuneNeeded, onProgress: (rec) => { if (!stale()) setTuning(rec); } });
       if (stale()) { stopRelay(room.id); return; }
-      room.liveTvChannel      = String(channel || '').slice(0, 20);
-      room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
-      room.liveTvChannelId    = channelId;
+      setLiveChannels(room, list);
       room.liveTvSubKey       = null;
       room.liveTvSource       = 'hdhr';
-      room.movieKey           = `hdhr-${room.liveTvChannel}`;
+      room.movieKey           = `hdhr-${room.liveTvChannels.map(c => c.channel).join('+')}`;
       const d = getDvr(room.id)?.info() || { start: 0, edge: 0 };
       room.position   = Math.max(d.start, d.edge - HDHR_START_BEHIND_SEC);
       room.playing    = true;
       room.lastUpdate = Date.now();
-      room.liveTvProgram = null;
       room.broadcastState(io);
       refreshLiveTvProgram(room, io);
-      console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} via HDHomeRun`);
+      console.log(`[Room] "${room.name}" → Live TV channel${split ? 's' : ''} ${label} via HDHomeRun${split ? ' (split view)' : ''}`);
       return;
     }
+    const [{ channel, channelTitle, channelId }] = list;
     room.liveTvSource = 'plex';
     const liveTvManager = require('./livetv-manager');
     const { ratingKey, subKey, sessionKey } = await liveTvManager.tuneChannel(channelId);
     if (stale()) return;
-    room.liveTvChannel      = String(channel || '').slice(0, 20);
-    room.liveTvChannelTitle = sanitizeText((channelTitle || channel || '').slice(0, 60));
-    room.liveTvChannelId    = channelId;
+    setLiveChannels(room, [{ channel, channelTitle, channelId }]);
     room.liveTvSubKey       = subKey;
     room.movieKey           = String(ratingKey);
 
@@ -558,19 +627,27 @@ async function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
     room.playing    = true;
     room.lastUpdate = Date.now();
 
-    room.liveTvProgram = null;
     room.broadcastState(io);
     refreshLiveTvProgram(room, io);
     console.log(`[Room] "${room.name}" → Live TV channel ${room.liveTvChannel} (ratingKey=${ratingKey}, sub ${subKey})`);
   } catch (err) {
     if (err.cancelled || stale()) return;   // the room went away mid-tune: nothing to report
-    console.error(`[Room] Failed to tune channel ${channel}:`, err.message);
+    console.error(`[Room] Failed to tune channel ${label}:`, err.message);
+    if (stoppedOld) {
+      // The old recording is gone too: the room has nothing on now (the host picks again)
+      setLiveChannels(room, []);
+      room.movieKey = null; room.liveTvSource = null; room.liveTvSubKey = null;
+      room.playing = false; room.position = 0; room.lastUpdate = Date.now();
+      room.liveTuning = null;
+      room.broadcastState(io);
+    }
     room.broadcast(io, 'livetv-tune-failed', { message: err.message });
     return `Failed to tune channel: ${err.message}`;
   } finally {
     // Only the current occupants' tune may clear these (a reset starts a new generation)
     if ((room._tuneGen || 0) === gen) {
       room._tuningInProgress = false;
+      room._tuningSlots = 0;
       room.liveTuning = null;
     }
   }
@@ -589,10 +666,14 @@ async function refreshLiveTvProgram(room, io) {
   if (room.roomType !== 'livetv' || !room.liveTvChannel) return;
   try {
     const { channels } = await require('./livetv-manager').getGuide();
-    const program = channels.find(c => c.number === room.liveTvChannel)?.nowPlaying || null;
-    if (program !== (room.liveTvProgram || null)) {
+    const nowOn = num => channels.find(c => c.number === num)?.nowPlaying || null;
+    const program = nowOn(room.liveTvChannel);
+    // Split view: what's on in every tile (programs[0] is the same as program)
+    const programs = room.liveTvChannels.map(c => nowOn(c.channel));
+    if (program !== (room.liveTvProgram || null) || programs.some((p, i) => p !== (room.liveTvPrograms[i] || null))) {
       room.liveTvProgram = program;
-      room.broadcast(io, 'livetv-program', { program });
+      room.liveTvPrograms = programs;
+      room.broadcast(io, 'livetv-program', { program, programs });
     }
   } catch { /* guide unavailable — keep whatever we had */ }
 }
@@ -998,7 +1079,38 @@ function setupSync(io, enabledRoomTypes) {
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
       if (!channelId) return;
       const err = await tuneRoomChannel(io, room, { channel, channelTitle, channelId });
-      if (err) socket.emit('error-message', err);
+      if (err) socket.emit('error-msg', err);
+    });
+
+    // ── Split view (host only, livetv rooms, HDHomeRun) ──
+    // Put a channel in tile `slot` (0-based; slot = current count adds a tile), or take a tile away.
+    // Either one re-records every tile, since they're all one ffmpeg picture. The channel is looked up in
+    // the guide server-side, so the browser can't make us tune something that isn't there.
+    socket.on('livetv-set-slot', async ({ slot, channel }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      const list = currentChannelList(room);
+      if (!Number.isInteger(slot) || slot < 0 || slot > list.length) return;
+      if (slot >= liveSplitMax()) return socket.emit('error-msg', `At most ${liveSplitMax()} channel${liveSplitMax() === 1 ? '' : 's'} can be shown at once`);
+      let ch;
+      try { ch = (await require('./livetv-manager').getGuide()).channels.find(c => c.number === String(channel)); }
+      catch { return socket.emit('error-msg', 'The channel guide is unavailable right now'); }
+      if (!ch) return socket.emit('error-msg', 'Unknown channel');
+      if (list.some((c, i) => i !== slot && c.channel === ch.number)) return socket.emit('error-msg', 'That channel is already on screen');
+      if (list[slot]?.channel === ch.number) return;
+      list[slot] = { channel: ch.number, channelTitle: ch.title, channelId: ch.channelId };
+      const err = await tuneRoomChannels(io, room, list);
+      if (err) socket.emit('error-msg', err);
+    });
+
+    socket.on('livetv-remove-slot', async ({ slot }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      const list = currentChannelList(room);
+      if (list.length < 2 || !Number.isInteger(slot) || slot < 0 || slot >= list.length) return;
+      list.splice(slot, 1);
+      const err = await tuneRoomChannels(io, room, list);
+      if (err) socket.emit('error-msg', err);
     });
 
     // ── Re-tune live TV when session dies (host only) ──────
