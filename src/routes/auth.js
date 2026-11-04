@@ -68,49 +68,43 @@ router.get('/plex', async (req, res) => {
   }
 });
 
-// Step 2: Plex OAuth callback
-router.get('/plex/callback/:pinId', async (req, res) => {
-  const pinId = req.params.pinId;
-  if (!/^\d+$/.test(pinId) || !req.session?.plexPinId || req.session.plexPinId !== pinId) {
-    console.warn(`[Auth] Callback for PIN ${String(pinId).slice(0, 20)} not started by this browser — refused`);
-    return res.redirect('/login?error=auth');
-  }
-  delete req.session.plexPinId;   // one use
+/**
+ * Turn an approved Plex auth token into a signed-in session: check the account can use this Plex server, note
+ * whether it owns it (admin), and store the user on a fresh session. Shared by the browser sign-in (callback below)
+ * and the TV sign-in (plex.tv/link codes). Resolves to null on success, else an error code for /login?error=…
+ */
+async function finishPlexSignIn(req, authToken) {
+  // True when this Plex account *owns* the server Playdarr is connected to (plex.tv marks it `owned`).
+  let isAdmin = false;
   try {
-    const { authToken } = (await axios.get(`${PLEX_API}/pins/${pinId}`, { headers: plexHeaders })).data;
-    console.log(`[Auth] authToken present: ${!!authToken}`);
-    if (!authToken) return res.redirect('/login?error=no_token');
-
-    // True when this Plex account *owns* the server Playdarr is connected to (plex.tv marks it `owned`).
-    let isAdmin = false;
-    try {
-      const [machineId, resourcesRes] = await Promise.all([
-        getServerMachineId(),
-        axios.get(`${PLEX_API}/resources`, {
-          headers: { ...plexHeaders, 'X-Plex-Token': authToken },
-          params: { includeHttps: 1 },
-          timeout: 8000
-        })
-      ]);
-      const serverResource = resourcesRes.data.find(r => r.clientIdentifier === machineId);
-      if (!serverResource) {
-        console.error(`[Auth] User token has no access to server ${machineId}`);
-        return res.redirect('/login?error=access');
-      }
-      isAdmin = serverResource.owned === true;
-    } catch (e) {
-      console.error('[Auth] Server access check failed:', e.code, e.message, e.response?.status);
-      return res.redirect('/login?error=access');
+    const [machineId, resourcesRes] = await Promise.all([
+      getServerMachineId(),
+      axios.get(`${PLEX_API}/resources`, {
+        headers: { ...plexHeaders, 'X-Plex-Token': authToken },
+        params: { includeHttps: 1 },
+        timeout: 8000
+      })
+    ]);
+    const serverResource = resourcesRes.data.find(r => r.clientIdentifier === machineId);
+    if (!serverResource) {
+      console.error(`[Auth] User token has no access to server ${machineId}`);
+      return 'access';
     }
+    isAdmin = serverResource.owned === true;
+  } catch (e) {
+    console.error('[Auth] Server access check failed:', e.code, e.message, e.response?.status);
+    return 'access';
+  }
 
-    const plexUser = (await axios.get(`${PLEX_API}/user`, {
-      headers: { ...plexHeaders, 'X-Plex-Token': authToken }
-    })).data;
+  const plexUser = (await axios.get(`${PLEX_API}/user`, {
+    headers: { ...plexHeaders, 'X-Plex-Token': authToken }
+  })).data;
 
+  return new Promise(resolve => {
     req.session.regenerate(regenErr => {
       if (regenErr) {
         console.error('[Auth] Session regenerate error:', regenErr);
-        return res.redirect('/login?error=auth');
+        return resolve('auth');
       }
       const name = plexUser.friendlyName || plexUser.username || plexUser.email;
       const known = users.touch({ id: plexUser.id, name, picture: plexUser.thumb }, { login: true });
@@ -127,14 +121,78 @@ router.get('/plex/callback/:pinId', async (req, res) => {
       if (isAdmin) console.log(`[Auth] ${req.session.user.name} signed in as server owner (admin)`);
       req.session.save(err => {
         if (err) console.error('[Auth] Session save error:', err);
-        res.redirect('/');
+        resolve(null);
       });
     });
+  });
+}
+
+// Step 2: Plex OAuth callback
+router.get('/plex/callback/:pinId', async (req, res) => {
+  const pinId = req.params.pinId;
+  if (!/^\d+$/.test(pinId) || !req.session?.plexPinId || req.session.plexPinId !== pinId) {
+    console.warn(`[Auth] Callback for PIN ${String(pinId).slice(0, 20)} not started by this browser — refused`);
+    return res.redirect('/login?error=auth');
+  }
+  delete req.session.plexPinId;   // one use
+  try {
+    const { authToken } = (await axios.get(`${PLEX_API}/pins/${pinId}`, { headers: plexHeaders })).data;
+    console.log(`[Auth] authToken present: ${!!authToken}`);
+    if (!authToken) return res.redirect('/login?error=no_token');
+    const error = await finishPlexSignIn(req, authToken);
+    res.redirect(error ? `/login?error=${error}` : '/');
   } catch (err) {
     console.error('[Auth] Callback error:', err.message);
     res.redirect('/login?error=auth');
   }
 });
+
+// ── TV sign-in (plex.tv/link) ─────────────────────────────────────────────────────────────────────────────────
+// A TV app can't do the browser redirect above, so it asks for a short code, shows it, and the person enters it at
+// plex.tv/link on their phone. The PIN id lives only in this client's session (like plexPinId above), so a guessed
+// id can't be claimed by anyone else; the app polls /plex/device/status until Plex has approved it.
+const DEVICE_MESSAGES = {
+  access: 'That Plex account does not have access to this server',
+  auth: 'Sign-in failed, please try again'
+};
+
+// POST /auth/plex/device → { code, expiresAt, linkUrl }
+router.post('/plex/device', async (req, res) => {
+  try {
+    const pin = (await axios.post(`${PLEX_API}/pins`, null, {
+      headers: { ...plexHeaders, 'X-Plex-Device-Name': 'Playdarr TV' },
+      params: { strong: false },   // a short code people can type at plex.tv/link
+      timeout: 8000
+    })).data;
+    req.session.plexDevicePin = { id: String(pin.id), expiresAt: Date.parse(pin.expiresAt) || Date.now() + 15 * 60 * 1000 };
+    await new Promise((resolve, reject) => req.session.save(err => (err ? reject(err) : resolve())));
+    res.json({ code: pin.code, expiresAt: req.session.plexDevicePin.expiresAt, linkUrl: 'https://plex.tv/link' });
+  } catch (err) {
+    console.error('[Auth] Device PIN error:', err.message);
+    res.status(502).json({ error: 'Could not reach Plex' });
+  }
+});
+
+// GET /auth/plex/device/status → { pending: true } | { ok: true } | 4xx { error }
+// Mounted in server.js outside the /auth rate limiter (polled every few seconds), with its own limit.
+async function deviceStatus(req, res) {
+  const pin = req.session?.plexDevicePin;
+  if (!pin) return res.status(404).json({ error: 'No sign-in in progress' });
+  if (Date.now() > pin.expiresAt) {
+    delete req.session.plexDevicePin;
+    return res.status(410).json({ error: 'The code expired, get a new one' });
+  }
+  try {
+    const { authToken } = (await axios.get(`${PLEX_API}/pins/${pin.id}`, { headers: plexHeaders, timeout: 8000 })).data;
+    if (!authToken) return res.json({ pending: true });
+    const error = await finishPlexSignIn(req, authToken);   // regenerates the session, dropping the pin
+    if (error) return res.status(403).json({ error: DEVICE_MESSAGES[error] || DEVICE_MESSAGES.auth });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[Auth] Device status error:', err.message);
+    res.status(502).json({ error: 'Could not reach Plex' });
+  }
+}
 
 // Guest join via invite link — called from /join/:inviteToken page
 router.post('/guest-join', express.json(), (req, res) => {
@@ -172,3 +230,4 @@ router.post('/logout', (req, res) => {
 });
 
 module.exports = router;
+module.exports.deviceStatus = deviceStatus;
