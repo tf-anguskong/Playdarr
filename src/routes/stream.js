@@ -461,6 +461,15 @@ router.get('/live/:roomId/:segment', (req, res) => {
   if (!/^[\w.-]+$/.test(segment)) return res.status(400).send('Bad segment name');
   const dvr = liveRelay.getDvr(roomId);
   if (!dvr) return res.status(404).send('Relay not active');
+  // Split view: the tiled video (v.m3u8) and each channel's audio (a<i>.m3u8), named by index.m3u8
+  const track = /^(v|a\d)\.m3u8$/.exec(segment);
+  if (track) {
+    const playlist = dvr.getTrackPlaylist(track[1]);
+    if (!playlist) return res.status(503).set('Retry-After', '2').send('Buffering…');
+    res.setHeader('Content-Type', 'application/x-mpegURL');
+    res.setHeader('Cache-Control', 'no-cache');
+    return res.send(playlist);
+  }
   const file = dvr.segmentPath(segment);
   if (!file) {
     console.log(`[LiveHTTP] ${roomId}: segment ${segment} 404 (not in DVR window) for ${req.session?.user?.name}`);

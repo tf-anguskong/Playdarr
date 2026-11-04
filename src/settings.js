@@ -85,7 +85,10 @@ const DEFS = [
 
   // ── Capacity ──
   { id: 'maxLiveTvRooms', group: 'capacity', env: 'LIVETV_MAX_ROOMS', type: 'int', default: 2, min: 1, max: 32,
-    label: 'Most Live TV rooms at once', description: 'How many Live TV rooms can stream at the same time. Each one uses a tuner and an encoder, so keep this at or below your tuner count.' },
+    label: 'Most Live TV channels at once', description: 'How many Live TV channels can stream at the same time, across all rooms. A room normally uses one; a split-view room uses one per channel on screen. Each channel holds a tuner, so keep this at or below your tuner count.' },
+  { id: 'splitMax', group: 'capacity', env: 'LIVETV_SPLIT_MAX', type: 'select', default: '4',
+    options: sel(['1', 'Off'], ['2', 'Up to 2 channels'], ['3', 'Up to 3 channels'], ['4', 'Up to 4 channels']),
+    label: 'Live TV split view', description: 'Let a Live TV host show several channels at once, with each viewer choosing which one they hear. Never more than the channel limit above. Needs the HDHomeRun source. Rooms already split keep their channels if you lower this.' },
   { id: 'pauseCooldown', group: 'capacity', env: 'LIVETV_PAUSE_COOLDOWN_SEC', type: 'int', default: 10, min: 0, max: 120, unit: 'seconds',
     label: 'Live TV pause cooldown', description: 'How long to wait before a Live TV room can be paused again. Stops rapid play/pause from disrupting the stream. 0 turns it off.' },
   { id: 'bufferSec', group: 'capacity', env: 'LIVETV_BUFFER_SEC', type: 'int', default: 10, min: 4, max: 60, unit: 'seconds',

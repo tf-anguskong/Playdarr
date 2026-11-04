@@ -111,7 +111,7 @@ function renderRooms(rooms) {
                 : `<span style="color:var(--text-muted)">No episode selected yet</span>`)
             : r.roomType === 'livetv'
               ? (r.liveTvChannel
-                  ? `<span class="room-now-playing">📡 ${esc(r.liveTvChannel)}</span>`
+                  ? `<span class="room-now-playing">📡 ${esc(r.liveTvChannel)}${r.liveTvChannelCount > 1 ? ` <span title="Split view">+${r.liveTvChannelCount - 1} more</span>` : ''}</span>`
                   : `<span style="color:var(--text-muted)">No channel selected yet</span>`)
               : r.hasMovie
                 ? `<span class="room-now-playing">▶ ${esc(r.movieTitle)}</span>`
@@ -253,7 +253,7 @@ async function loadLiveNow() {
     ]);
     const full = !!cap && cap.inUse >= cap.max;
     const capEl = document.getElementById('livenow-cap');
-    capEl.textContent = cap ? (full ? `full · ${cap.inUse} of ${cap.max} rooms in use` : `${cap.inUse} of ${cap.max} rooms in use`) : '';
+    capEl.textContent = cap ? (full ? `full · ${cap.inUse} of ${cap.max} tuners in use` : `${cap.inUse} of ${cap.max} tuners in use`) : '';
     capEl.classList.toggle('is-full', full);
     const live = channels.filter(c => c.nowPlaying);
     const main = c => (/\.1$/.test(c.number) ? 0 : 1);
