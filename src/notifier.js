@@ -9,7 +9,8 @@ const path  = require('path');
 const axios = require('axios');
 const { randomUUID: uuidv4 } = require('crypto');
 const scheduler = require('./scheduler');
-const { inviteUrl } = require('./ical');
+const { inviteUrl, googleCalendarUrl } = require('./ical');
+const embed = require('./embed');
 
 const dataPath = process.env.DATA_PATH || '/data';
 const FILE     = path.join(dataPath, 'webhooks.json');
@@ -120,8 +121,68 @@ function describe(event, d) {
   }
 }
 
-function bodyFor(hook, event, data) {
+// The small line above the title, naming what happened (the card's title then says what's on)
+const HEADERS = {
+  'schedule.created':  'Watch night scheduled',
+  'schedule.reminder': 'Starting soon',
+  'schedule.started':  'Doors are open',
+  'room.created':      'New room',
+};
+const appUrl = () => (process.env.APP_URL || '').replace(/\/$/, '');
+const previewUrl = token => `${appUrl()}/join/${token}/preview.jpg`;
+
+/**
+ * The same card a link preview of the invite would show (embed.js): what's on, facts, host, tagline, artwork.
+ * ctx.room is a live sync.js Room, ctx.schedule a scheduled-night record. Null when there's nothing to build from
+ * or it fails — the message then falls back to the plain describe() text.
+ */
+async function cardFor(event, ctx = {}) {
+  try {
+    if (ctx.room) {
+      const r = ctx.room;
+      return await embed.forRoom(r, `${previewUrl(r.inviteToken)}?v=${encodeURIComponent(r.movieKey || '')}`);
+    }
+    if (ctx.schedule) {
+      const s = ctx.schedule, t = unix(s.scheduledFor);
+      const repeat = s.recurrence === 'weekly' ? ' · every week' : s.recurrence === 'biweekly' ? ' · every other week' : '';
+      const time = event === 'schedule.started'  ? '🍿 The room is open — come on in!'
+                 : event === 'schedule.reminder' ? `⏰ Doors open <t:${t}:R> · <t:${t}:t>`
+                 : `Starts <t:${t}:F> (<t:${t}:R>)${repeat}`;
+      const img = s.inviteToken ? `${previewUrl(s.inviteToken)}?v=${encodeURIComponent(s.movieKey || '')}` : null;
+      return await embed.forScheduled(s, img, { time });
+    }
+  } catch (err) {
+    console.warn(`[Webhooks] Could not build the ${event} card:`, err.message);
+  }
+  return null;
+}
+
+/** Discord embed built from a card, laid out like Discord's own unfurl of the invite link. */
+function discordEmbed(event, data, card) {
+  const links = [];
+  if (data.url) links.push(`**[Join the room](${data.url})**${event === 'room.created' ? ' — no Plex account needed' : ''}`);
+  if (data.calendar && event !== 'schedule.started') {
+    links.push(`[Add to calendar](${data.calendar.ics})`, `[Google Calendar](${data.calendar.google})`);
+  }
+  const description = [...card.lines, '', links.join(' · ')].join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return {
+    author: { name: `Playdarr · ${HEADERS[event] || event}` },
+    title: embed.clip(card.title, 256),
+    url: data.url || undefined,
+    description: description.slice(0, 4000),
+    color: AMBER,
+    // Big backdrop for Plex titles / YouTube; Live TV channel logos stay small, as in the link preview
+    ...(card.image ? (card.large ? { image: { url: card.image } } : { thumbnail: { url: card.image } }) : {}),
+    footer: { text: 'Playdarr' },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function bodyFor(hook, event, data, card) {
   const { title, text } = describe(event, data);
+  if (hook.type === 'discord' && card) {
+    return { username: 'Playdarr', embeds: [discordEmbed(event, data, card)] };
+  }
   if (hook.type === 'discord') {
     return {
       username: 'Playdarr',
@@ -140,13 +201,14 @@ function bodyFor(hook, event, data) {
     event, title,
     message: text.replace(/<t:(\d+):[FR]>/g, (_, s) => new Date(s * 1000).toISOString()),
     url: data.url || null,
+    image: card?.image || null,
     data,
   };
 }
 
 // ── Delivery ──────────────────────────────────────────────
-async function deliver(hook, event, data) {
-  const body = bodyFor(hook, event, data);
+async function deliver(hook, event, data, card = null) {
+  const body = bodyFor(hook, event, data, card);
   let status;
   try {
     const res = await axios.post(hook.url, body, { timeout: 8000, maxRedirects: 0, validateStatus: () => true });
@@ -167,27 +229,37 @@ async function deliver(hook, event, data) {
   return status;
 }
 
-/** Send `event` to every enabled webhook subscribed to it. Never throws — notifications are best-effort. */
-async function notify(event, data) {
+/**
+ * Send `event` to every enabled webhook subscribed to it. Never throws — notifications are best-effort.
+ * `ctx` ({ room } or { schedule }) lets the message carry the full link-preview card; the card is built once
+ * (it may ask Plex for metadata) and shared by every webhook.
+ */
+async function notify(event, data, ctx = {}) {
   const targets = Array.from(hooks.values()).filter(h => h.enabled && h.events.includes(event));
-  await Promise.all(targets.map(h => deliver(h, event, data).catch(() => {})));
+  if (!targets.length) return;
+  const card = await cardFor(event, ctx);
+  await Promise.all(targets.map(h => deliver(h, event, data, card).catch(() => {})));
 }
 
 /** Webhook payload for a scheduled-room record. */
 const scheduleData = s => ({
   name: s.name, scheduledFor: s.scheduledFor, timezone: s.timezone, recurrence: s.recurrence || null,
   movieTitle: s.movieTitle || null, createdBy: s.createdBy?.name || null, url: inviteUrl(s),
+  calendar: { ics: `${inviteUrl(s)}/event.ics`, google: googleCalendarUrl(s) },
 });
 
 /** Send a test message to one webhook (bypasses the event subscription). */
-function test(id) {
+async function test(id) {
   const hook = hooks.get(id);
   if (!hook) return null;
-  return deliver(hook, 'schedule.reminder', {
+  const sample = {
     name: 'Test watch night', scheduledFor: new Date(Date.now() + hook.leadMinutes * 60000).toISOString(),
-    timezone: 'UTC', recurrence: null, movieTitle: null, createdBy: 'Playdarr admin',
-    url: `${(process.env.APP_URL || '').replace(/\/$/, '')}/`,
-  });
+    timezone: 'UTC', recurrence: null, createdBy: { name: 'Playdarr admin' },
+  };
+  return deliver(hook, 'schedule.reminder', {
+    name: sample.name, scheduledFor: sample.scheduledFor, timezone: 'UTC', recurrence: null, movieTitle: null,
+    createdBy: sample.createdBy.name, url: `${appUrl()}/`,
+  }, await cardFor('schedule.reminder', { schedule: sample }));
 }
 
 // ── Reminder ticker ───────────────────────────────────────
@@ -202,7 +274,8 @@ function checkReminders() {
       if (start - now > h.leadMinutes * 60000) continue;
       if (s.remindersSent?.[h.id] === s.scheduledFor) continue;   // already sent for this night
       scheduler.markReminded(s.id, h.id);
-      deliver(h, 'schedule.reminder', scheduleData(s)).catch(() => {});
+      cardFor('schedule.reminder', { schedule: s })
+        .then(card => deliver(h, 'schedule.reminder', scheduleData(s), card)).catch(() => {});
     }
   }
 }

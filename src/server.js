@@ -377,7 +377,7 @@ notifier.init();
 scheduler.init((scheduled) => {
   const room = createScheduledRoom(scheduled);
   console.log(`[Scheduler] Room "${room.name}" opened from schedule (roomId=${room.id})`);
-  notifier.notify('schedule.started', notifier.scheduleData(scheduled));
+  notifier.notify('schedule.started', notifier.scheduleData(scheduled), { schedule: scheduled });
 });
 
 const PORT = process.env.PORT || 3000;

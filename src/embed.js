@@ -137,17 +137,20 @@ async function forRoom(room, imageUrl, { invite = true } = {}) {
     card.title = `🍿 ${room.name}`;
     card.lines.push(room.roomType === 'livetv' ? 'Waiting for the host to pick a channel' : 'Waiting for the host to pick something', who);
   }
-  card.lines.push('', invite ? 'Tap to join — no Plex account needed.' : 'Tap to join.');
+  card.cta = invite ? 'Tap to join — no Plex account needed.' : 'Tap to join.';
   return card;
 }
 
-/** Card for a watch night that hasn't opened yet. */
-async function forScheduled(s, imageUrl) {
+/**
+ * Card for a watch night that hasn't opened yet.
+ * `opts.time` replaces the "Starts Fri, Nov 7 · 8:00 PM EST" line (webhooks use Discord's <t:…> timestamps instead).
+ */
+async function forScheduled(s, imageUrl, opts = {}) {
   const tz = s.timezone || 'UTC';
   let when;
   try { when = formatInTimeZone(new Date(s.scheduledFor), tz); } catch { when = new Date(s.scheduledFor).toUTCString(); }
   const repeat = s.recurrence === 'weekly' ? ' · every week' : s.recurrence === 'biweekly' ? ' · every other week' : '';
-  const card = { siteName: 'Playdarr · Watch night', title: `📅 ${s.name}`, lines: [`Starts ${when}${repeat}`], image: null, large: false };
+  const card = { siteName: 'Playdarr · Watch night', title: `📅 ${s.name}`, lines: [opts.time || `Starts ${when}${repeat}`], image: null, large: false };
   if (s.createdBy?.name) card.lines.push(`Hosted by ${s.createdBy.name}`);
   if (s.movieKey) {
     const m = await plexMeta(s.movieKey);
@@ -156,7 +159,7 @@ async function forScheduled(s, imageUrl) {
     if (m?.tagline || m?.summary) card.lines.push('', clip(m.tagline || m.summary, 200));
     if (artPath(m)) { card.image = imageUrl; card.large = true; }
   }
-  card.lines.push('', 'Open the link to add it to your calendar.');
+  card.cta = 'Open the link to add it to your calendar.';
   return card;
 }
 
@@ -165,7 +168,8 @@ const expired = () => ({ siteName: 'Playdarr', title: 'This invite has expired',
 /** The HTML page a crawler gets. */
 function page(card, url) {
   const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const desc = card.lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // The call to action ("Tap to join…") is kept apart from the lines so webhooks can swap in real links
+  const desc = [...card.lines, ...(card.cta ? ['', card.cta] : [])].join('\n').replace(/\n{3,}/g, '\n\n').trim();
   const tags = [
     ['property', 'og:type', 'website'],
     ['property', 'og:site_name', card.siteName],
@@ -202,4 +206,4 @@ async function sendArt(res, ratingKey) {
   }
 }
 
-module.exports = { isCrawler, forRoom, forScheduled, expired, page, sendArt };
+module.exports = { isCrawler, clip, forRoom, forScheduled, expired, page, sendArt };

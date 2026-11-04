@@ -53,15 +53,26 @@ Choose from **5, 10, 15, 30, 60, 120 minutes or 1 day** before the start. Detail
 
 ### Discord
 
-An embed in Playdarr amber with a title, a description and a **Join the room** link. Times use Discord's own timestamp markup, so each reader sees them in **their own time zone**, plus a live "in 15 minutes" countdown.
+The same card Discord shows when someone pastes the invite link, in Playdarr amber. A small line on top says what happened (*Playdarr · New room*, *Watch night scheduled*, *Starting soon*, *Doors are open*), then:
 
-Example reminder:
+- **Title** — what's on: 🎬 movie (year), 📺 show — S·E, 🔴 Live on a channel, ▶ YouTube, or 📅 the night's name.
+- **Facts** — rating, runtime and genres; play status; *Hosted by …* and how many are watching; the tagline or a short summary.
+- **Artwork** — the title's Plex backdrop as a large image (Live TV: the channel logo as a thumbnail). Discord fetches it from `APP_URL/join/<token>/preview.jpg`, so `APP_URL` must be reachable from the internet for pictures to appear.
+- **Links** — **Join the room**, and for scheduled nights also *Add to calendar* (`.ics`) and *Google Calendar*.
 
-> **⏰ Starting soon: Friday Night Movies**
-> Doors open in 15 minutes — Friday, November 6, 2026 8:00 PM (in 15 minutes)
-> **[Join the room](https://playdarr.example.com/join/…)**
+Times use Discord's own timestamp markup, so each reader sees them in **their own time zone**, plus a live "in 15 minutes" countdown. Example reminder:
 
-If the night has a pre-picked movie, a *Planned* field shows it. The *scheduled* announcement also says whether the night repeats ("repeats weekly" / "every 2 weeks").
+> Playdarr · Starting soon
+> **📅 Friday Night Movies**
+> ⏰ Doors open in 15 minutes · 8:00 PM
+> Hosted by Tyler
+> Showing: Resident Evil (2026)
+>
+> A new era of evil.
+>
+> **[Join the room](https://playdarr.example.com/join/…)** · [Add to calendar](…) · [Google Calendar](…)
+
+If Playdarr can't build the card (Plex is slow or down), it falls back to a short text embed with the same invite link.
 
 ### Generic JSON
 
@@ -73,6 +84,7 @@ Pick **Generic JSON** to send a plain POST to any endpoint (Home Assistant webho
   "title": "⏰ Starting soon: Friday Night Movies",
   "message": "Doors open 2026-11-07T04:00:00.000Z — …",
   "url": "https://playdarr.example.com/join/0f3c…",
+  "image": "https://playdarr.example.com/join/0f3c…/preview.jpg?v=123",
   "data": {
     "name": "Friday Night Movies",
     "scheduledFor": "2026-11-07T04:00:00.000Z",
@@ -80,10 +92,16 @@ Pick **Generic JSON** to send a plain POST to any endpoint (Home Assistant webho
     "recurrence": "weekly",
     "movieTitle": null,
     "createdBy": "Tyler",
-    "url": "https://playdarr.example.com/join/0f3c…"
+    "url": "https://playdarr.example.com/join/0f3c…",
+    "calendar": {
+      "ics": "https://playdarr.example.com/join/0f3c…/event.ics",
+      "google": "https://calendar.google.com/calendar/render?…"
+    }
   }
 }
 ```
+
+- `image` is the artwork URL (or `null`) — the same picture the Discord card uses.
 
 - `event` is one of `schedule.created`, `schedule.reminder`, `schedule.started`, `room.created`.
 - `scheduledFor` is an ISO-8601 UTC time; `recurrence` is `null`, `"weekly"` or `"biweekly"`.

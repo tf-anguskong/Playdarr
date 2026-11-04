@@ -865,7 +865,7 @@ function setupSync(io, enabledRoomTypes) {
       notifier.notify('room.created', {
         name: room.name, createdBy: user.displayName || user.name,
         url: `${(process.env.APP_URL || '').replace(/\/$/, '')}/join/${room.inviteToken}`,
-      });
+      }, { room });
       console.log(`[Room] ${user.name} created "${room.name}" (${room.id})`);
     });
 
