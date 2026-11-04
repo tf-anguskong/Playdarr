@@ -255,3 +255,7 @@ Copy `.env.example` to `.env` and fill in the values:
 - **GPU encode checklist.** The kernel driver on the Docker host does the work (`i915`/`xe` for Intel, `amdgpu` for AMD); the image already carries the userspace drivers and `vainfo`. Verify with `ls -l /dev/dri` on the host, then after starting with the override, `docker exec playdarr vainfo` (should list H.264 `EncSlice`) and `docker compose logs | grep "enc="` (should say `enc=vaapi`). If the GPU path fails twice with no output, Playdarr logs a warning and drops back to software x264. Tested on an Intel iGPU (iHD driver) in a Proxmox LXC; AMD is wired the same way but untested here.
 - **Docker in a Proxmox LXC.** The LXC shares the Proxmox host's kernel, so only the passthrough is needed: in the LXC's Resources add a *Device Passthrough* for `/dev/dri/renderD128` (set the GID to the container's `render` group, usually 104), or add `dev0: /dev/dri/renderD128,gid=104` to `/etc/pve/lxc/<ID>.conf`, and restart it. Docker inside the LXC also needs `nesting=1` (and usually `keyctl=1`). The Playdarr container runs as root, so no `group_add` is needed.
 - **Live TV DVR uses disk.** Each room records up to one hour to `DATA_PATH/dvr` (default `/data/dvr`) — roughly 3–4 GB per room-hour at the default bitrate. It is deleted when the room closes and wiped on server start. Size the Docker volume accordingly.
+
+## License
+
+Playdarr is released under the [MIT License](LICENSE).
