@@ -1612,11 +1612,17 @@ body {
 .chat-msg-mention { border-left: 2px solid var(--pd-accent); background: var(--pd-accent-tint-2, rgba(240, 165, 0, .08)); padding-left: 0.4rem; border-radius: 0 4px 4px 0; }
 .viewer-item[data-name] .viewer-name-wrap { cursor: pointer; }
 .viewer-item[data-name] .viewer-name-wrap:hover { color: var(--pd-accent); }
+/* Viewer extras (sync delta, admin tag, Host/Kick) stay out of the way until the list is moused over or tabbed
+   into — then they show on every row. Touch screens have no hover, so they keep them (see the hover: none block). */
+.viewers-list .drift-badge, .viewers-list .admin-badge, .viewers-list .btn-make-host, .viewers-list .btn-kick { display: none; }
+.viewers-list:hover :is(.drift-badge, .admin-badge, .btn-make-host, .btn-kick),
+.viewers-list:focus-within :is(.drift-badge, .admin-badge, .btn-make-host, .btn-kick) { display: inline-block; }
 
 /* ── Touch screens have no hover: keep the on-player buttons visible ── */
 @media (hover: none) {
   .reaction-bar { opacity: .85; }
   .guide-toggle-btn, .pip-btn { opacity: 1; }
+  .viewers-list :is(.drift-badge, .admin-badge, .btn-make-host, .btn-kick) { display: inline-block; }
 }
 
 /* ── Phones, portrait: player on top, sidebar (with chat first) underneath ── */
