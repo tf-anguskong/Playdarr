@@ -81,7 +81,7 @@ router.post('/', async (req, res) => {
     createdBy:    { id: user.id, name: user.displayName || user.name }
   });
 
-  notifier.notify('schedule.created', notifier.scheduleData(scheduled));
+  notifier.notify('schedule.created', notifier.scheduleData(scheduled), { schedule: scheduled });
   res.status(201).json({ scheduled: withCalendar(scheduled) });
 });
 
