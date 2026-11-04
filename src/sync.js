@@ -206,6 +206,7 @@ function closeRoom(io, room, reason) {
   room.broadcast(io, 'room-closed', { reason });
   room.viewers.forEach((_, sid) => socketToRoom.delete(sid));
   stopRelay(room.id);
+  clearRoomManifest(room.id);   // end its Plex transcode; the keepalive would hold it open for hours
   uploads.removeRoom(room.id);
   inviteTokens.delete(room.inviteToken);
   rooms.delete(room.id);
@@ -1587,6 +1588,7 @@ function setupSync(io, enabledRoomTypes) {
           console.log(`[Room] Guest host "${user.name}" disconnected from "${room.name}" — closing`);
           room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
           stopRelay(room.id);
+          clearRoomManifest(room.id);
           inviteTokens.delete(room.inviteToken);
           rooms.delete(room.id);
           broadcastRoomList(io);
@@ -1599,6 +1601,7 @@ function setupSync(io, enabledRoomTypes) {
             console.log(`[Room] "${room.name}" closed — host did not reconnect`);
             room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
             stopRelay(room.id);
+            clearRoomManifest(room.id);
             inviteTokens.delete(room.inviteToken);
             rooms.delete(room.id);
             broadcastRoomList(io);
