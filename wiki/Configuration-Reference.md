@@ -15,7 +15,7 @@ docker compose up -d --force-recreate
 | `SESSION_SECRET` | Random secret that signs session cookies (at least 32 characters; the server refuses to start otherwise). Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `PLEX_URL` | Plex server address **as seen from the container**, on your LAN (e.g. `http://192.168.1.100:32400`, or `http://host.docker.internal:32400`). Never your public domain — video must stay on the LAN |
 | `PLEX_TOKEN` | Plex server token (Plex → Settings → Troubleshooting → *Your Plex Token*) |
-| `APP_URL` | Public URL of Playdarr. Builds the Plex sign-in callback **and** the links in Discord messages and calendar files |
+| `APP_URL` | Public URL of Playdarr. Builds the Plex sign-in callback **and** the links in Discord messages, calendar files and invite-link preview cards (including their artwork) |
 | `COOKIE_SECURE` | `true` behind HTTPS, `false` for plain HTTP/local dev. Set it to match reality or sign-in will loop |
 | `PLEX_CLIENT_ID` | A unique, stable identifier for this app in Plex sign-in (any string, e.g. `my-playdarr`). **The server refuses to start without it.** Keep it the same once set |
 

@@ -32,6 +32,7 @@ const recentRouter = require('./routes/recent');
 const notifier = require('./notifier');
 const users = require('./users');
 const { buildIcs, googleCalendarUrl } = require('./ical');
+const embed = require('./embed');
 
 const roomTypesFromEnv = () => ({
   movie:   process.env.ROOM_TYPE_MOVIE   !== 'false',
@@ -226,28 +227,12 @@ app.get('/admin/settings', requireAdmin, (req, res) => {
 app.get('/watch/:roomId', (req, res, next) => {
   // Discord/Slack/Telegram crawlers don't have a session — intercept before requireAuth
   // and return a lightweight OG preview page so link unfurls work.
-  const ua = req.headers['user-agent'] || '';
-  if (/discordbot|slackbot|telegrambot|whatsapp|twitterbot|facebookexternalhit/i.test(ua)) {
-    const esc = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  if (embed.isCrawler(req.headers['user-agent'])) {
+    res.setHeader('Cache-Control', 'no-store');
     const room = getRoom(req.params.roomId);
-    const title = room
-      ? (room.movieTitle || room.liveTvChannelTitle
-          ? `${room.name} — ${room.movieTitle || room.liveTvChannelTitle}`
-          : room.name)
-      : 'Playdarr';
-    const desc = room
-      ? 'Click to join!'
-      : 'Join the room on Playdarr.';
-    const url = `${process.env.APP_URL || ''}/watch/${req.params.roomId}`;
-    return res.send(`<!DOCTYPE html><html><head>
-<meta charset="UTF-8">
-<meta property="og:type" content="website">
-<meta property="og:site_name" content="Playdarr">
-<meta property="og:title" content="${esc(title)}">
-<meta property="og:description" content="${esc(desc)}">
-<meta property="og:url" content="${esc(url)}">
-<meta name="twitter:card" content="summary">
-</head><body></body></html>`);
+    const base = `${process.env.APP_URL || ''}/watch/${req.params.roomId}`;
+    return (room ? embed.forRoom(room, `${base}/preview.jpg?v=${encodeURIComponent(room.movieKey || '')}`, { invite: false }) : Promise.resolve(embed.expired()))
+      .then(card => res.send(embed.page(card, base)), next);
   }
   requireAuth(req, res, () => {
     res.setHeader('Cache-Control', 'no-store');
@@ -290,6 +275,17 @@ app.get('/join/:inviteToken/event.ics', (req, res) => {
   res.send(buildIcs(scheduled));
 });
 
+// Artwork for link previews (embed.js) — public like the links themselves; only ever the room's current title
+app.get('/join/:inviteToken/preview.jpg', async (req, res) => {
+  const room = getRoomByInviteToken(req.params.inviteToken);
+  const key = room ? room.movieKey : scheduler.getByInviteToken(req.params.inviteToken)?.movieKey;
+  if (!(key && await embed.sendArt(res, key))) res.status(404).send('No preview');
+});
+app.get('/watch/:roomId/preview.jpg', async (req, res) => {
+  const key = getRoom(req.params.roomId)?.movieKey;
+  if (!(key && await embed.sendArt(res, key))) res.status(404).send('No preview');
+});
+
 // Invite link — public, no auth required
 app.get('/join/:inviteToken', (req, res) => {
   // Prevent proxies/CDNs from caching this response — room existence is dynamic
@@ -297,27 +293,16 @@ app.get('/join/:inviteToken', (req, res) => {
   const token = req.params.inviteToken;
   const room  = getRoomByInviteToken(token);
 
-  const ua = req.headers['user-agent'] || '';
-  if (/discordbot|slackbot|telegrambot|whatsapp|twitterbot|facebookexternalhit/i.test(ua)) {
-    const esc = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-    const title = room
-      ? (room.movieTitle || room.liveTvChannelTitle
-          ? `${room.name} — ${room.movieTitle || room.liveTvChannelTitle}`
-          : room.name)
-      : 'Playdarr';
-    const desc = room
-      ? 'Click to join!'
-      : 'Join the room on Playdarr.';
-    const url = `${process.env.APP_URL || ''}/join/${token}`;
-    return res.send(`<!DOCTYPE html><html><head>
-<meta charset="UTF-8">
-<meta property="og:type" content="website">
-<meta property="og:site_name" content="Playdarr">
-<meta property="og:title" content="${esc(title)}">
-<meta property="og:description" content="${esc(desc)}">
-<meta property="og:url" content="${esc(url)}">
-<meta name="twitter:card" content="summary">
-</head><body></body></html>`);
+  if (embed.isCrawler(req.headers['user-agent'])) {
+    const base = `${process.env.APP_URL || ''}/join/${token}`;
+    const scheduled = !room && scheduler.getByInviteToken(token);
+    const key = room ? room.movieKey : scheduled ? scheduled.movieKey : '';
+    const img = `${base}/preview.jpg?v=${encodeURIComponent(key || '')}`;   // new title → new URL, so caches refresh
+    const card = room ? embed.forRoom(room, img) : scheduled ? embed.forScheduled(scheduled, img) : Promise.resolve(embed.expired());
+    return card.then(c => res.send(embed.page(c, base)), err => {
+      console.warn('[Embed] preview failed:', err.message);
+      res.send(embed.page({ siteName: 'Playdarr', title: room?.name || scheduled?.name || 'Playdarr', lines: ['Tap to join.'] }, base));
+    });
   }
   console.log(`[Join] token=${token} found=${!!room}`);
 

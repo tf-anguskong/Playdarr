@@ -38,6 +38,7 @@ Anyone who has a room's invite link can join as a guest. Treat links like keys:
 - Share them where you'd share the room itself.
 - **Closing a room invalidates its link.** A recurring night's link persists until the series is cancelled.
 - For an **always-on room**, whoever holds the link can be the first in and become its host (and so tune its channel or pick what plays). Don't post those links publicly.
+- **Link previews show what's on.** When an invite (or room) link is pasted into Discord, Slack, iMessage and similar apps, the preview card shows the title playing, its artwork and summary, play/pause status, the host's display name and how many people are watching (never other viewers' names). A scheduled night's card shows its time, host and pre-picked title. Artwork is served through Playdarr, so your Plex token isn't exposed.
 - A recurring night's `.ics` file (`/join/<token>/event.ics`) is fetchable by anyone with that same link.
 - You can kick and block someone, but a kicked **guest** can re-enter via the link with a new identity — close the room if you need to shut them out.
 
