@@ -6,6 +6,8 @@ Playdarr is a self-hosted watch-party app for Plex. It lets you and your friends
 
 📺 **On the couch?** [Playdarr for Android TV](https://github.com/tf-anguskong/Playdarr-AndroidTV) brings rooms to Google TV / Android TV.
 
+🤖 **Setting up with an AI assistant?** Point it at **[AIPROMPT_SETUP.md](AIPROMPT_SETUP.md)** and ask it to help you install Playdarr. It walks you through the setup step by step.
+
 📖 **Running a server?** The **[Admin Guide](wiki/Home.md)** covers setup, the admin panel, Discord webhooks, moderation, recurring watch nights, Live TV, backups and troubleshooting. (The pages are in the [`wiki/`](wiki/) folder and can be published to the GitHub Wiki tab — see [`wiki/README.md`](wiki/README.md).)
 
 ## What is Playdarr?
@@ -123,6 +125,8 @@ Whoever owns the Plex server is the admin (see *Server-owner admin* above) and g
 ---
 
 ## Setup
+
+> 🤖 Prefer to be guided? Give your AI assistant [AIPROMPT_SETUP.md](AIPROMPT_SETUP.md) and let it walk you through these steps.
 
 ### Prerequisites
 - A running Plex Media Server accessible on your LAN
