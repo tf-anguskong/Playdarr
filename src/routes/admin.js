@@ -9,6 +9,7 @@ const sync     = require('../sync');
 const settings = require('../settings');
 const { onlineUserIds } = sync;
 const { sanitizeText } = require('../sanitize');
+const wordfilter = require('../wordfilter');
 
 // Mounted at /api/admin behind requireAdmin (the Plex server owner) in server.js.
 
@@ -60,12 +61,25 @@ router.get('/users', (req, res) => {
   res.json({ users: users.list().map(u => ({ ...u, online: online.has(u.id) })) });
 });
 
-// Clear a nickname (e.g. an inappropriate one). They can set a new one; it takes effect on their next page load.
+// Clear a nickname (e.g. an inappropriate one). They can set a new one. Applies at once wherever they're connected.
 router.delete('/users/:id/nickname', (req, res) => {
   const u = users.setNickname(req.params.id, null);
   if (!u) return res.status(404).json({ error: 'User not found' });
   console.log(`[Admin] ${req.session.user.name} cleared the nickname of ${u.name}`);
+  sync.applyRename(u.id, null);
   res.json({ ok: true });
+});
+
+// Rename someone (sets their nickname). They can still change it themselves later.
+router.put('/users/:id/nickname', (req, res) => {
+  const name = sanitizeText(String(req.body?.name || '').trim().slice(0, 40));
+  if (!name) return res.status(400).json({ error: 'Enter a name' });
+  if (!wordfilter.isClean(name)) return res.status(400).json({ error: wordfilter.NAME_REFUSED });
+  const u = users.setNickname(req.params.id, name);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  console.log(`[Admin] ${req.session.user.name} renamed ${u.name} → ${name}`);
+  sync.applyRename(u.id, name);
+  res.json({ ok: true, nickname: name });
 });
 
 // ── Settings: the friendly, editable view of the server's configuration ──

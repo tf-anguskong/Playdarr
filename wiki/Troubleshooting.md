@@ -28,7 +28,10 @@ docker compose logs | grep -E "Auth|Webhooks|Scheduler|Room|Vote|HDHR"
 | No admin badge / Admin button | Sign out and back in with the account that **owns** the Plex server — see [Becoming an Admin](Becoming-an-Admin) |
 | `/admin` bounces to the lobby | Not signed in as the owner |
 | An API call returns `403 Server owner only` | Same: the session isn't admin |
-| *Reset nickname* didn't change what they see | It applies on that person's **next page load** |
+| No 📎 (image) button in chat | Image uploads are off for that person: Settings → *Chat & moderation* → *Image uploads in chat* |
+| No GIF button in chat | Set `GIPHY_API_KEY` in `.env` and restart. If searches start failing, the beta key may have hit its hourly limit |
+| "Allow pop-ups…" when popping out chat | Allow pop-ups for your Playdarr address in the browser |
+| A word is masked or a name refused that shouldn't be | Add it to *Always allow these words* in Settings → Moderation |
 | *Kick* does nothing to a host | By design — close the room instead |
 
 ## Rooms and playback

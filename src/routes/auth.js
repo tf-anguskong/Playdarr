@@ -5,6 +5,7 @@ const router = express.Router();
 const { getRoomByInviteToken } = require('../sync');
 const { encryptToken, decryptToken } = require('../tokenCrypto');
 const { sanitizeText } = require('../sanitize');
+const wordfilter = require('../wordfilter');
 const users = require('../users');
 
 if (!process.env.PLEX_CLIENT_ID) {
@@ -140,6 +141,7 @@ router.post('/guest-join', express.json(), (req, res) => {
   const { name, inviteToken, roomId } = req.body || {};
   const trimmedName = sanitizeText((name || '').trim().slice(0, 40));
   if (!trimmedName) return res.status(400).json({ error: 'Name is required' });
+  if (!wordfilter.isClean(trimmedName)) return res.status(400).json({ error: wordfilter.NAME_REFUSED });
   if (!inviteToken || !roomId) return res.status(400).json({ error: 'Invalid invite' });
 
   // Validate that the invite token actually maps to the claimed roomId

@@ -15,7 +15,9 @@
     "express-rate-limit": "^7.0.0",
     "express-session": "^1.17.3",
     "helmet": "^7.0.0",
+    "obscenity": "0.4.6",
     "session-file-store": "^1.5.0",
+    "sharp": "0.35.5",
     "socket.io": "^4.6.2"
   },
   "devDependencies": {

@@ -37,7 +37,7 @@ Every **Plex account** that has signed in:
 - avatar, nickname (or Plex name if they never set one), a green dot if they're connected right now;
 - last seen, sign-in count, first-seen date;
 - search box to filter by name or nickname;
-- *Reset nickname* appears when someone has set one. See [Moderation](Moderation#nicknames).
+- *Rename* sets someone's nickname (applies at once); *Reset nickname* appears when someone has set one. See [Moderation](Moderation#nicknames).
 
 Guests are not listed: each invite gives them a throwaway identity.
 

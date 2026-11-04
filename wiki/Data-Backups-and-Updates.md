@@ -9,6 +9,7 @@ Everything lives under `DATA_PATH` (`/data` in the container), which Docker Comp
 | `scheduled.json` | Upcoming and recurring watch nights, including their invite links | **Yes** |
 | `webhooks.json` | Your webhooks (URLs are secrets; file mode 600) and last delivery status | **Yes** |
 | `users.json` | The people list and their nicknames | **Yes** |
+| `chat-uploads/` | Images posted in chat, one folder per open room. Deleted when the room closes and cleared on every start | No |
 | `always-on.json` | Always-on rooms (name, type, pinned channel, permanent invite link) | **Yes** |
 | `settings.json` | Settings saved from the admin [Settings page](Settings-Page) | **Yes** |
 | `sessions/` | Sign-in sessions (7-day lifetime) | No — people just sign in again |

@@ -33,6 +33,10 @@ const notifier = require('./notifier');
 const users = require('./users');
 const { buildIcs, googleCalendarUrl } = require('./ical');
 const embed = require('./embed');
+const wordfilter = require('./wordfilter');
+const gifs = require('./gifs');
+const uploads = require('./uploads');
+uploads.clearAll();   // chat images belong to rooms, which don't survive a restart
 
 const roomTypesFromEnv = () => ({
   movie:   process.env.ROOM_TYPE_MOVIE   !== 'false',
@@ -166,7 +170,23 @@ app.use('/api/stream', requireAuth, streamRouter);
 app.use('/api/schedule', requirePlexAuth, scheduleRouter);
 app.use('/api/admin', requireAdmin, adminRouter);
 
-app.get('/api/config', (req, res) => res.json({ enabledRoomTypes }));
+app.get('/api/config', (req, res) => res.json({ enabledRoomTypes, gifs: gifs.enabled(), imageUploads: uploads.allowedFor(req.session?.user) }));
+
+// Chat images: paste/upload and serve (routes/chat-images.js, uploads.js)
+app.use('/api/chat', requireAuth, require('./routes/chat-images'));
+
+// GIF search for the chat picker (guests too). The Giphy key never leaves the server; see gifs.js.
+const gifLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+app.get('/api/gifs', requireAuth, gifLimiter, async (req, res) => {
+  if (!gifs.enabled()) return res.status(404).json({ error: 'GIFs are not set up on this server' });
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    res.json(await gifs.search(q, parseInt(req.query.offset, 10) || 0));
+  } catch (err) {
+    console.warn('[GIF] search failed:', err.response?.status || err.message);
+    res.status(502).json({ error: 'GIF search is unavailable right now' });
+  }
+});
 
 // Always mounted, so Live TV can be switched on from the admin settings without a restart
 app.use('/api/livetv', requireAuth,
@@ -184,6 +204,7 @@ app.get('/api/me', (req, res) => {
 app.post('/api/me/display-name', requirePlexAuth, (req, res) => {
   const name = sanitizeText((req.body?.name || '').trim().slice(0, 40));
   if (!name) return res.status(400).json({ error: 'Name required' });
+  if (!wordfilter.isClean(name)) return res.status(400).json({ error: wordfilter.NAME_REFUSED });
   users.touch(req.session.user);
   users.setNickname(req.session.user.id, name);    // remembered across sign-ins
   req.session.user.displayName = name;

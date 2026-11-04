@@ -280,6 +280,7 @@ function renderPeople() {
         <div class="admin-row-sub">${p.nickname ? `Plex name: ${esc(p.name)} · ` : 'No nickname set · '}${p.online ? 'online now' : `last seen ${esc(ago(p.lastSeen))}`}${p.logins ? ` · ${p.logins} sign-in${p.logins === 1 ? '' : 's'}` : ''} · first seen ${esc(new Date(p.firstSeen).toLocaleDateString())}</div>
       </div>
       <div class="admin-row-actions">
+        <button class="btn-make-host" data-rename="${esc(p.id)}" data-name="${esc(p.nickname || p.name)}">Rename</button>
         ${p.nickname ? `<button class="btn-kick" data-clear="${esc(p.id)}" data-name="${esc(p.nickname)}">Reset nickname</button>` : ''}
       </div>
     </div>`).join('');
@@ -296,6 +297,14 @@ async function loadPeople() {
 
 $('people-search').addEventListener('input', renderPeople);
 $('people-list').addEventListener('click', async (e) => {
+  const ren = e.target.closest('[data-rename]');
+  if (ren) {
+    const name = prompt(`New name for ${ren.dataset.name}:`, ren.dataset.name);
+    if (name === null || !name.trim() || name.trim() === ren.dataset.name) return;
+    try { await api('PUT', `/api/admin/users/${encodeURIComponent(ren.dataset.rename)}/nickname`, { name: name.trim() }); loadPeople(); }
+    catch (err) { alert(err.message); }
+    return;
+  }
   const btn = e.target.closest('[data-clear]');
   if (!btn || !confirm(`Clear the nickname "${btn.dataset.name}"? They can pick a new one.`)) return;
   try { await api('DELETE', `/api/admin/users/${encodeURIComponent(btn.dataset.clear)}/nickname`); loadPeople(); }

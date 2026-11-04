@@ -61,15 +61,17 @@ function closeNameEditor() {
 async function saveName() {
   const name = nameInput.value.trim();
   if (!name) return;
+  let data;
   try {
-    const { name: saved } = await fetch('/api/me/display-name', {
+    data = await fetch('/api/me/display-name', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     }).then(r => r.json());
-    document.getElementById('user-name').textContent = saved;
-    closeNameEditor();
-  } catch { alert('Failed to save name.'); }
+  } catch { return alert('Failed to save name.'); }
+  if (!data?.name) return alert(data?.error || 'Failed to save name.');   // e.g. the word filter refused it
+  document.getElementById('user-name').textContent = data.name;
+  closeNameEditor();
 }
 
 editBtn.addEventListener('click', openNameEditor);

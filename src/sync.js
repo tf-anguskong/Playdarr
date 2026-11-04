@@ -4,6 +4,10 @@ const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
 const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
+const wordfilter = require('./wordfilter');
+const users = require('./users');
+const gifs = require('./gifs');
+const uploads = require('./uploads');
 const notifier = require('./notifier');
 const voting = require('./voting');
 const alwaysOn = require('./always-on');
@@ -72,6 +76,10 @@ class Room {
     this.position       = 0;
     this.lastUpdate     = Date.now();
     this.viewers        = new Map(); // socketId -> viewer info
+    this.chatSeq        = 0;
+    this.chatHistory    = [];        // last CHAT_HISTORY messages (see chat())
+    this.mutedIds       = null;      // Set of user ids the host/owner muted in chat, until the room closes
+    this.uploads        = new Map(); // chat image id -> { by: userId, w, h, posted } (files: uploads.js)
   }
 
   currentPosition() {
@@ -127,6 +135,18 @@ class Room {
     this.viewers.forEach((_, sid) => io.to(sid).emit(event, data));
   }
 
+  // Every chat line goes through here: it gets an id and a send time, and the last CHAT_HISTORY are kept so a
+  // late joiner (or a refreshed page) sees the conversation so far, and replies/deletes can find their message.
+  chat(io, msg) {
+    const m = { id: ++this.chatSeq, at: Date.now(), ...msg };
+    if (!m.isSystem) {   // "▶ resumed" lines would crowd real messages out of the history
+      this.chatHistory.push(m);
+      if (this.chatHistory.length > CHAT_HISTORY) this.chatHistory.shift();
+    }
+    this.broadcast(io, 'chat', m);
+    return m;
+  }
+
   broadcastViewers(io) {
     const now        = Date.now();
     const currentPos = this.playing ? this.currentPosition() : null;
@@ -136,7 +156,7 @@ class Room {
         const estimated = v.reportedTime + (now - v.reportedAt) / 1000;
         drift = Math.round((estimated - currentPos) * 10) / 10;
       }
-      return { ...v, drift, buffering: v.buffering || false };
+      return { ...v, drift, buffering: v.buffering || false, muted: !!this.mutedIds?.has(String(v.id)) };
     });
     this.broadcast(io, 'viewers', viewers);
   }
@@ -177,6 +197,7 @@ function closeRoom(io, room, reason) {
   room.broadcast(io, 'room-closed', { reason });
   room.viewers.forEach((_, sid) => socketToRoom.delete(sid));
   stopRelay(room.id);
+  uploads.removeRoom(room.id);
   inviteTokens.delete(room.inviteToken);
   rooms.delete(room.id);
   broadcastRoomList(io);
@@ -197,6 +218,10 @@ function resetPersistentRoom(io, room) {
   room.intermissionEndsAt = null;
   room.vote = null;
   room.bannedIds = null;
+  room.mutedIds = null;
+  room.chatHistory = [];
+  room.uploads.clear();
+  uploads.removeRoom(room.id);
   room._tuneGen = (room._tuneGen || 0) + 1;   // any tune still in flight belongs to the previous occupants
   room.lastPauseAt = 0;
   room.settings = { playbackLocked: false, reactionsEnabled: true };
@@ -326,6 +351,18 @@ function makeSocketRateLimiter(maxCalls, windowMs) {
 }
 
 const chatLimiter          = makeSocketRateLimiter(3, 2000);  // 3 msgs / 2s
+const typingLimiter        = makeSocketRateLimiter(1, 1500);  // "is typing…" pings
+const chatReactLimiter     = makeSocketRateLimiter(8, 4000);  // reactions on chat messages
+// The reaction emojis — the same six for the floating video reactions and for reactions on chat messages
+const REACTIONS = ['👍', '❤️', '😂', '😱', '😮', '👏'];
+const CHAT_HISTORY = 100;   // messages a room keeps for late joiners
+const CHAT_MAX     = 500;   // characters per message
+
+// Chat text keeps its line breaks (other control characters become spaces); runs of blank lines collapse
+function cleanChat(str) {
+  return String(str || '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ')
+    .replace(/\n{3,}/g, '\n\n').trim().slice(0, CHAT_MAX);
+}
 // How far behind the newest recorded segment a freshly tuned room starts. That head start is
 // the buffer that hides the pause while a retune (every ~3:20) swaps in a new Plex session.
 const LIVE_START_BEHIND_SEC = 8;
@@ -687,6 +724,7 @@ function setupSync(io, enabledRoomTypes) {
     socket.on('create-room', async ({ name, roomType, youtubeUrl, preload } = {}) => {
       if (user.isGuest) return socket.emit('error-msg', 'Guests cannot create rooms');
       name = sanitizeText((name || '').trim().slice(0, 60)) || undefined;
+      if (name && !wordfilter.isClean(name)) return socket.emit('error-msg', 'Please pick a room name without offensive words.');
 
       const VALID_TYPES = Object.keys(_enabledRoomTypes).filter(t => _enabledRoomTypes[t]);
       // A preloaded title (lobby "recently added") decides the room type itself
@@ -796,6 +834,8 @@ function setupSync(io, enabledRoomTypes) {
       socketToRoom.set(socket.id, room);
 
       socket.emit('room-state', { ...room.state(), isHost, isAdmin, inviteToken: isHost ? room.inviteToken : null });
+      socket.emit('chat-history', room.chatHistory);
+      if (room.mutedIds?.has(String(user.id))) socket.emit('chat-muted', { muted: true });
       room.broadcastViewers(io);
       broadcastRoomList(io);   // the lobby's viewer count / host name change when someone arrives
       if (isHost && room.pendingChannel) {
@@ -981,7 +1021,7 @@ function setupSync(io, enabledRoomTypes) {
       room.position = validPosition(position) ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
-      room.broadcast(io, 'chat', {
+      room.chat(io, {
         name: user.displayName || user.name,
         text: '▶ resumed',
         isSystem: true,
@@ -1005,7 +1045,7 @@ function setupSync(io, enabledRoomTypes) {
       room.position = validPosition(position) ?? room.currentPosition();
       room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
-      room.broadcast(io, 'chat', {
+      room.chat(io, {
         name: user.displayName || user.name,
         text: '⏸ paused',
         isSystem: true,
@@ -1025,12 +1065,33 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Chat ───────────────────────────────────────────────
-    socket.on('chat', (data) => {
+    // { text, gif?, replyTo?, videoTime? }. A GIF is named by its Giphy id only; the server looks it up (gifs.js),
+    // so a browser can't put an arbitrary image URL in front of everyone.
+    socket.on('chat', async (data) => {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
+      if (room.mutedIds?.has(String(user.id))) return socket.emit('chat-muted', { muted: true });
       if (!chatLimiter.allow(socket.id)) return;
-      const trimmed = sanitizeText(((data && data.text) || '').trim().slice(0, 300));
-      if (!trimmed) return;
+      const trimmed = wordfilter.clean(cleanChat(typeof data.text === 'string' ? data.text : ''));
+      let gif = null;
+      if (data.gif) {
+        gif = await gifs.lookup(String(data.gif));
+        if (!gif) return socket.emit('error-msg', 'That GIF could not be posted.');
+        if (socketToRoom.get(socket.id) !== room) return;   // left while Giphy answered
+      }
+      // An image this person uploaded to this room (POST /api/chat/upload) and hasn't posted yet
+      let image = null;
+      if (data.image) {
+        const up = room.uploads.get(String(data.image));
+        if (!up || up.by !== String(user.id) || up.posted) return socket.emit('error-msg', 'That image could not be posted.');
+        if (!uploads.allowedFor(user)) return socket.emit('error-msg', 'Image uploads are turned off.');
+        up.posted = true;
+        image = { id: String(data.image), w: up.w, h: up.h };
+      }
+      if (!trimmed && !gif && !image) return;
+      const quoted = data.replyTo != null && room.chatHistory.find(m => m.id === Number(data.replyTo) && !m.deleted);
+      const replyTo = quoted ? { id: quoted.id, name: quoted.name, text: quoted.text ? quoted.text.slice(0, 140) : (quoted.gif ? 'GIF' : quoted.image ? 'Image' : '') } : null;
+      typingStopped(room);
       const videoTime = (typeof data.videoTime === 'number' && isFinite(data.videoTime)
         && data.videoTime >= 0 && data.videoTime < 86400)
         ? Math.floor(data.videoTime)
@@ -1051,13 +1112,78 @@ function setupSync(io, enabledRoomTypes) {
       } else {
         for (const v of room.viewers.values()) if (v.name && mentionedAt(v.name)) mentions.push(v.socketId);
       }
-      room.broadcast(io, 'chat', {
+      room.chat(io, {
         name: user.displayName || user.name,
+        fromId: String(user.id),
+        fromAdmin: isAdmin,
         text: trimmed,
+        gif,
+        image,
+        replyTo,
         isGuest: user.isGuest || false,
         videoTime,
         mentions
       });
+    });
+
+    // Delete a message: your own, or anyone's if you're the host or the server owner (a host can't remove the owner's)
+    socket.on('chat-delete', ({ id }) => {
+      const room = socketToRoom.get(socket.id);
+      const msg = room?.chatHistory.find(m => m.id === Number(id));
+      if (!msg || msg.deleted) return;
+      const mine = msg.fromId === String(user.id);
+      const mod = isAdmin || (room.hostSocketId === socket.id && !msg.fromAdmin);
+      if (!mine && !mod) return;
+      if (msg.image) { uploads.remove(room.id, msg.image.id); room.uploads.delete(msg.image.id); }
+      msg.deleted = true; msg.text = ''; msg.gif = null; msg.image = null; msg.replyTo = null; msg.mentions = []; msg.reactions = null;
+      msg.deletedBy = mine ? null : (user.displayName || user.name);
+      for (const m of room.chatHistory) if (m.replyTo?.id === msg.id) m.replyTo.text = '';   // quotes of it go blank too
+      room.broadcast(io, 'chat-deleted', { id: msg.id, by: msg.deletedBy });
+      if (!mine) console.log(`[Room] ${user.displayName || user.name} deleted a message by ${msg.name} in "${room.name}"`);
+    });
+
+    // React to a chat message with one of REACTIONS; sending the same one again takes it back.
+    // msg.reactions = { emoji: [{ id, name }] } — names so people can see who reacted.
+    socket.on('chat-react', ({ id, emoji }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || !REACTIONS.includes(emoji)) return;
+      if (room.mutedIds?.has(String(user.id))) return socket.emit('chat-muted', { muted: true });
+      if (!chatReactLimiter.allow(socket.id)) return;
+      const msg = room.chatHistory.find(m => m.id === Number(id));
+      if (!msg || msg.deleted || msg.isSystem) return;
+      const uid = String(user.id);
+      const rx = msg.reactions || (msg.reactions = {});
+      const list = rx[emoji] || (rx[emoji] = []);
+      const i = list.findIndex(r => r.id === uid);
+      if (i >= 0) list.splice(i, 1); else list.push({ id: uid, name: user.displayName || user.name });
+      if (!list.length) delete rx[emoji];
+      room.broadcast(io, 'chat-reactions', { id: msg.id, reactions: rx });
+    });
+
+    // "… is typing" — relayed to everyone else in the room, throttled; the browser times it out
+    socket.on('typing', () => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || room.mutedIds?.has(String(user.id)) || !typingLimiter.allow(socket.id)) return;
+      room.viewers.forEach((_, sid) => { if (sid !== socket.id) io.to(sid).emit('typing', { sid: socket.id, name: user.displayName || user.name }); });
+    });
+    function typingStopped(room) {
+      room.viewers.forEach((_, sid) => { if (sid !== socket.id) io.to(sid).emit('typing', { sid: socket.id, stop: true }); });
+    }
+
+    // Mute someone in chat (host or server owner). Lasts until the room closes, keyed by user id so a refresh
+    // doesn't undo it. The owner can't be muted, and only the owner can mute the host.
+    socket.on('mute-viewer', ({ targetSocketId, muted }) => {
+      const room = socketToRoom.get(socket.id);
+      const target = room?.viewers.get(targetSocketId);
+      if (!room || !target || targetSocketId === socket.id || target.isAdmin) return;
+      if (!isAdmin && room.hostSocketId !== socket.id) return;
+      const id = String(target.id);
+      if (muted) (room.mutedIds || (room.mutedIds = new Set())).add(id);
+      else room.mutedIds?.delete(id);
+      const by = user.displayName || user.name;
+      room.viewers.forEach((v, sid) => { if (String(v.id) === id) io.to(sid).emit('chat-muted', { muted: !!muted, by }); });
+      room.broadcastViewers(io);
+      console.log(`[Room] ${by} ${muted ? 'muted' : 'unmuted'} ${target.name} in "${room.name}"`);
     });
 
     // ── Reactions ──────────────────────────────────────────
@@ -1066,8 +1192,7 @@ function setupSync(io, enabledRoomTypes) {
       if (!room) return;
       if (!room.settings.reactionsEnabled) return;
       if (!reactionLimiter.allow(socket.id)) return;
-      const allowed = ['👍','❤️','😂','😱','😮','👏'];
-      if (!allowed.includes(emoji)) return;
+      if (!REACTIONS.includes(emoji)) return;
       const picture = room.viewers.get(socket.id)?.picture || user.picture || null;
       console.log(`[Reaction] ${user.displayName || user.name} (${user.isGuest ? 'guest' : 'plex'}) picture=${picture ? String(picture).slice(0, 90) : 'none'}`);
       room.broadcast(io, 'reaction', { emoji, name: user.displayName || user.name, picture });
@@ -1094,6 +1219,25 @@ function setupSync(io, enabledRoomTypes) {
       removeViewer(io, room, targetSocketId, user, { ban: isAdmin });
     });
 
+    // ── Rename someone in the room ─────────────────────────
+    // The server owner can rename anyone (a Plex user's rename becomes their nickname everywhere, like the admin
+    // People page); a host can rename guests in their own room (a guest's name only lives in their session).
+    socket.on('rename-viewer', ({ targetSocketId, name }) => {
+      const room = socketToRoom.get(socket.id);
+      const target = room?.viewers.get(targetSocketId);
+      if (!room || !target) return;
+      const amHost = room.hostSocketId === socket.id;
+      if (!isAdmin && !amHost) return socket.emit('error-msg', 'Only the host can rename people.');
+      if (!isAdmin && !target.isGuest) return socket.emit('error-msg', 'Only the server owner can rename Plex users.');
+      if (target.isAdmin && !isAdmin) return;
+      const clean = sanitizeText(String(name || '').trim().slice(0, 40));
+      if (!clean) return socket.emit('error-msg', 'Enter a name.');
+      if (!wordfilter.isClean(clean)) return socket.emit('error-msg', wordfilter.NAME_REFUSED);
+      if (!target.isGuest) users.setNickname(target.id, clean);
+      console.log(`[Room] ${user.displayName || user.name} renamed ${target.name} → ${clean} in "${room.name}"`);
+      applyRename(target.id, clean, user.displayName || user.name);
+    });
+
     // ── Countdown (host only) ──────────────────────────────
     // ── Force resync (host only) ───────────────────────────
     // Parks everyone at the host's current position (paused), then resumes them together after RESYNC_SECONDS.
@@ -1118,7 +1262,7 @@ function setupSync(io, enabledRoomTypes) {
       room.position = position; room.playing = false; room.lastUpdate = Date.now();
       room.broadcastState(io);
       room.broadcast(io, 'resync', { seconds: RESYNC_SECONDS, position, by: user.displayName || user.name });
-      room.broadcast(io, 'chat', { name: user.displayName || user.name, text: '🔄 forced a resync', isSystem: true, videoTime: Math.floor(position) });
+      room.chat(io, { name: user.displayName || user.name, text: '🔄 forced a resync', isSystem: true, videoTime: Math.floor(position) });
       console.log(`[Room] "${room.name}" — ${user.name} forced a resync at ${position.toFixed(1)}s`);
 
       room.resyncTimer = setTimeout(() => {
@@ -1253,6 +1397,8 @@ function setupSync(io, enabledRoomTypes) {
     // ── Disconnect ─────────────────────────────────────────
     socket.on('disconnect', () => {
       chatLimiter.delete(socket.id);
+      typingLimiter.delete(socket.id);
+      chatReactLimiter.delete(socket.id);
       reactionLimiter.delete(socket.id);
       seekLimiter.delete(socket.id);
       const room = socketToRoom.get(socket.id);
@@ -1394,11 +1540,73 @@ function onlineUserIds() {
   return ids;
 }
 
+/**
+ * Show a new name for someone everywhere they're connected right now: their open sockets (and the sessions behind
+ * them, so a reload keeps it), every room's viewer list, and a room's host name. Plex users' nicknames are already
+ * in the registry by the time this runs (the registry wins on their next connection anyway); a guest's name lives
+ * only in their session, which this saves. `by` (optional) is who renamed them, for a system line in the room chat.
+ */
+function applyRename(userId, name, by = null) {
+  if (!_io) return;
+  userId = String(userId);
+  let oldName = null;
+  for (const s of _io.sockets.sockets.values()) {
+    const u = s.user;
+    if (!u || String(u.id) !== userId) continue;
+    oldName = oldName || u.displayName || u.name;
+    if (u.isGuest) u.name = name; else u.displayName = name || undefined;
+    const sess = s.request.session;
+    if (sess?.user && String(sess.user.id) === userId) {
+      if (u.isGuest) sess.user.name = name; else sess.user.displayName = name || undefined;
+      sess.save?.(() => {});
+    }
+  }
+  for (const room of rooms.values()) {
+    let touched = false;
+    for (const v of room.viewers.values()) {
+      if (String(v.id) !== userId) continue;
+      const shown = name || _io.sockets.sockets.get(v.socketId)?.user?.name || v.name;
+      oldName = oldName || v.name;
+      v.name = shown;
+      if (v.isHost) room.hostName = shown;
+      touched = true;
+    }
+    if (!touched) continue;
+    room.broadcastViewers(_io);
+    if (by && oldName && name) room.chat(_io, { name: by, text: `✏️ renamed ${oldName} to ${name}`, isSystem: true });
+  }
+}
+
+/**
+ * May this session user use room `roomId`'s chat images? They must be in the room right now (a guest's invite also
+ * has to be for it), and for uploading, not muted. Returns the room or null.
+ */
+function chatRoomFor(user, roomId, { upload = false } = {}) {
+  const room = rooms.get(roomId);
+  if (!room || !user) return null;
+  if (user.isGuest && room.inviteToken !== user.inviteToken) return null;
+  const here = [...room.viewers.values()].some(v => String(v.id) === String(user.id));
+  if (!here) return null;
+  if (upload && room.mutedIds?.has(String(user.id))) return null;
+  return room;
+}
+
+/** Note a freshly stored upload against its room, so only its uploader can post it (once). */
+function registerUpload(room, userId, info) {
+  room.uploads.set(info.id, { by: String(userId), w: info.w, h: info.h, posted: false });
+  // Never posted (closed the tab, cancelled): don't keep it around
+  setTimeout(() => {
+    const up = room.uploads.get(info.id);
+    if (up && !up.posted) { room.uploads.delete(info.id); uploads.remove(room.id, info.id); }
+  }, 15 * 60 * 1000).unref();
+}
+
 /** Which room types the server has turned on (for the admin API). */
 const enabledRoomTypes = () => ({ ..._enabledRoomTypes });
 
 module.exports = {
-  setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, adminCloseRoom, onlineUserIds,
+  setupSync, getRoomByInviteToken, createScheduledRoom, getRoom, adminCloseRoom, onlineUserIds, applyRename,
+  chatRoomFor, registerUpload,
   createPersistentRoom, restorePersistentRooms, getPersistentRoom, removePersistentRoom, enabledRoomTypes,
   liveTvCapacity,
 };
