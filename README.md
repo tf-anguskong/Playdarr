@@ -152,6 +152,15 @@ docker compose logs -f
 
 Playdarr will be available at `http://localhost:3000` (or whichever `PORT` you configured).
 
+**Prefer a prebuilt image?** Releases are published for x86-64 and ARM64 (Raspberry Pi 4/5, Apple Silicon, ARM NAS boxes) at `ghcr.io/tf-anguskong/playdarr`. In `docker-compose.yml`, replace `build: .` with `image: ghcr.io/tf-anguskong/playdarr:latest` (or a version such as `:1.0.0`), then:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Intel GPU encoding (`LIVETV_HWACCEL=vaapi`) is only in the x86-64 image; AMD's VAAPI driver is in both.
+
 ### 3. Expose it to the internet
 
 Playdarr needs to be reachable over HTTPS for guests to join from outside your network. Serve it however you like — NGINX, Caddy, Traefik, Tailscale, or any other reverse proxy or tunnel solution.

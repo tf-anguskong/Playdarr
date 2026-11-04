@@ -168,7 +168,7 @@ Check it with `docker exec playdarr vainfo` (should list H.264 encode entries) a
 
 Tell the user:
 
-- **Updating:** `git pull` then `docker compose up --build -d`.
+- **Updating:** `git pull` then `docker compose up --build -d`. (If they switched `docker-compose.yml` to the published image `ghcr.io/tf-anguskong/playdarr:latest` — x86-64 and ARM64 — it's `docker compose pull` then `docker compose up -d`.)
 - **Data:** everything persistent (sessions, settings, scheduled nights, webhooks, people) lives in the Docker volume mounted at `/data`. Rooms and chat are in memory and end on restart, by design. Backups: [Data, Backups and Updates](wiki/Data-Backups-and-Updates.md).
 - **Admin panel** (`/admin`, owner only): Discord webhooks, people and nicknames, always-on rooms, and the Settings page.
 - **Android TV app:** [Playdarr for Android TV](https://github.com/tf-anguskong/Playdarr-AndroidTV) connects to this server.

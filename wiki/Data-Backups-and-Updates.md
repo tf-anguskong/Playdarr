@@ -55,11 +55,20 @@ docker compose up --build -d        # add -f docker-compose.yml -f docker-compos
 docker compose logs -f
 ```
 
+If your `docker-compose.yml` uses the published image (`image: ghcr.io/tf-anguskong/playdarr:latest` instead of `build: .`), update with:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Pin a version (`:1.0.0`) instead of `:latest` if you want to choose when to upgrade. Images are built for x86-64 and ARM64; Docker picks the right one.
+
 - **Branches:** `master` is the stable branch; `dev` carries work in progress. Follow `master` unless you want features early.
 - **Open rooms close** when the container restarts. Webhooks, schedules and nicknames come back.
 - After an update that touches sign-in, **sign out and back in** (the admin flag is set at sign-in).
 - If you changed `.env`, use `docker compose up -d --force-recreate` so the new values are read.
-- **Rolling back:** `git checkout <earlier-commit>` and rebuild. **Back up the data files first:** an older version doesn't understand newer fields (for example, it would treat a recurring night as a one-off and remove it after it opens).
+- **Rolling back:** `git checkout <earlier-commit>` and rebuild (published image: set the older version tag and `docker compose up -d`). **Back up the data files first:** an older version doesn't understand newer fields (for example, it would treat a recurring night as a one-off and remove it after it opens).
 
 ## Changing what's saved
 
