@@ -1815,15 +1815,3 @@ body.sidebar-resizing .player-container { pointer-events: none; }
 .ao-remove-channel:hover { color: var(--pd-err); border-color: var(--pd-err); }
 .ao-add-channel { align-self: flex-start; background: none; border: 1px dashed var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted-2); cursor: pointer; padding: 0.3rem 0.55rem; font: 500 11px/1 var(--pd-font-mono); }
 .ao-add-channel:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
-
-/* "Send to your TV" (/tv/<code>): paste an invite link into the Android TV app */
-.tv-send-form { display: flex; flex-direction: column; gap: 0.45rem; text-align: left; }
-.tv-send-form .search-input { width: 100%; box-sizing: border-box; }
-.tv-send-label { font: 500 11px/1.4 var(--pd-font-mono); color: var(--pd-text-muted-2); text-transform: uppercase; letter-spacing: .04em; margin-top: 0.5rem; }
-.tv-send-opt { text-transform: none; letter-spacing: 0; color: var(--pd-text-faint); }
-.tv-send-code { font: 600 1.4rem/1 var(--pd-font-mono); letter-spacing: .3em; text-align: center; text-transform: uppercase; }
-.tv-send-text { resize: vertical; font-family: var(--pd-font-mono); min-height: 4.5rem; }
-.tv-send-paste { align-self: flex-start; background: none; border: 1px solid var(--pd-border-strong); border-radius: 6px; color: var(--pd-text-muted-2); cursor: pointer; padding: 0.4rem 0.7rem; font: 500 12px/1 var(--pd-font-ui); }
-.tv-send-paste:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
-.tv-send-btn { margin-top: 0.9rem; width: 100%; justify-content: center; }
-.tv-send-done h2 { color: var(--pd-ok); margin: 0.5rem 0; }
