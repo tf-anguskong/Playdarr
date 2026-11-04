@@ -2,6 +2,8 @@
 
 A checklist for a brand-new install, ending with a working admin panel and a Discord test message. Allow about 15 minutes.
 
+> 🤖 Prefer to be guided? Point your AI assistant at [AIPROMPT_SETUP.md](https://github.com/tf-anguskong/Playdarr/blob/master/AIPROMPT_SETUP.md) and ask it to help you install Playdarr.
+
 ## 1. Prerequisites
 
 - A Plex Media Server reachable on your LAN.
