@@ -7,7 +7,8 @@ Live TV rooms let everyone watch the same broadcast channel in sync, with a host
 - Video comes **straight from an HDHomeRun tuner** through ffmpeg (bundled in the Docker image). ffmpeg converts the tuner's MPEG-2/AC3 stream into browser-friendly H.264/AAC.
 - Each Live TV room records its channel to disk as a rolling **1-hour DVR**. The room's position is a point in that recording, which is how pause, rewind and tight sync work.
 - **Plex is used only for the channel guide** (channel list and "now playing" titles).
-- Changing channel starts a fresh recording for the room; the old one is thrown away.
+- Changing channel starts a fresh recording for the room; the old one is thrown away. (In [split view](#split-view-several-channels-in-one-room), changing one tile's channel keeps the recording.)
+- A room can show **up to 4 channels at once** in [split view](#split-view-several-channels-in-one-room), each viewer picking which one they hear.
 
 ## The lobby's "on now" strip
 
@@ -145,7 +146,9 @@ The LXC shares the Proxmox host's kernel, so install nothing GPU-related inside 
 
 | Symptom | Likely cause / fix |
 |---|---|
-| "Live TV is full right now" | You've reached `LIVETV_MAX_ROOMS` (default 2). Wait for a room to end, or raise it (up to your tuner count and what your CPU/GPU can encode) and recreate the container |
+| "Live TV is full right now" | You've reached `LIVETV_MAX_ROOMS` (default 2), which counts channels (one per split-view tile). Wait for a room to end, or raise it (up to your tuner count and what your CPU/GPU can encode) and recreate the container |
+| No *+ Add a channel* in split view | Split view is off or capped (`LIVETV_SPLIT_MAX`), `LIVETV_MAX_ROOMS` is 1, or `LIVETV_SOURCE=plex` |
+| Split-view tile shows the wrong channel after rewinding | Expected: rewound past a tile change, the picture shows what was recorded then, while the label shows the current channel |
 | No Live TV option in the lobby | `ROOM_TYPE_LIVETV=true` not set, or you didn't recreate the container after editing `.env` |
 | Channel list empty / no program titles | Plex guide unreachable. Check `LIVETV_PLEX_HOST` and token; the Plex DVR must have channels |
 | Stuck on "Tuning…" then fails | Tuner busy (all tuners in use) or `HDHR_IP` unreachable from the container |

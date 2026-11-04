@@ -82,8 +82,11 @@ See [Always-On Rooms](Always-On-Rooms#troubleshooting).
 | Symptom | Cause and fix |
 |---|---|
 | "You can pause again in Ns" (Live TV) | The pause cooldown (default 10 s between pauses) stopped a too-quick second pause. Wait the few seconds, or change or turn it off under Admin → Settings → Live TV pause cooldown |
-| "Live TV is full right now" | You've reached `LIVETV_MAX_ROOMS` (default 2). Wait for a room to end, or raise it in `.env` (up to your tuner count and what your CPU/GPU can encode) |
-| High CPU during Live TV | Software encoding is about one core per room — use [GPU encoding](Live-TV-Administration#hardware-encoding-intel-or-amd-igpu) |
+| "Live TV is full right now" | You've reached `LIVETV_MAX_ROOMS` (default 2), which counts channels: a split-view room uses one per tile. Wait for a room to end or a tile to be removed, or raise it in `.env` (up to your tuner count and what your CPU/GPU can encode) |
+| "Not enough Live TV tuners free for N channels" | Adding a split-view tile needs a free tuner. Remove a tile, wait for another Live TV room to end, or raise `LIVETV_MAX_ROOMS` |
+| No *+ Add a channel* in a Live TV room | Split view is off (`LIVETV_SPLIT_MAX` = 1, Settings → Live TV split view), `LIVETV_MAX_ROOMS` is 1, or Live TV is using the Plex DVR source instead of an HDHomeRun |
+| "Channel X has no audio, so it can't be shown in split view" | Every tile needs a sound track; pick a different channel |
+| High CPU during Live TV | Software encoding is about one core per room (a split-view room is still one encode, plus decoding each extra channel) — use [GPU encoding](Live-TV-Administration#hardware-encoding-intel-or-amd-igpu) |
 | Disk filling | Live TV recordings are ~3–4 GB per room-hour; close idle Live TV rooms; they're deleted on close and at startup |
 
 ## Still stuck?
