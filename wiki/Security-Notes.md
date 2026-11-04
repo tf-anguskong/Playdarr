@@ -56,7 +56,13 @@ The Settings page can't be used to run arbitrary programs or write files: *Custo
 
 ## Browser protections
 
-Playdarr sends security headers (CSP, frame blocking, HSTS when `COOKIE_SECURE=true`). The Content Security Policy restricts where scripts, frames and media can load from: only itself and YouTube for embeds. If you add a custom reverse-proxy header policy, don't strip these.
+Playdarr sends security headers (CSP, frame blocking, HSTS when `COOKIE_SECURE=true`). The Content Security Policy restricts where scripts, frames and media can load from: only itself and YouTube for embeds. Images may load from any HTTPS address (Plex avatars, Giphy, channel logos), but chat can only show GIFs the server looked up on Giphy itself and images it re-encoded — never a URL someone typed. If you add a custom reverse-proxy header policy, don't strip these.
+
+## Chat images and GIFs
+
+- **Uploads** are decoded and re-saved by the server (PNG, JPEG, WebP or GIF only; SVG is refused because it can carry script), so what's served is always Playdarr's own WebP file, not the bytes someone sent. They're limited to 8 MB and 8 per minute per person.
+- They aren't screened for content. If guests can't be trusted with that, set *Image uploads in chat* to *Plex users only* or *Off*; hosts and you can delete and mute.
+- The **Giphy key** stays on the server: browsers search through Playdarr, and posting names a GIF by id, which the server checks against your rating.
 
 ## Privacy: what Playdarr remembers about people
 
@@ -64,7 +70,8 @@ Playdarr sends security headers (CSP, frame blocking, HSTS when `COOKIE_SECURE=t
 |---|---|---|
 | Plex ID, Plex display name, avatar URL | `users.json` | Plus nickname, first/last seen, sign-in count |
 | Email address | **Not stored** | |
-| Chat | **Not stored** | Lives in the browser; users can export a `.txt` themselves |
+| Chat | **Memory only, per room** | The last 100 messages are kept while the room is open (so late joiners see them) and gone when it closes or the server restarts. Users can export a `.txt` themselves |
+| Images posted in chat | `chat-uploads/<room>/` | Re-encoded (location and other metadata removed), only served to people in that room, deleted with the message, when the room closes and on every start |
 | Guests | **Not stored** | Anonymous per-invite identities |
 | Watch history | **Not stored** | |
 
@@ -75,4 +82,4 @@ To forget everyone, stop the container and delete `users.json`.
 - Put Playdarr behind a proxy that rate-limits by IP, or behind a VPN/Tailscale if guests only come from known networks.
 - Keep Docker images and the host OS updated; rebuild Playdarr regularly (`git pull && docker compose up --build -d`) to pick up dependency updates.
 - Restrict who has access to your Plex server: anyone with access can sign in to Playdarr.
-- Review the logs occasionally — admin actions are logged with who did them: `docker compose logs | grep -E "\[Admin\]|\(admin\)"` shows webhook changes, nickname resets, room closes, cancelled nights and owner kicks.
+- Review the logs occasionally — admin actions are logged with who did them: `docker compose logs | grep -E "\[Admin\]|\(admin\)"` shows webhook changes, nickname changes, room closes, cancelled nights and owner kicks; `grep "\[Room\]"` also shows renames, mutes and removed messages.

@@ -1,6 +1,6 @@
 # Playdarr Admin Guide
 
-Playdarr is a self-hosted watch-party app for your Plex server: synced movies, TV, YouTube and live TV, with chat, reactions, guest invite links, recurring watch nights and swipe-to-vote movie picking.
+Playdarr is a self-hosted watch-party app for your Plex server: synced movies, TV, YouTube and live TV, with chat (GIFs, images, replies and reactions), guest invite links, rich link previews, recurring watch nights and swipe-to-vote movie picking.
 
 This wiki is for the **person who runs the server**. It covers setting Playdarr up, using the admin panel, keeping rooms friendly, wiring up Discord notifications, and looking after the data.
 
@@ -15,7 +15,8 @@ This wiki is for the **person who runs the server**. It covers setting Playdarr 
 | Learn what's on the `/admin` page | [Admin Panel](Admin-Panel) |
 | Change configuration from the browser | [Settings Page](Settings-Page) |
 | Post reminders and invite links to Discord | [Webhooks and Notifications](Webhooks-and-Notifications) |
-| Kick someone, close a room, reset a nickname | [Moderation](Moderation) |
+| Kick, mute or rename someone, close a room, delete messages, filter offensive words | [Moderation](Moderation) |
+| Turn on GIFs, choose who can post images | [Settings Page](Settings-Page) · [Configuration Reference](Configuration-Reference) |
 | Set up weekly movie nights | [Scheduling and Recurring Nights](Scheduling-and-Recurring-Nights) |
 | Keep a room (or a Live TV channel) open all the time | [Always-On Rooms](Always-On-Rooms) |
 | Run Live TV from an HDHomeRun | [Live TV Administration](Live-TV-Administration) |
@@ -28,7 +29,7 @@ This wiki is for the **person who runs the server**. It covers setting Playdarr 
 
 - **Playdarr** is one Node.js container. It proxies video from your Plex server (so Plex tokens never reach browsers) and keeps every viewer in a room in sync.
 - **Plex users** sign in with Plex and can create rooms. **Guests** join through an invite link with just a display name.
-- **Rooms live in memory.** Restarting the container closes them, except **always-on rooms**, which are recreated. Schedules, webhooks, the people list and always-on rooms are saved to disk and survive restarts.
+- **Rooms live in memory.** Restarting the container closes them, except **always-on rooms**, which are recreated. Schedules, webhooks, the people list, settings and always-on rooms are saved to disk and survive restarts. Chat (and any images posted in it) belongs to its room and goes with it.
 - **Live TV** (optional) comes straight from an HDHomeRun tuner through ffmpeg into a per-room on-disk recording; Plex supplies only the channel guide.
 
 ## Conventions used in this guide

@@ -22,6 +22,7 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **Movie browser** — searchable, filterable (genre, rating, year) picker for your Plex library, host-only; switch between a poster grid and a compact list view (remembered per browser)
 - **YouTube rooms** — create a YouTube room instead of a movie room; the host pastes any `youtube.com` or `youtu.be` URL and the video embeds for all viewers via the YouTube IFrame API, fully synchronised; the video title is fetched automatically and shown in the sidebar and room list
 - **Live TV rooms** — watch live television together. The host picks a channel from an EPG guide (Plex supplies the channel list and now-playing programme info, also shown in the channel picker). Video comes **straight from your HDHomeRun** — ffmpeg (bundled in the Docker image) converts the broadcast MPEG-2/AC3 feed to H.264/AAC — and is recorded to a per-room **DVR on disk** (rolling 1 hour). The host controls playback: pause, rewind and seek within the DVR, or hit **Go live**; guests follow, with a "LIVE / -m:ss behind live" readout. A channel change starts a fresh DVR. If no HDHomeRun is configured, Live TV falls back to tuning through Plex's DVR
+- **Picture in Picture** — a PiP button on the player pops the video into a floating window that keeps following the room's play/pause/seek. Viewers who can't control playback (Live TV guests, guests in a locked room) are put straight back in step if they press pause in the PiP window
 - **Multi-room** — multiple watch parties can run simultaneously, each with their own state
 
 ### Rooms & Access
@@ -34,6 +35,7 @@ A Plex user creates a room, shares an invite link, and guests join straight from
 - **Auto host migration** — if the host leaves and other viewers remain, the room automatically promotes the next best viewer (preferring Plex users over guests) rather than closing
 - **Server-owner admin** — whoever *owns* the Plex server Playdarr is connected to is detected automatically at login (plex.tv marks the account as owner of that server), with no extra config. Admins get an `admin` badge and can close any room, kick any viewer (and block them from rejoining that room) from the lobby or from inside a room, and cancel any scheduled room. Other users, including hosts, can't kick an admin. Sign out and back in after upgrading for the owner flag to be picked up.
 - **Room persistence** — rooms live in memory; a 30-second grace timer keeps a room alive if the host briefly navigates away
+- **Rich link previews** — paste an invite link into Discord, Slack, iMessage, etc. and it unfurls with what's on (🎬 movie and year, 📺 show and episode, 🔴 Live TV channel and programme, 📅 scheduled night and time), the artwork, play status and progress, the host and how many are watching. Artwork is served through Playdarr, so your Plex token never leaves the server; viewer names are never included
 
 - **Live TV: on now** — when Live TV rooms are enabled, the lobby shows what's airing right now on your channels (logo, channel and current program, main networks first, refreshed every couple of minutes). Click a channel and Playdarr asks whether to start a Live TV room on it; the room tunes the channel as soon as you arrive. A *More channels* card starts an empty Live TV room so you can pick from the full guide.
 - **Recently added** — the lobby (Plex users) shows a short strip of the newest movies and TV shows from your Plex libraries. Click a card and Playdarr asks whether to create a room with it ready to go. TV cards are shows that just got new episodes ("2 new" badge) and start at the first of the new episodes — for a brand-new show, S1E1. The room is named after the title.
@@ -70,18 +72,32 @@ Whoever owns the Plex server is the admin (see *Server-owner admin* above) and g
   - a room is **created**.
 
   Every message carries the invite link. Discord gets an embed with localised `<t:…>` timestamps; *Generic JSON* gets `{ event, title, message, url, data }`. Each webhook has a *Send test* button and shows the status of its last delivery. Webhook URLs are secrets: they're stored in `DATA_PATH/webhooks.json` (mode 600) and never sent back to the browser (only a short hint is shown). Create a Discord webhook under *Channel settings → Integrations → Webhooks*.
-- **People** — every Plex account that has signed in, with the nickname they chose, whether they're online now, last seen, and sign-in count (searchable). Nicknames are **remembered**: a person's display name is saved against their Plex account (`DATA_PATH/users.json`), so it survives signing out, expired sessions and restarts and comes back automatically at their next sign-in. *Reset nickname* clears one (e.g. an inappropriate name) and the person can pick a new one. Only Plex accounts are tracked — guests are throwaway identities per invite — and email addresses are not stored.
-- **Settings page** (`/admin/settings`) — change most of the server's configuration from the browser instead of editing `.env`: room types, default time zone, the HDHomeRun tuner and Live TV source, how many Live TV rooms may stream, the playback buffer, upscaling and sharpening, encoder speed and bitrate, and hardware encoding. Each setting has a friendly name and a short description (the raw variable names never appear). Changes apply immediately (one, the channel guide server, needs a restart) and are saved to `DATA_PATH/settings.json`. **Anything defined in your `.env` file takes priority**: it's shown with a 🔒 *Set in .env* tag and can't be changed in the UI, so edit `.env` and recreate the container to change it. A read-only *Server connection* section shows how Playdarr is wired (Plex address, public address, port…) and whether the secrets (Plex token, session secret) are configured, without ever revealing them.
+- **People** — every Plex account that has signed in, with the nickname they chose, whether they're online now, last seen, and sign-in count (searchable). Nicknames are **remembered**: a person's display name is saved against their Plex account (`DATA_PATH/users.json`), so it survives signing out, expired sessions and restarts and comes back automatically at their next sign-in. *Rename* sets someone's nickname and *Reset nickname* clears it (e.g. an inappropriate name); both apply immediately wherever the person is connected, and they can still pick a new one themselves. Only Plex accounts are tracked — guests are throwaway identities per invite — and email addresses are not stored.
+- **Settings page** (`/admin/settings`) — change most of the server's configuration from the browser instead of editing `.env`: room types, default time zone, chat & moderation (the offensive-word filter and its word lists, the GIF content rating, and who may post images), the HDHomeRun tuner and Live TV source, how many Live TV rooms may stream, the playback buffer, upscaling and sharpening, encoder speed and bitrate, and hardware encoding. Each setting has a friendly name and a short description (the raw variable names never appear). Changes apply immediately (one, the channel guide server, needs a restart) and are saved to `DATA_PATH/settings.json`. **Anything defined in your `.env` file takes priority**: it's shown with a 🔒 *Set in .env* tag and can't be changed in the UI, so edit `.env` and recreate the container to change it. A read-only *Server connection* section shows how Playdarr is wired (Plex address, public address, port…) and whether the secrets (Plex token, session secret) are configured, without ever revealing them.
 - **Always-on rooms** — pin a room open with nobody in it (owner only). It stays listed in the lobby with a permanent invite link and survives restarts; whoever arrives first (a Plex user, or a guest with the link) becomes host, and when everyone leaves it resets rather than closes (after a 10-second grace for page refreshes). A **Live TV** always-on room tunes its pinned channel **on first join** and stops recording when it empties, so an empty one holds no tuner and no CPU. Movie and TV rooms just stay open and empty.
 - **Live rooms** — every open room with who's in it; kick (and block from rejoining) or close.
 - **Scheduled & recurring** — everything upcoming, with copy link, skip next, and cancel. `APP_URL` must be set so links in notifications point at your public address.
 
+### Chat
+- **Real-time chat** — everyone in the room can chat; each message carries the sender's position in the video and the time it was sent. People who join late (or refresh) see the last 100 messages
+- **Modern basics** — replies (click a quote to jump to the original), delete your own messages, multi-line messages (Shift+Enter), clickable links, @mentions with a picker, "… is typing", grouped consecutive messages, and a "↓ new messages" button when you've scrolled up
+- **Reactions on messages** — the same six emojis as the video reactions; hover a count to see who reacted
+- **GIFs** — search and post GIFs from Giphy (needs a free `GIPHY_API_KEY`; the key stays on the server and the content rating is set by the admin)
+- **Images** — paste, drag in or attach your own pictures (PNG, JPEG, WebP, GIF up to 8 MB). The server resizes and re-saves every image (stripping hidden data such as phone location), only people in that room can see it, and it's deleted with its message or when the room closes. The admin chooses who may post them: everyone, Plex users only, or nobody
+- **Room to chat** — drag the sidebar's edge to make it wider, switch to *bigger chat* to hide the other panels, or pop chat out into its own window
+- **Chat export** — download the chat log as a `.txt` file with video timestamps
+
+### Moderation
+- **Rename** — the server owner can rename anyone (for a Plex user that becomes their nickname everywhere); a host can rename guests in their room. Renames show immediately
+- **Mute** — the host or owner can stop someone chatting (messages, GIFs, images and reactions) for the rest of the room; they can keep watching. It survives a refresh
+- **Delete messages** — the host can remove anyone's message (except the owner's); the owner can remove anyone's
+- **Offensive-word filter** — on by default: words are masked in chat (`****`), and guest names, nicknames, room names and renames containing them are refused. It catches look-alike spellings (`sh1t`) without tripping on innocent words (*Scunthorpe*). The admin can turn it off, add words, or allow words it gets wrong
+- **Tidy viewer list** — sync offsets, badges and the Host / Rename / Mute / Kick buttons only appear while you hover the list
+
 ### Social
-- **Real-time chat** — all viewers can send messages; chat includes the sender's current movie timestamp for context
-- **Chat export** — download the full chat log as a `.txt` file with video timestamps
 - **Play/pause attribution** — a system message appears in chat whenever someone plays or pauses, showing who did it and at what position
 - **Emoji reactions** — a reaction bar (👍 ❤️ 😂 😱 😮 👏) overlays the video on hover; reactions float up the screen for all viewers, each tagged with the avatar (or initial) of whoever sent it
-- **Sync indicators** — the viewer list shows each viewer's offset from the host (e.g. `+0.3s`), colour-coded green / amber / red
+- **Sync indicators** — the viewer list shows each viewer's offset from the host (e.g. `+0.3s`), colour-coded green / amber / red, while you hover it
 - **Force resync** — the host has a *⟳ Force resync* button under the message box. It pauses everyone at the host's position, shows a 2-second "Resyncing" countdown to everyone, then resumes all viewers together from that same spot. Handy when someone drifts or buffers. It works in every room type (for Live TV it uses the host's own player position), is host-only, and is limited to once every 10 seconds so it can't be spammed.
 - **Countdown timer** — host can fire a countdown (3 s, 5 s, 10 s, or custom) before playback begins; all viewers see a film-leader overlay with beep tones; host can cancel mid-count
 - **Intermission** — host can start a timed intermission (1–120 minutes); the video pauses for everyone and an overlay displays the movie poster with a live MM:SS countdown; the movie resumes automatically when the timer ends, or the host can end it early
@@ -95,6 +111,7 @@ Whoever owns the Plex server is the admin (see *Server-owner admin* above) and g
 - **Streaming** — Plex HLS transcoding proxied server-side for movies/TV; Live TV via ffmpeg from an HDHomeRun into an on-disk HLS DVR; [HLS.js](https://github.com/video-dev/hls.js) on the client
 - **Auth** — Plex PIN-based OAuth for Plex users; session-based guest tokens for invited viewers
 - **Sessions** — `express-session` with `session-file-store`
+- **Chat extras** — [sharp](https://sharp.pixelplumbing.com/) to re-encode uploaded images, [obscenity](https://github.com/jo3-l/obscenity) for the word filter, the Giphy API for GIFs
 - **Deployment** — Docker + reverse proxy of your choice
 
 ---
@@ -189,6 +206,12 @@ Copy `.env.example` to `.env` and fill in the values:
 | `COOKIE_SECURE` | Yes | `true` when running behind HTTPS, `false` for local dev |
 | `PLEX_CLIENT_ID` | Yes | Unique identifier for this app in Plex sign-in — any stable string (e.g. `my-playdarr`). The server refuses to start without it |
 | `DEFAULT_TIMEZONE` | No | IANA timezone used as the default when scheduling rooms (e.g. `America/New_York`). Falls back to `UTC`. |
+| `GIPHY_API_KEY` | No | Turns on the GIF button in chat. Create an app at [developers.giphy.com](https://developers.giphy.com/) and choose **API** (not SDK). New keys are rate-limited beta keys (about 100 calls an hour; Playdarr caches results for 10 minutes) — apply for a production key if you need more. Only settable in `.env` |
+| `GIPHY_RATING` | No | Most mature GIFs allowed: `g`, `pg`, `pg-13` (default) or `r` |
+| `CHAT_UPLOADS` | No | Who may paste/upload images in chat: `all` (default, guests too), `plex` (signed-in Plex users only) or `off` |
+| `WORD_FILTER` | No | Offensive-word filter for chat and names (default `true`) |
+| `WORD_FILTER_EXTRA` | No | Comma-separated extra words to block |
+| `WORD_FILTER_ALLOW` | No | Comma-separated words to always allow (e.g. a place or name the built-in list catches) |
 | `PORT` | No | Port to listen on (default: `3000`) |
 | `ROOM_TYPE_MOVIE` | No | Set `false` to hide movie rooms from the lobby (default: `true`) |
 | `ROOM_TYPE_TV` | No | Set `false` to hide TV show rooms from the lobby (default: `true`) |
@@ -217,6 +240,8 @@ Copy `.env.example` to `.env` and fill in the values:
 - **PLEX_URL must be a LAN address.** If you use your external domain, every video segment will round-trip through your reverse proxy, saturating your upload bandwidth.
 - **COOKIE_SECURE must match your protocol.** `true` behind HTTPS, `false` over plain HTTP. Getting this wrong will silently break all sessions.
 - Rooms and chat are **in-memory only** — everything is lost on server restart. This is intentional.
+- **Chat images use disk while a room is open.** Uploaded pictures are stored (re-encoded, max 1600 px) under `DATA_PATH/chat-uploads/<room>/`, deleted when the room closes, and the folder is wiped on every start.
+- **GIFs need outbound HTTPS** from the container to `api.giphy.com` (searches) — the images themselves load in viewers' browsers from Giphy's CDN.
 - The stream proxy restricts forwarded requests to Plex transcode paths only (`/video/:/transcode/universal/` and `/library/parts/`). Arbitrary Plex API access through the proxy is blocked.
 - **Live TV needs an HDHomeRun and a Plex server for the guide.** `ROOM_TYPE_LIVETV=true` does nothing without a Plex server that has a DVR device (e.g. HDHomeRun) configured with channels — Plex provides the channel list and programme info. `LIVETV_PLEX_HOST` and `HDHR_IP` must be LAN addresses reachable from the container.
 - **Live TV encodes on the server's CPU.** Each room runs one ffmpeg (software x264 by default — roughly one core for a 1080i channel at the `veryfast` preset) and occupies one tuner. On a Linux host with an Intel or AMD iGPU, set `LIVETV_HWACCEL=vaapi` and start with `docker compose -f docker-compose.yml -f docker-compose.vaapi.yml up --build -d` to move the encode to the GPU (the deinterlace stays on the CPU); other hardware encoders can be used via `LIVETV_VIDEO_ARGS`.
