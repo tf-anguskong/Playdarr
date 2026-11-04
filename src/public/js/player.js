@@ -575,27 +575,40 @@ function liveTarget() {
 // Guests: every 250ms compare against the host-calibrated room position and steer.
 // Small drift is closed by a gentle, proportional playback-rate change (imperceptible);
 // only a large gap triggers a seek.
+// Like the movie loop: hysteresis (start correcting past 0.15 s, stop inside 0.05 s), 1 % rate steps and at most
+// one speed change a second, because Chrome time-stretches audio at any rate but 1 and every change is audible.
+// Every path that doesn't steer puts the rate back to 1 — a seek, buffering or a lost timeline must never leave a
+// guest at e.g. 0.93x (warbly audio until a refresh).
 let liveDriftLogAt = 0;
+let liveCorrecting = false;
+let liveRateAt = -1e9;
 setInterval(() => {
   if (roomType !== 'livetv') return;
-  if (isHost) { resetPlaybackRate('host does not chase anyone'); return; }
-  if (isSyncing) return;
-  if (!liveState || !liveState.playing || video.paused) { resetPlaybackRate('paused'); return; }
-  if (video.readyState < 3) return;
+  if (isHost) { liveCorrecting = false; resetPlaybackRate('host does not chase anyone'); return; }
+  if (!liveState || !liveState.playing || video.paused) { liveCorrecting = false; resetPlaybackRate('paused'); return; }
+  if (isSyncing || video.readyState < 3) { liveCorrecting = false; resetPlaybackRate(isSyncing ? 'syncing' : 'buffering'); return; }
   const target = liveTarget(), pos = liveAbs();
-  if (target == null || pos == null) return;
+  if (target == null || pos == null) { liveCorrecting = false; resetPlaybackRate('no timeline'); return; }
   const drift = pos - target; // + = ahead of the host
   const abs = Math.abs(drift);
-  let rate = 1;
   if (abs > 1.5) {
+    liveCorrecting = false;
+    resetPlaybackRate('seek');
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
     liveSeekAbs(target);
     releaseSyncLock();
     liveLog(`drift ${drift.toFixed(2)}s — seek`);
-  } else if (abs > 0.12) {
-    rate = 1 - Math.max(-0.08, Math.min(0.08, drift * 0.4));
+    return;
   }
-  if (Math.abs(video.playbackRate - rate) > 0.005) video.playbackRate = rate;
+  if (!liveCorrecting && abs > 0.15) liveCorrecting = true;
+  else if (liveCorrecting && abs < 0.05) liveCorrecting = false;
+  let rate = liveCorrecting ? 1 - Math.max(-0.08, Math.min(0.08, drift * 0.4)) : 1;
+  rate = Math.round(rate * 100) / 100;
+  const now = performance.now();
+  if (Math.abs(video.playbackRate - rate) >= 0.01 && (rate === 1 || now - liveRateAt > 1000)) {
+    video.playbackRate = rate;
+    liveRateAt = now;
+  }
   if (performance.now() - liveDriftLogAt > 15000) {
     liveDriftLogAt = performance.now();
     liveLog(`sync drift=${drift.toFixed(2)}s rate=${rate.toFixed(3)}`);
