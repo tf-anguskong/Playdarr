@@ -42,10 +42,9 @@ let pendingYtInit = null;
 
 const autoplayOnLoad = new URLSearchParams(location.search).has('autoplay');
 
+// Escapes for text *and* attribute values (quotes included)
 function esc(s = '') {
-  const d = document.createElement('div');
-  d.appendChild(document.createTextNode(s));
-  return d.innerHTML;
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // ── Join room ──────────────────────────────────────────────
@@ -999,7 +998,7 @@ function renderViewers(viewers) {
     return `
       <div class="viewer-item" data-name="${esc(v.name)}">
         ${v.picture
-          ? `<img src="${v.picture}" alt="${esc(v.name)}">`
+          ? `<img src="${esc(v.picture)}" alt="${esc(v.name)}">`
           : `<div class="viewer-avatar-placeholder">${esc(v.name[0]?.toUpperCase() || '?')}</div>`
         }
         <span class="viewer-name-wrap">${esc(v.name)}${v.isHost ? ' 👑' : ''}${v.isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span>
@@ -1267,7 +1266,7 @@ async function loadMovies() {
     grid.innerHTML = movies.map(m => `
       <div class="movie-card" data-key="${m.ratingKey}">
         ${m.thumb
-          ? `<img class="movie-poster" src="${m.thumb}" alt="${esc(m.title)}" loading="lazy">`
+          ? `<img class="movie-poster" src="${esc(m.thumb)}" alt="${esc(m.title)}" loading="lazy">`
           : `<div class="movie-poster-placeholder">🎬</div>`
         }
         <div class="movie-info">
@@ -1367,7 +1366,7 @@ async function loadShows() {
     grid.innerHTML = shows.map(s => `
       <div class="movie-card" data-key="${s.ratingKey}" data-title="${esc(s.title)}">
         ${s.thumb
-          ? `<img class="movie-poster" src="${s.thumb}" alt="${esc(s.title)}" loading="lazy">`
+          ? `<img class="movie-poster" src="${esc(s.thumb)}" alt="${esc(s.title)}" loading="lazy">`
           : `<div class="movie-poster-placeholder">📺</div>`}
         <div class="movie-info">
           <h3 title="${esc(s.title)}">${esc(s.title)}</h3>
@@ -1397,7 +1396,7 @@ async function loadSeasons(showKey) {
     if (!seasons.length) { list.innerHTML = '<div class="loading">No seasons found.</div>'; return; }
     list.innerHTML = seasons.map(s => `
       <div class="episode-item" data-key="${s.ratingKey}">
-        ${s.thumb ? `<img class="episode-thumb" src="${s.thumb}" alt="">` : '<div class="episode-thumb-placeholder">📺</div>'}
+        ${s.thumb ? `<img class="episode-thumb" src="${esc(s.thumb)}" alt="">` : '<div class="episode-thumb-placeholder">📺</div>'}
         <div class="episode-info">
           <span class="episode-title">${esc(s.title)}</span>
           <span class="episode-meta">${s.leafCount ? s.leafCount + ' episodes' : ''}</span>
@@ -1430,7 +1429,7 @@ async function loadEpisodes(seasonKey) {
       const dur = e.duration ? Math.round(e.duration / 60000) + ' min' : '';
       return `
         <div class="episode-item" data-key="${e.ratingKey}">
-          ${e.thumb ? `<img class="episode-thumb" src="${e.thumb}" alt="">` : '<div class="episode-thumb-placeholder">📺</div>'}
+          ${e.thumb ? `<img class="episode-thumb" src="${esc(e.thumb)}" alt="">` : '<div class="episode-thumb-placeholder">📺</div>'}
           <div class="episode-info">
             <span class="episode-title">${epNum}${esc(e.title)}</span>
             <span class="episode-meta">${dur}</span>

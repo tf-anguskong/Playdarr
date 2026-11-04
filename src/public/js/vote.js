@@ -3,7 +3,7 @@
 // Movie vote UI. Loaded after player.js, which provides `socket`, `isHost`, `roomType` and `showNotif`.
 // The host sets filters and starts a deck; everyone swipes (drag, buttons or ← / →); the most-liked wins.
 (() => {
-  const esc = (s = '') => { const d = document.createElement('div'); d.appendChild(document.createTextNode(String(s))); return d.innerHTML; };
+  const esc = (s = '') => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));   // text and attribute values
   const btn = document.getElementById('vote-btn');
 
   const overlay = document.createElement('div');

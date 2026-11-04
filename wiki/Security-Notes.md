@@ -19,6 +19,7 @@ What protects your server, what to configure, and what to be aware of.
 | **Guest** | Invite link + a display name | Join that room, chat, react; can be given host of it. Cannot create or schedule rooms or see the lobby |
 
 - Sign-in uses Plex's PIN flow. The PIN is tied to the browser that started the sign-in, so only that browser can finish it. At sign-in Playdarr confirms the account actually has access to *your* server; if not, it's refused.
+- When a host picks a movie or episode (or a night is scheduled with one), the server looks the title and file up in Plex itself; the browser only says which item.
 - A guest's session only works for **the room its invite points at**, and only for what that room is playing. It can't stream other titles or other rooms, and it stops working when the room closes.
 - The admin flag lives in the **server-side session**, and every admin route and socket action re-checks it. Browsers can't grant it to themselves.
 - The `/auth` endpoints are rate-limited (30 requests per 15 minutes per IP) to blunt guessing.
@@ -47,6 +48,10 @@ Anyone who has a room's invite link can join as a guest. Treat links like keys:
 - Only the owner can add, edit, test or delete webhooks.
 - Playdarr will POST to any `http`/`https` URL the owner enters, including LAN addresses (useful for Home Assistant). That's intentional — only the owner can configure it.
 - Rotating a leaked URL: create a new webhook in Discord, *Edit* the webhook in Playdarr and paste the new URL.
+
+## Settings page limits
+
+The Settings page can't be used to run arbitrary programs or write files: *Custom encoder options* only accepts known video-encoder options, each with a single value, so it can't add ffmpeg outputs, inputs or filters. Saved settings are re-checked at every startup, and one that no longer passes is ignored (the log says which).
 
 ## Browser protections
 

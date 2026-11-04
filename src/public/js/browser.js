@@ -17,10 +17,9 @@ async function loadUser() {
 }
 
 // ── Helpers ────────────────────────────────────────────────
-function escapeHtml(str = '') {
-  const d = document.createElement('div');
-  d.appendChild(document.createTextNode(str));
-  return d.innerHTML;
+// Escapes for text *and* attribute values (quotes included)
+function escapeHtml(s = '') {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function getFilters() {
@@ -67,7 +66,7 @@ async function loadMovies() {
     grid.innerHTML = movies.map(m => `
       <div class="movie-card" data-key="${m.ratingKey}">
         ${m.thumb
-          ? `<img class="movie-poster" src="${m.thumb}" alt="${escapeHtml(m.title)}" loading="lazy">`
+          ? `<img class="movie-poster" src="${escapeHtml(m.thumb)}" alt="${escapeHtml(m.title)}" loading="lazy">`
           : `<div class="movie-poster-placeholder">🎬</div>`
         }
         <div class="movie-info">

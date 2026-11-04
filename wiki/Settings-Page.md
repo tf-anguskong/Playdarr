@@ -68,7 +68,7 @@ The **secrets** (Plex token, channel guide token, session secret) show only **Co
 | Hardware encoding | `LIVETV_HWACCEL` | Next tune |
 | Graphics device | `LIVETV_VAAPI_DEVICE` | Next tune |
 | Hardware video bitrate | `LIVETV_VAAPI_BITRATE` | Next tune |
-| Custom encoder options (advanced) | `LIVETV_VIDEO_ARGS` | Next tune |
+| Custom encoder options (advanced) | `LIVETV_VIDEO_ARGS` | Next tune. Video-encoder options only, one value each — the page refuses anything else |
 | Plex server address *(read-only)* | `PLEX_URL` | `.env` only |
 | Public address *(read-only)* | `APP_URL` | `.env` only |
 | Secure cookies *(read-only)* | `COOKIE_SECURE` | `.env` only |

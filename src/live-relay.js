@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const fs     = require('fs');
 const path   = require('path');
 const { spawn } = require('child_process');
+const { parseVideoArgs } = require('./ffmpeg-args');
 
 const PLEX_BASE_URL = process.env.LIVETV_PLEX_HOST  || process.env.PLEX_URL   || '';
 const PLEX_TOKEN    = process.env.LIVETV_PLEX_TOKEN || process.env.PLEX_TOKEN || '';
@@ -486,9 +487,22 @@ function videoFilter(hw) {
   return chain.join(',');
 }
 
-// Overridable for other hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M"
+// Overridable for other hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M".
+// Only allow-listed encoder options get through (ffmpeg-args.js); anything else falls back to the default encoder.
+let warnedArgs = null;
+function customVideoArgs() {
+  const raw = process.env.LIVETV_VIDEO_ARGS;
+  if (!raw || !raw.trim()) return null;
+  try { return parseVideoArgs(raw); }
+  catch (err) {
+    if (warnedArgs !== raw) { warnedArgs = raw; console.warn(`[HDHR] Ignoring LIVETV_VIDEO_ARGS: ${err.message}`); }
+    return null;
+  }
+}
+
 function videoArgs(hw) {
-  if (process.env.LIVETV_VIDEO_ARGS) return process.env.LIVETV_VIDEO_ARGS.split(/\s+/).filter(Boolean);
+  const custom = customVideoArgs();
+  if (custom) return custom;
   if (hw) {
     return [
       '-c:v', 'h264_vaapi', '-profile:v', 'high', '-b:v', process.env.LIVETV_VAAPI_BITRATE || '6M',
@@ -537,7 +551,7 @@ class HdhrSource {
     const url = `http://${hdhrIp()}:${hdhrPort()}/auto/v${this.channel}`;
     // A restart after earlier segments marks a discontinuity (timestamps start over).
     this.nextDisc = this.dvr.entries.length > 0;
-    const hw = this.useHw && !process.env.LIVETV_VIDEO_ARGS;
+    const hw = this.useHw && !customVideoArgs();
     const args = [
       '-hide_banner', '-loglevel', 'warning', '-nostdin',
       ...(hw ? ['-vaapi_device', vaapiDevice().device] : []),
@@ -553,7 +567,7 @@ class HdhrSource {
       '-segment_list', 'pipe:1', '-segment_list_type', 'csv',
       path.join(this.dvr.dir, 's%d.ts'),
     ];
-    console.log(`[HDHR] ${this.roomId}: ffmpeg start ch ${this.channel} enc=${hw ? 'vaapi' : (process.env.LIVETV_VIDEO_ARGS ? 'custom' : 'x264')} (seg #${this.dvr.nextIdx}${this.nextDisc ? ', after restart' : ''})`);
+    console.log(`[HDHR] ${this.roomId}: ffmpeg start ch ${this.channel} enc=${hw ? 'vaapi' : (customVideoArgs() ? 'custom' : 'x264')} (seg #${this.dvr.nextIdx}${this.nextDisc ? ', after restart' : ''})`);
     this.spawnedAt = Date.now();
     this.proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let buf = '';

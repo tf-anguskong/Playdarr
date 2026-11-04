@@ -5,7 +5,7 @@
 
 const root = document.getElementById('settings-root');
 
-const esc = (s = '') => { const d = document.createElement('div'); d.appendChild(document.createTextNode(String(s))); return d.innerHTML; };
+const esc = (s = '') => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));   // text and attribute values
 
 async function api(method, url, body) {
   const res = await fetch(url, {

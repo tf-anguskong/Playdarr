@@ -1,4 +1,4 @@
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
 const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr } = require('./live-relay');
@@ -812,10 +812,16 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select movie (host only) ───────────────────────────
-    socket.on('select-movie', ({ movieKey, movieTitle, partId }) => {
+    // The browser only names the item; title and part are looked up in Plex (preloadRoom), so a host
+    // (who may be a guest in an always-on room) can't inject a title or point the room at another file.
+    socket.on('select-movie', async ({ movieKey } = {}) => {
       const room = socketToRoom.get(socket.id);
       if (!room || room.hostSocketId !== socket.id) return;
-      applyMovie(io, room, movieKey, movieTitle, partId);
+      const picked = {};
+      try { await preloadRoom(picked, { kind: 'movie', ratingKey: movieKey }); }
+      catch (err) { return socket.emit('error-msg', 'Could not load that movie from Plex'); }
+      if (room.hostSocketId !== socket.id) return;   // host changed while Plex answered
+      applyMovie(io, room, picked.movieKey, picked.movieTitle, picked.partId);
     });
 
     // ── Movie vote: swipe through a filtered deck, most-liked movie wins ──────────
@@ -872,38 +878,27 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select TV episode (host only, TV rooms) ────────────
-    socket.on('select-show', async ({ showKey, showTitle, seasonRatingKey, episodeRatingKey, episodeTitle, partId }) => {
+    // Only the episode key is taken from the browser; show, title, part and the episode list come from Plex.
+    socket.on('select-show', async ({ episodeRatingKey } = {}) => {
       const room = socketToRoom.get(socket.id);
       if (!room || room.hostSocketId !== socket.id) return;
       if (room.roomType !== 'tv') return;
+      const picked = {};
       try {
-        const episodes = await plex.getShowChildren(String(seasonRatingKey));
-        const episodeList = episodes.map(e => ({
-          ratingKey: String(e.ratingKey),
-          title: e.title,
-          index: e.index,
-          parentIndex: e.parentIndex
-        }));
-        const episodeIndex = episodeList.findIndex(e => e.ratingKey === String(episodeRatingKey));
-
-        clearRoomManifest(room.id);
-        room.tvShowKey      = String(showKey);
-        room.tvShowTitle    = showTitle;
-        room.tvEpisodeList  = episodeList;
-        room.tvEpisodeIndex = episodeIndex >= 0 ? episodeIndex : 0;
-        room.movieKey       = String(episodeRatingKey);
-        room.movieTitle     = formatEpisodeTitle(showTitle, episodeList[room.tvEpisodeIndex] || { title: episodeTitle, parentIndex: null, index: null });
-        room.partId         = String(partId);
-        room.playing        = false;
-        room.position       = 0;
-        room.lastUpdate     = Date.now();
-        console.log(`[Room] "${room.name}" → TV "${room.movieTitle}"`);
-        room.broadcastState(io);
-        broadcastRoomList(io);
+        await preloadRoom(picked, { kind: 'tv', ratingKey: episodeRatingKey });
       } catch (err) {
         console.error('[Room] select-show error:', err.message);
-        socket.emit('error-msg', 'Failed to load episode list');
+        return socket.emit('error-msg', 'Failed to load episode list');
       }
+      if (room.hostSocketId !== socket.id) return;
+      clearRoomManifest(room.id);
+      Object.assign(room, picked);   // tvShowKey/Title, tvEpisodeList/Index, movieKey, movieTitle, partId
+      room.playing    = false;
+      room.position   = 0;
+      room.lastUpdate = Date.now();
+      console.log(`[Room] "${room.name}" → TV "${room.movieTitle}"`);
+      room.broadcastState(io);
+      broadcastRoomList(io);
     });
 
     // ── Episode ended — advance to next (host only, TV rooms) ──

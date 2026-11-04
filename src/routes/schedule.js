@@ -4,6 +4,7 @@ const express   = require('express');
 const router    = express.Router();
 const scheduler = require('../scheduler');
 const notifier  = require('../notifier');
+const plex      = require('../plex');
 const { googleCalendarUrl, RECURRENCE } = require('../ical');
 
 // Calendar links ride along with every record so the lobby can offer "add to calendar"
@@ -26,8 +27,8 @@ router.get('/config', (req, res) => {
 
 // ── POST /api/schedule ────────────────────────────────────
 // Create a new scheduled room.
-router.post('/', (req, res) => {
-  const { name, scheduledFor, timezone, movieKey, movieTitle, partId, recurrence } = req.body || {};
+router.post('/', async (req, res) => {
+  const { name, scheduledFor, timezone, movieKey, recurrence } = req.body || {};
 
   if (!scheduledFor) {
     return res.status(400).json({ error: 'scheduledFor is required' });
@@ -53,14 +54,27 @@ router.post('/', (req, res) => {
     }
   }
 
+  // A pre-picked movie is looked up in Plex: the browser only names it, never its title or file (part)
+  let movie = { movieKey: null, movieTitle: null, partId: null };
+  if (movieKey) {
+    try {
+      if (!/^\d+$/.test(String(movieKey))) throw new Error('bad ratingKey');
+      const item = await plex.getMovieDetails(String(movieKey));
+      const part = item?.Media?.[0]?.Part?.[0]?.id;
+      if (item?.type !== 'movie' || part == null) throw new Error('not a playable movie');
+      movie = { movieKey: String(item.ratingKey), movieTitle: item.title, partId: String(part) };
+    } catch (err) {
+      return res.status(400).json({ error: 'Could not find that movie in Plex' });
+    }
+  }
+
   const user = req.session.user;
+  const cleanName = String(name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 60);
   const scheduled = scheduler.createScheduled({
-    name:         (name || '').trim() || 'Watch Party',
+    name:         cleanName || 'Watch Party',
     scheduledFor: scheduledDate.toISOString(),
     timezone:     resolvedTz,
-    movieKey:     movieKey  || null,
-    movieTitle:   movieTitle || null,
-    partId:       partId    || null,
+    ...movie,
     recurrence:   RECURRENCE[recurrence] ? recurrence : null,
     createdBy:    { id: user.id, name: user.displayName || user.name }
   });

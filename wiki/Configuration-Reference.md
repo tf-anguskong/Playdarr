@@ -60,7 +60,7 @@ See [Live TV Administration](Live-TV-Administration) for what these mean in prac
 | `LIVETV_HWACCEL` | off | `vaapi` (aliases `intel`, `amd`) for iGPU encoding; needs `docker-compose.vaapi.yml` |
 | `LIVETV_VAAPI_DEVICE` | first Intel/AMD node | Render device, e.g. `/dev/dri/renderD128`, when there are several GPUs |
 | `LIVETV_VAAPI_BITRATE` | `6M` | Target bitrate for the GPU encode |
-| `LIVETV_VIDEO_ARGS` | — | Replace the whole video encoder argument list (e.g. NVENC). Overrides the encoder settings above |
+| `LIVETV_VIDEO_ARGS` | — | Replace the whole video encoder argument list (e.g. NVENC). Overrides the encoder settings above. Only video-encoder options are accepted (`-c:v`, `-preset`, `-tune`, `-profile:v`, `-level`, `-b:v`, `-maxrate`, `-bufsize`, `-crf`, `-cq`, `-qp`, `-rc`, `-g`, `-bf`, `-pix_fmt` and similar), each followed by one value; anything else (extra outputs, `-f`, `-i`, filters, file paths) is refused, and a value that fails the check is ignored with a warning in the log and the default encoder is used |
 
 ## Not configured here
 

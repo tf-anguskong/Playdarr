@@ -7,7 +7,7 @@
 const fs    = require('fs');
 const path  = require('path');
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const scheduler = require('./scheduler');
 const { inviteUrl } = require('./ical');
 

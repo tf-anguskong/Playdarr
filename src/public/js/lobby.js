@@ -2,10 +2,9 @@
 
 const socket = io();
 
+// Escapes for text *and* attribute values (quotes included)
 function esc(s = '') {
-  const d = document.createElement('div');
-  d.appendChild(document.createTextNode(s));
-  return d.innerHTML;
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // ── User info ──────────────────────────────────────────────
