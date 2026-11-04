@@ -632,7 +632,9 @@ body {
 
 /* Viewers */
 .viewers-section { flex-shrink: 0; }
-.viewers-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 160px; overflow-y: auto; }
+/* overflow-x hidden: the spinning buffering dot's corners poke past the right edge mid-turn, which otherwise
+   flicks a horizontal scrollbar on and off */
+.viewers-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 160px; overflow-y: auto; overflow-x: hidden; }
 
 /* Room controls */
 .room-control-row {

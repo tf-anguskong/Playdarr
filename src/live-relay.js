@@ -33,7 +33,9 @@ const SEG_TIMEOUT  = 15000;  // max ms to wait for a segment download
 const READY_SEGS   = 3;      // segments needed before relay is considered ready
 const MAX_PENDING  = 10;     // segments a warming relay holds before it is promoted
 const DVR_MAX_SEC  = 3600;   // DVR window kept per room (1 hour)
-const DVR_ROOT     = path.join(process.env.DATA_PATH || '/data', 'dvr');
+// Resolved to a full path: res.sendFile refuses a drive-less "\data\…" on Windows (local dev without DATA_PATH),
+// which made every segment fail and the player wait forever at "Starting playback…"
+const DVR_ROOT     = path.resolve(process.env.DATA_PATH || '/data', 'dvr');
 const DVR_EPOCH_MS = Date.UTC(2020, 0, 1); // synthetic PROGRAM-DATE-TIME origin; clients derive DVR time from it
 // Split view (several channels tiled into one picture)
 const SPLIT_MAX       = 4;          // channels one composite can hold
