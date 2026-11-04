@@ -12,7 +12,8 @@ const path   = require('path');
 const crypto = require('crypto');
 const sharp  = require('sharp');
 
-const ROOT       = path.join(process.env.DATA_PATH || '/data', 'chat-uploads');
+// Resolved to a full path: res.sendFile refuses a drive-less "\data\…" on Windows (local dev without DATA_PATH)
+const ROOT       = path.resolve(process.env.DATA_PATH || '/data', 'chat-uploads');
 const MAX_BYTES  = 8 * 1024 * 1024;     // what a browser may send
 const MAX_SIDE   = 1600;                // longest side after resizing
 const MAX_PIXELS = 50 * 1000 * 1000;    // refuse decompression bombs before decoding
