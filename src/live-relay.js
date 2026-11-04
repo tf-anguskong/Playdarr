@@ -650,7 +650,6 @@ class HdhrSource {
     this.channels = (channels && channels.length ? channels : [channel]).map(String);
     this.channel = this.channels.join('+');   // for log lines
     this.dvr     = dvr;
-    this.gen     = 0;         // ffmpeg run counter (split view: marks each track's discontinuity)
     this.running = false;
     this.proc    = null;
     this.timer   = null;      // restart timer
@@ -739,10 +738,13 @@ class HdhrSource {
     // A restart after earlier segments marks a discontinuity (timestamps start over).
     this.nextDisc = this.dvr.entries.length > 0;
     const split = this.channels.length > 1;
-    const gen = ++this.gen;
+    // Run counter on the DVR, not the source: a tile swap records a new source into the same DVR, and each
+    // track's first segment from a new run is a discontinuity.
+    const gen = this.dvr.runs = (this.dvr.runs || 0) + 1;
     // Split view places segments by the times ffmpeg reports, counted from where the recording stood when
     // this run started, so the video and every audio track land on the same DVR timeline.
-    const base = this.dvr.total;
+    // (from the furthest track, so a new run's audio can't overlap the last run's)
+    const base = Math.max(this.dvr.total, ...this.dvr.audio.map(t => t.total));
     const hw = this.useHw && !customVideoArgs();
     const args = this._args(hw);
     console.log(`[HDHR] ${this.roomId}: ffmpeg start ch ${this.channel} enc=${hw ? 'vaapi' : (customVideoArgs() ? 'custom' : 'x264')} (seg #${this.dvr.nextIdx}${this.nextDisc ? ', after restart' : ''})`);
@@ -881,7 +883,7 @@ async function startRelay(roomId, opts) {
 
 /**
  * Start recording a channel straight from the HDHomeRun into a fresh DVR (replaces any
- * previous relay/DVR for the room). Resolves once `readySec` seconds are recorded.
+ * previous relay/DVR for the room; see keepDvr below). Resolves once `readySec` seconds are recorded.
  */
 // A tune that is still waiting for its first seconds of video. Registered so that closing or resetting the
 // room in that window (stopRelay) cancels it, instead of leaving ffmpeg holding a tuner for a room nobody is in.
@@ -889,7 +891,10 @@ const pendingTunes = new Map();   // roomId -> { src, dvr, cancelled }
 
 // opts.channels (split view): 2–SPLIT_MAX channel numbers tiled into one picture, each with its own audio
 // track named by opts.names[i]. Otherwise opts.channel, one channel as before.
-async function startHdhr(roomId, { channel, channels, names, readySec, onProgress }) {
+// opts.keepDvr (split view, same number of tiles): record the new set into the room's existing DVR after a
+// discontinuity, so the room can still rewind to before the change. The old source stops first (one writer per
+// DVR, and its tuners are needed). Falls back to a fresh DVR when the old recording has a different shape.
+async function startHdhr(roomId, { channel, channels, names, readySec, onProgress, keepDvr }) {
   const list = (channels && channels.length ? channels : [channel]).map(String);
   if (list.length > SPLIT_MAX) throw new Error(`At most ${SPLIT_MAX} channels`);
   if (list.some(ch => !/^\d{1,3}(\.\d{1,3})?$/.test(ch))) throw new Error('Invalid channel number');
@@ -897,7 +902,14 @@ async function startHdhr(roomId, { channel, channels, names, readySec, onProgres
   const oldDvr   = dvrs.get(roomId);
 
   const split = list.length > 1;
-  const dvr = new LiveDvr(roomId, split ? { audioTracks: list.length, trackNames: names || list.map(ch => `Ch ${ch}`) } : {});
+  const keep = !!keepDvr && split && !!oldDvr && oldDvr.audio.length === list.length && oldRelay instanceof HdhrSource;
+  if (keep) {
+    oldRelay.stop();
+    relays.delete(roomId);
+    oldDvr.audio.forEach((t, i) => { t.name = (names && names[i]) || `Ch ${list[i]}`; });
+  }
+  const dvr = keep ? oldDvr : new LiveDvr(roomId, split ? { audioTracks: list.length, trackNames: names || list.map(ch => `Ch ${ch}`) } : {});
+  const from = keep ? dvr.edge() : 0;   // readiness counts only what this run records
   const src = new HdhrSource(roomId, { channels: list, dvr });
   const pending = { src, dvr, cancelled: false };
   pendingTunes.set(roomId, pending);
@@ -908,9 +920,10 @@ async function startHdhr(roomId, { channel, channels, names, readySec, onProgres
     const t = setInterval(() => {
       // lastError = a problem retrying won't fix (e.g. a channel with no audio) — give up now
       if (pending.cancelled || src.lastError) { clearInterval(t); resolve(false); return; }
-      const tick = Math.floor(Math.min(dvr.edge(), readySec) * 2); // report in half-second steps
-      if (tick !== lastTick) { lastTick = tick; onProgress && onProgress(Math.min(dvr.edge(), readySec), readySec); }
-      if (dvr.edge() >= readySec) { clearInterval(t); resolve(true); }
+      const recorded = Math.max(0, dvr.edge() - from);
+      const tick = Math.floor(Math.min(recorded, readySec) * 2); // report in half-second steps
+      if (tick !== lastTick) { lastTick = tick; onProgress && onProgress(Math.min(recorded, readySec), readySec); }
+      if (recorded >= readySec) { clearInterval(t); resolve(true); }
     }, 200);
     setTimeout(() => { clearInterval(t); resolve(false); }, 25000);
   });
@@ -922,12 +935,14 @@ async function startHdhr(roomId, { channel, channels, names, readySec, onProgres
   }
   if (!ready) {
     src.stop();
+    if (keep) dvrs.delete(roomId);   // its source is gone too: the room has nothing left to play
     dvr.destroy();
     throw new Error(src.lastError || 'HDHomeRun produced no video (tuner busy or channel unavailable?)');
   }
 
-  dvrs.set(roomId, dvr);
   relays.set(roomId, src);
+  if (keep) return src;
+  dvrs.set(roomId, dvr);
   if (oldRelay) oldRelay.stop();
   if (oldDvr) oldDvr.destroy();
   return src;

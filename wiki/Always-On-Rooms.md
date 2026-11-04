@@ -18,7 +18,7 @@ An **always-on room** stays open with nobody in it, listed in the lobby with a p
 |---|---|
 | **Name** | Shown in the lobby |
 | **Type** | Live TV, Movie or TV show (only the types you have turned on). YouTube rooms aren't available here because they need a video to exist |
-| **Channel** | Live TV only. The channel to tune when someone arrives. Leave it as *No channel* to make an empty Live TV room people pick a channel in |
+| **Channel** | Live TV only. The channel to tune when someone arrives. Leave it as *No channel* to make an empty Live TV room people pick a channel in. *+ Split with another channel* pins up to 4, and the room opens in [split view](Live-TV-Administration#split-view-several-channels-in-one-room); if split view is turned off or capped lower by then, it tunes the first channels that fit |
 
 Once created it's open straight away. Each row in the list shows:
 
@@ -42,7 +42,7 @@ Once created it's open straight away. Each row in the list shows:
 
 ## Where it's stored
 
-`always-on.json` in the data folder (room name, type, pinned channel and invite link). Include it in [backups](Data-Backups-and-Updates).
+`always-on.json` in the data folder (room name, type, pinned channels and invite link). Include it in [backups](Data-Backups-and-Updates).
 
 ## Troubleshooting
 

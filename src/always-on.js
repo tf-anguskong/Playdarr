@@ -35,14 +35,16 @@ function load() {
 load();
 
 /**
- * @param {{ name: string, roomType: 'livetv'|'movie'|'tv', channel?: {channel, channelTitle, channelId}|null, createdBy?: string }} fields
+ * @param {{ name: string, roomType: 'livetv'|'movie'|'tv', channels?: {channel, channelTitle, channelId}[], createdBy?: string }} fields
  */
-function add({ name, roomType, channel, createdBy }) {
+function add({ name, roomType, channels, createdBy }) {
+  const list = (channels || []).filter(Boolean);
   const def = {
     id: uuidv4(),
     inviteToken: uuidv4(),     // stable: the link never changes, however often the room resets
     name, roomType,
-    channel: channel || null,  // Live TV only: tuned when someone arrives
+    channels: list,            // Live TV only: tuned when someone arrives (2+ = split view)
+    channel: list[0] || null,  // the first one, as older versions stored it
     createdBy: createdBy || null,
     createdAt: new Date().toISOString(),
   };
@@ -60,4 +62,7 @@ function remove(id) {
 const get  = id => defs.get(id) || null;
 const list = () => Array.from(defs.values());
 
-module.exports = { add, remove, get, list };
+/** A definition's pinned Live TV channels, for old (single `channel`) and new (`channels`) entries alike. */
+const channelsOf = def => Array.isArray(def.channels) && def.channels.length ? def.channels : (def.channel ? [def.channel] : []);
+
+module.exports = { add, remove, get, list, channelsOf };

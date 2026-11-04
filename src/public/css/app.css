@@ -1805,3 +1805,13 @@ body.sidebar-resizing .player-container { pointer-events: none; }
 .split-key { display: inline-block; min-width: 1rem; text-align: center; color: var(--pd-accent); }
 @media (hover: none) { .split-chip { opacity: .85; } }
 @media (max-width: 760px) and (orientation: portrait) { .split-tiles { --split-clear: 2.6rem; } .split-chip { font-size: 10px; padding: 0.2rem 0.4rem; } }
+
+/* Admin → always-on: extra pinned channels (split view) */
+.ao-extra { display: flex; flex-direction: column; gap: 0.35rem; }
+.ao-extra:empty { display: none; }
+.ao-extra-row { display: flex; gap: 0.35rem; align-items: center; }
+.ao-extra-row select { flex: 1; min-width: 0; }
+.ao-remove-channel { background: none; border: 1px solid var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted); cursor: pointer; padding: 0.3rem 0.55rem; }
+.ao-remove-channel:hover { color: var(--pd-err); border-color: var(--pd-err); }
+.ao-add-channel { align-self: flex-start; background: none; border: 1px dashed var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted-2); cursor: pointer; padding: 0.3rem 0.55rem; font: 500 11px/1 var(--pd-font-mono); }
+.ao-add-channel:hover { border-color: var(--pd-accent); color: var(--pd-accent); }

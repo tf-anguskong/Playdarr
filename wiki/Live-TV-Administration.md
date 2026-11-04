@@ -24,8 +24,12 @@ A Live TV room's host can put **up to 4 channels on screen at once**. Everyone s
 - **Host:** after tuning a channel, *Split view → + Add a channel* in the sidebar adds a tile. Each tile has **✎** (change that channel) and **✕** (take it off the screen); with one channel left the room is back to normal. In the Guide, clicking a channel replaces the tile you're listening to.
 - **Everyone:** click a channel in the sidebar list or its label on the picture to hear it, or press **1–4** (this also works with the video fullscreen). The choice is per viewer and remembered for that room.
 - **Layouts:** 2 = side by side, 3 = two on top and one below, 4 = 2×2.
+- **Turn it off or cap it:** *Settings → Live TV · capacity & playback → Live TV split view* (`LIVETV_SPLIT_MAX`): *Off*, or up to 2, 3 or 4 channels. It applies at once; rooms already split keep their channels (they can still remove tiles).
 - **Tuners:** each tile holds a tuner, and counts against `LIVETV_MAX_ROOMS` (see below), which also caps how many tiles one room can have. A room with 3 tiles leaves one tuner free on a 4-tuner box.
-- **Any change re-records the whole picture.** Adding, changing or removing a tile shows the tuning screen for roughly 10–15 seconds and starts a fresh recording, so the room can't rewind past the change.
+- **Any change re-records the picture.** Adding, changing or removing a tile shows the tuning screen for roughly 10–15 seconds.
+  - **Changing** a tile's channel keeps the recording, so the room can still rewind to before the change (the tile shows the old channel there; its label shows the current one).
+  - **Adding or removing** a tile starts a fresh recording, so the room can't rewind past it.
+- **Always-on rooms** can be pinned to several channels and open in split view; see [Always-On Rooms](Always-On-Rooms).
 - **Needs the HDHomeRun source.** It isn't offered with `LIVETV_SOURCE=plex`.
 - **Every channel needs sound.** A channel without an audio stream can't be added (*"Channel 7.1 has no audio, so it can't be shown in split view"*).
 - **Encoding:** the whole picture is **one** encode, so the encoder cost is close to one channel's. Each extra channel adds the cheaper work of decoding and deinterlacing it.

@@ -111,7 +111,7 @@ function renderRooms(rooms) {
                 : `<span style="color:var(--text-muted)">No episode selected yet</span>`)
             : r.roomType === 'livetv'
               ? (r.liveTvChannel
-                  ? `<span class="room-now-playing">📡 ${esc(r.liveTvChannel)}</span>`
+                  ? `<span class="room-now-playing">📡 ${esc(r.liveTvChannel)}${r.liveTvChannelCount > 1 ? ` <span title="Split view">+${r.liveTvChannelCount - 1} more</span>` : ''}</span>`
                   : `<span style="color:var(--text-muted)">No channel selected yet</span>`)
               : r.hasMovie
                 ? `<span class="room-now-playing">▶ ${esc(r.movieTitle)}</span>`
