@@ -35,7 +35,7 @@ The **offensive-word filter** (on/off, extra words to block, words to always all
 The **HDHomeRun address** and **port**, the **Live TV source** (automatic, HDHomeRun, or Plex's DVR) and the **channel guide server**. Changing the tuner address applies to the next channel anyone tunes.
 
 ### Live TV · capacity
-**Most Live TV rooms at once**, the **pause cooldown** and the **playback buffer**. See [Live TV Administration](Live-TV-Administration#limiting-how-many-rooms-stream-livetv_max_rooms). Both apply immediately.
+**Most Live TV channels at once**, **Live TV split view** (off, or up to 2–4 channels per room), the **pause cooldown** and the **playback buffer**. See [Live TV Administration](Live-TV-Administration#limiting-how-many-rooms-stream-livetv_max_rooms). All apply immediately.
 
 ### Live TV · picture quality
 Upscaling, sharpening, CPU encoder speed and peak bitrate. These apply to the **next channel tuned**; a room that's already streaming keeps its current encode until it tunes again.
@@ -67,7 +67,8 @@ The **secrets** (Plex token, channel guide token, session secret) show only **Co
 | HDHomeRun port | `HDHR_PORT` | Next tune |
 | Live TV source | `LIVETV_SOURCE` | Next tune |
 | Channel guide server | `LIVETV_PLEX_HOST` | After a restart |
-| Most Live TV rooms at once | `LIVETV_MAX_ROOMS` | Immediately |
+| Most Live TV channels at once | `LIVETV_MAX_ROOMS` | Immediately |
+| Live TV split view | `LIVETV_SPLIT_MAX` | Immediately (rooms already split keep their channels) |
 | Live TV pause cooldown | `LIVETV_PAUSE_COOLDOWN_SEC` | Immediately |
 | Live TV playback buffer | `LIVETV_BUFFER_SEC` | Next tune |
 | Upscale low-resolution channels | `LIVETV_UPSCALE` | Next tune |

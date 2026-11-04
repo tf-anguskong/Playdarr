@@ -37,15 +37,28 @@ const DVR_MAX_SEC  = 3600;   // DVR window kept per room (1 hour)
 // which made every segment fail and the player wait forever at "Starting playback…"
 const DVR_ROOT     = path.resolve(process.env.DATA_PATH || '/data', 'dvr');
 const DVR_EPOCH_MS = Date.UTC(2020, 0, 1); // synthetic PROGRAM-DATE-TIME origin; clients derive DVR time from it
+// Split view (several channels tiled into one picture)
+const SPLIT_MAX       = 4;          // channels one composite can hold
+const SPLIT_W         = 1920, SPLIT_H = 1080;
+const SPLIT_BANDWIDTH = 8000000;    // advertised in the master playlist (hls.js only needs *a* number)
+const AUDIO_DEAD_SEC  = 8;          // an audio track this far behind the video no longer holds playback back
 const STALL_THRESH        = 2;       // consecutive poll errors before triggering onStall (fallback)
 const PROACTIVE_RETUNE_MS = 200_000; // 3:20 — proactive retune before 4-min DVR session expiry
 
 // ── DVR store ──────────────────────────────────────────────
 // One per room; outlives individual Plex sessions (retunes append with a
 // discontinuity). A channel change creates a fresh one.
+//
+// Split view (several channels in one room) records a *composite*: one video stream with every channel
+// tiled into the picture (entries / `s<N>.ts`, no audio) plus one audio-only stream per channel
+// (`audio[i]` / `a<i>_<N>.ts`). Then index.m3u8 is a master playlist offering each channel's audio as an
+// alternate rendition, so each viewer picks which one they hear while everyone shares one video timeline.
 class LiveDvr {
-  constructor(roomId) {
+  constructor(roomId, { audioTracks = 0, trackNames = [] } = {}) {
     this.roomId  = roomId;
+    this.audio   = Array.from({ length: audioTracks }, (_, i) => ({
+      name: trackNames[i] || `Channel ${i + 1}`, entries: [], nextIdx: 0, total: 0, cc: 0,
+    }));
     // Unique dir: a channel change builds the new DVR while the old one is still being served.
     this.dir     = path.join(DVR_ROOT, `${roomId}-${crypto.randomBytes(4).toString('hex')}`);
     fs.mkdirSync(this.dir, { recursive: true });
@@ -71,10 +84,49 @@ class LiveDvr {
     this._record(idx, file, dur, disc, Date.now());
   }
 
-  _record(idx, file, dur, disc, arrivedAt) {
+  /**
+   * Split view: record a segment the composite encoder wrote, at the DVR time it reported.
+   * track 'v' = the tiled video (`s<N>.ts`), a number = that channel's audio (`a<track>_<N>.ts`).
+   * A track's first segment from a new ffmpeg run (gen changed) is marked as a discontinuity.
+   */
+  adoptAt(track, file, start, dur, gen) {
+    if (track === 'v') {
+      const idx = parseInt(file.slice(1), 10);
+      if (!/^s\d+\.ts$/.test(file) || !Number.isFinite(idx)) return;
+      const disc = this.entries.length > 0 && this._videoGen !== gen;
+      this._videoGen = gen;
+      this.nextIdx = idx + 1;
+      this._record(idx, file, dur, disc, Date.now(), start);
+      return;
+    }
+    const t = this.audio[track];
+    const m = /^a(\d)_(\d+)\.ts$/.exec(file);
+    if (!t || !m || Number(m[1]) !== track) return;
+    const disc = t.entries.length > 0 && t.gen !== gen;
+    t.gen = gen;
+    if (disc) t.cc++;
+    const idx = Number(m[2]);
+    t.nextIdx = idx + 1;
+    t.entries.push({ idx, file, dur, start, disc, cc: t.cc });
+    t.total = Math.max(t.total, start + dur);
+    this._trimAudio();
+  }
+
+  _trimAudio() {
+    // Keep audio covering the oldest video segment (plus a little), nothing older.
+    const from = this.entries.length ? this.entries[0].start - 4 : -Infinity;
+    for (const t of this.audio) {
+      while (t.entries.length > 1 && t.entries[0].start + t.entries[0].dur < from) {
+        const old = t.entries.shift();
+        fs.unlink(path.join(this.dir, old.file), () => {});
+      }
+    }
+  }
+
+  _record(idx, file, dur, disc, arrivedAt, start = this.total) {
     if (disc) this.cc++;
-    this.entries.push({ idx, file, dur, start: this.total, disc: !!disc, cc: this.cc });
-    this.total += dur;
+    this.entries.push({ idx, file, dur, start, disc: !!disc, cc: this.cc });
+    this.total = Math.max(this.total, start + dur);
     this.lastArrivalMs = arrivedAt || Date.now();
     if (idx < 3 || idx % 5 === 0) {
       let size = '?';
@@ -85,24 +137,67 @@ class LiveDvr {
       const old = this.entries.shift();
       fs.unlink(path.join(this.dir, old.file), () => {});
     }
+    if (this.audio.length) this._trimAudio();
+  }
+
+  /**
+   * How far the DVR can be played. Split view: only as far as the video *and* every channel's audio have
+   * been recorded, or hls.js stalls waiting for audio. An audio track lagging the video by more than
+   * AUDIO_DEAD_SEC (a channel with no sound) stops holding the others back.
+   */
+  edge() {
+    let edge = this.total;
+    for (const t of this.audio) {
+      if (this.total - t.total > AUDIO_DEAD_SEC) continue;
+      edge = Math.min(edge, t.total);
+    }
+    return edge;
   }
 
   /** { start, edge } in absolute DVR seconds. */
   info() {
-    return { start: this.entries.length ? this.entries[0].start : 0, edge: this.total };
+    return { start: this.entries.length ? this.entries[0].start : 0, edge: this.edge() };
   }
 
+  /** index.m3u8: the media playlist, or for split view a master playlist naming the video and each audio. */
   getPlaylist() {
     if (!this.entries.length) return null;
-    const first = this.entries[0];
+    if (!this.audio.length) return this._mediaPlaylist(this.entries);
+    const base = `/api/stream/live/${this.roomId}`;
+    const quoted = s => String(s).replace(/["\r\n]/g, '').slice(0, 60);
+    const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
+    this.audio.forEach((t, i) => {
+      lines.push(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="${quoted(t.name)}",DEFAULT=${i ? 'NO' : 'YES'},AUTOSELECT=${i ? 'NO' : 'YES'},URI="${base}/a${i}.m3u8"`);
+    });
+    lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${SPLIT_BANDWIDTH},RESOLUTION=${SPLIT_W}x${SPLIT_H},AUDIO="aud"`);
+    lines.push(`${base}/v.m3u8`);
+    return lines.join('\n') + '\n';
+  }
+
+  /** Split view: 'v' (the tiled video) or 'a<i>' (one channel's audio). Null if unknown or not recorded yet. */
+  getTrackPlaylist(name) {
+    if (!this.audio.length) return null;
+    if (name === 'v') {
+      // Only list video the audio has caught up with (half a second of slack: the cuts don't line up exactly).
+      const edge = this.edge() + 0.5;
+      return this._mediaPlaylist(this.entries.filter(e => e.start + e.dur <= edge));
+    }
+    const m = /^a(\d)$/.exec(name);
+    const t = m && this.audio[Number(m[1])];
+    return t ? this._mediaPlaylist(t.entries) : null;
+  }
+
+  _mediaPlaylist(entries) {
+    if (!entries.length) return null;
+    const first = entries[0];
     const lines = [
       '#EXTM3U',
       '#EXT-X-VERSION:3',
-      `#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...this.entries.map(e => e.dur)))}`,
+      `#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...entries.map(e => e.dur)))}`,
       `#EXT-X-MEDIA-SEQUENCE:${first.idx}`,
       `#EXT-X-DISCONTINUITY-SEQUENCE:${first.cc - (first.disc ? 1 : 0)}`,
     ];
-    for (const e of this.entries) {
+    for (const e of entries) {
       if (e.disc) lines.push('#EXT-X-DISCONTINUITY');
       lines.push(`#EXT-X-PROGRAM-DATE-TIME:${new Date(DVR_EPOCH_MS + e.start * 1000).toISOString()}`);
       lines.push(`#EXTINF:${e.dur.toFixed(3)},`);
@@ -113,9 +208,14 @@ class LiveDvr {
 
   /** Absolute path of a recorded segment, or null if trimmed / unknown. */
   segmentPath(name) {
-    if (!/^s\d+\.ts$/.test(name)) return null;
-    const idx = parseInt(name.slice(1), 10);
-    return this.entries.some(e => e.idx === idx) ? path.join(this.dir, name) : null;
+    let list, idx;
+    if (/^s\d+\.ts$/.test(name)) { list = this.entries; idx = parseInt(name.slice(1), 10); }
+    else {
+      const m = /^a(\d)_(\d+)\.ts$/.exec(name);
+      if (!m || !this.audio[Number(m[1])]) return null;
+      list = this.audio[Number(m[1])].entries; idx = Number(m[2]);
+    }
+    return list.some(e => e.idx === idx) ? path.join(this.dir, name) : null;
   }
 
   destroy() {
@@ -489,6 +589,33 @@ function videoFilter(hw) {
   return chain.join(',');
 }
 
+/**
+ * Where each channel sits in a split-view picture, in pixels of the SPLIT_W×SPLIT_H frame.
+ * 2 = side by side (letterboxed), 3 = two on top and one centred below, 4 = 2×2.
+ * Exported so the room can tell browsers where the tiles are (labels, which audio is on).
+ */
+function splitLayout(n) {
+  const w = SPLIT_W / 2, h = SPLIT_H / 2;
+  if (n === 2) return [{ x: 0, y: h / 2, w, h }, { x: w, y: h / 2, w, h }];
+  if (n === 3) return [{ x: 0, y: 0, w, h }, { x: w, y: 0, w, h }, { x: w / 2, y: h, w, h }];
+  if (n === 4) return [{ x: 0, y: 0, w, h }, { x: w, y: 0, w, h }, { x: 0, y: h, w, h }, { x: w, y: h, w, h }];
+  return [{ x: 0, y: 0, w: SPLIT_W, h: SPLIT_H }];
+}
+
+// Split view filter graph: every input is deinterlaced, put on a common frame rate (xstack needs it)
+// and fitted into its tile, then the tiles are stacked onto one SPLIT_W×SPLIT_H frame. Upscaling is
+// skipped — the tiles are smaller than the sources anyway.
+function compositeFilter(n, hw) {
+  const tiles = splitLayout(n);
+  const parts = tiles.map((t, i) =>
+    `[${i}:v:0]yadif=mode=0:parity=-1:deint=1,fps=30000/1001,` +
+    `scale=${t.w}:${t.h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${t.w}:${t.h}:(ow-iw)/2:(oh-ih)/2,setsar=1[t${i}]`);
+  const layout = tiles.map(t => `${t.x}_${t.y - tiles[0].y}`).join('|');
+  // xstack's frame is the tiles' bounding box (2 tiles: 1920×540) — pad it out to the full frame.
+  const tail = [`pad=${SPLIT_W}:${SPLIT_H}:(ow-iw)/2:(oh-ih)/2`, ...(hw ? ['format=nv12', 'hwupload'] : [])];
+  return `${parts.join(';')};${tiles.map((_, i) => `[t${i}]`).join('')}xstack=inputs=${n}:layout=${layout}:fill=black,${tail.join(',')}[v]`;
+}
+
 // Overridable for other hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M".
 // Only allow-listed encoder options get through (ffmpeg-args.js); anything else falls back to the default encoder.
 let warnedArgs = null;
@@ -518,9 +645,10 @@ function videoArgs(hw) {
 }
 
 class HdhrSource {
-  constructor(roomId, { channel, dvr }) {
+  constructor(roomId, { channel, channels, dvr }) {
     this.roomId  = roomId;
-    this.channel = channel;
+    this.channels = (channels && channels.length ? channels : [channel]).map(String);
+    this.channel = this.channels.join('+');   // for log lines
     this.dvr     = dvr;
     this.running = false;
     this.proc    = null;
@@ -548,51 +676,117 @@ class HdhrSource {
     }, 5000);
   }
 
-  _spawn() {
-    if (!this.running) return;
-    const url = `http://${hdhrIp()}:${hdhrPort()}/auto/v${this.channel}`;
-    // A restart after earlier segments marks a discontinuity (timestamps start over).
-    this.nextDisc = this.dvr.entries.length > 0;
-    const hw = this.useHw && !customVideoArgs();
-    const args = [
+  /** ffmpeg input options for one channel. */
+  _inputArgs(channel) {
+    return [
+      '-fflags', '+genpts+discardcorrupt', '-analyzeduration', '2000000', '-probesize', '5000000',
+      ...(this.channels.length > 1 ? ['-thread_queue_size', '1024'] : []),
+      '-i', `http://${hdhrIp()}:${hdhrPort()}/auto/v${channel}`,
+    ];
+  }
+
+  /** Segment-muxer output: segments named `<prefix><N>.ts`, finished ones listed as csv on `pipe:<fd>`. */
+  _segmentOut(prefix, startNumber, fd) {
+    return [
+      '-f', 'segment', '-segment_time', String(SEG_SECS), '-segment_format', 'mpegts',
+      '-segment_start_number', String(startNumber),
+      '-segment_list', `pipe:${fd}`, '-segment_list_type', 'csv',
+      path.join(this.dvr.dir, `${prefix}%d.ts`),
+    ];
+  }
+
+  _args(hw) {
+    const head = [
       '-hide_banner', '-loglevel', 'warning', '-nostdin',
       ...(hw ? ['-vaapi_device', vaapiDevice().device] : []),
-      '-fflags', '+genpts+discardcorrupt', '-analyzeduration', '2000000', '-probesize', '5000000',
-      '-i', url,
-      '-map', '0:v:0', '-map', '0:a:0?',
-      '-vf', videoFilter(hw),
-      ...videoArgs(hw),
-      '-force_key_frames', `expr:gte(t,n_forced*${SEG_SECS})`, '-sc_threshold', '0',
-      '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
-      '-f', 'segment', '-segment_time', String(SEG_SECS), '-segment_format', 'mpegts',
-      '-segment_start_number', String(this.dvr.nextIdx),
-      '-segment_list', 'pipe:1', '-segment_list_type', 'csv',
-      path.join(this.dvr.dir, 's%d.ts'),
     ];
+    const keyframes = ['-force_key_frames', `expr:gte(t,n_forced*${SEG_SECS})`, '-sc_threshold', '0'];
+    if (this.channels.length === 1) {
+      return [
+        ...head,
+        ...this._inputArgs(this.channels[0]),
+        '-map', '0:v:0', '-map', '0:a:0?',
+        '-vf', videoFilter(hw),
+        ...videoArgs(hw),
+        ...keyframes,
+        '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
+        ...this._segmentOut('s', this.dvr.nextIdx, 1),
+      ];
+    }
+    // Split view: one tiled video output (csv on stdout), then one audio-only output per channel (csv on fd 3+i).
+    const n = this.channels.length;
+    return [
+      ...head,
+      ...this.channels.flatMap(ch => this._inputArgs(ch)),
+      '-filter_complex', compositeFilter(n, hw),
+      '-map', '[v]', '-an',
+      ...videoArgs(hw),
+      ...keyframes,
+      ...this._segmentOut('s', this.dvr.nextIdx, 1),
+      ...this.channels.flatMap((_, i) => [
+        // No '?': an output left with nothing mapped makes ffmpeg auto-pick *another channel's* audio.
+        // A channel without audio fails the tune instead (reported as noAudio, see _spawn).
+        '-map', `${i}:a:0`, '-vn',
+        '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
+        ...this._segmentOut(`a${i}_`, this.dvr.audio[i].nextIdx, 3 + i),
+      ]),
+    ];
+  }
+
+  _spawn() {
+    if (!this.running) return;
+    // A restart after earlier segments marks a discontinuity (timestamps start over).
+    this.nextDisc = this.dvr.entries.length > 0;
+    const split = this.channels.length > 1;
+    // Run counter on the DVR, not the source: a tile swap records a new source into the same DVR, and each
+    // track's first segment from a new run is a discontinuity.
+    const gen = this.dvr.runs = (this.dvr.runs || 0) + 1;
+    // Split view places segments by the times ffmpeg reports, counted from where the recording stood when
+    // this run started, so the video and every audio track land on the same DVR timeline.
+    // (from the furthest track, so a new run's audio can't overlap the last run's)
+    const base = Math.max(this.dvr.total, ...this.dvr.audio.map(t => t.total));
+    const hw = this.useHw && !customVideoArgs();
+    const args = this._args(hw);
     console.log(`[HDHR] ${this.roomId}: ffmpeg start ch ${this.channel} enc=${hw ? 'vaapi' : (customVideoArgs() ? 'custom' : 'x264')} (seg #${this.dvr.nextIdx}${this.nextDisc ? ', after restart' : ''})`);
     this.spawnedAt = Date.now();
-    this.proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let buf = '';
+    const extra = split ? this.channels.map(() => 'pipe') : [];
+    this.proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', ...extra] });
     let produced = 0;
-    this.proc.stdout.on('data', chunk => {
-      buf += chunk.toString();
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        const [file, start, end] = line.split(',');
-        const dur = parseFloat(end) - parseFloat(start);
-        if (!file || !(dur > 0.2)) continue;
-        this.dvr.adopt(file, dur, this.nextDisc);
-        this.nextDisc = false;
-        this.lastSegAt = Date.now();
-        produced++;
-        this.failures = 0;
-      }
+    // Read a csv segment list ("file,start,end" per line) from one of ffmpeg's pipes
+    const readList = (stream, onSegment) => {
+      let buf = '';
+      stream.on('data', chunk => {
+        buf += chunk.toString();
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          const [file, start, end] = line.split(',');
+          const s = parseFloat(start), dur = parseFloat(end) - s;
+          if (!file || !(dur > 0.2)) continue;
+          onSegment(file, s, dur);
+        }
+      });
+    };
+    readList(this.proc.stdout, (file, s, dur) => {
+      if (split) this.dvr.adoptAt('v', file, base + s, dur, gen);
+      else this.dvr.adopt(file, dur, this.nextDisc);
+      this.nextDisc = false;
+      this.lastSegAt = Date.now();
+      produced++;
+      this.failures = 0;
     });
+    if (split) {
+      this.channels.forEach((_, i) => readList(this.proc.stdio[3 + i], (file, s, dur) => this.dvr.adoptAt(i, file, base + s, dur, gen)));
+    }
     this.proc.stderr.on('data', chunk => {
       const text = chunk.toString().trim().split('\n');
       for (const l of text) {
+        // Audio-only mpegts outputs print this for every segment; it's harmless.
+        if (!l.trim() || /frame size not set|^\[mpegts @ [\w]+\]\s*$/.test(l)) continue;
+        // ffmpeg 5.x: "Stream map '1:a:0' matches no streams"; 7+: "Failed to set value '1:a:0' for option 'map'"
+        const noAudio = /Stream map '(\d+):a:0' matches no streams|Failed to set value '(\d+):a:0' for option 'map'/.exec(l);
+        if (noAudio) this.lastError = `Channel ${this.channels[Number(noAudio[1] ?? noAudio[2])]} has no audio, so it can't be shown in split view`;
         if (this.stderrLines++ < 12) console.warn(`[HDHR] ${this.roomId}: ffmpeg: ${l.slice(0, 200)}`);
       }
     });
@@ -689,19 +883,34 @@ async function startRelay(roomId, opts) {
 
 /**
  * Start recording a channel straight from the HDHomeRun into a fresh DVR (replaces any
- * previous relay/DVR for the room). Resolves once `readySec` seconds are recorded.
+ * previous relay/DVR for the room; see keepDvr below). Resolves once `readySec` seconds are recorded.
  */
 // A tune that is still waiting for its first seconds of video. Registered so that closing or resetting the
 // room in that window (stopRelay) cancels it, instead of leaving ffmpeg holding a tuner for a room nobody is in.
 const pendingTunes = new Map();   // roomId -> { src, dvr, cancelled }
 
-async function startHdhr(roomId, { channel, readySec, onProgress }) {
-  if (!/^\d{1,3}(\.\d{1,3})?$/.test(String(channel))) throw new Error('Invalid channel number');
+// opts.channels (split view): 2–SPLIT_MAX channel numbers tiled into one picture, each with its own audio
+// track named by opts.names[i]. Otherwise opts.channel, one channel as before.
+// opts.keepDvr (split view, same number of tiles): record the new set into the room's existing DVR after a
+// discontinuity, so the room can still rewind to before the change. The old source stops first (one writer per
+// DVR, and its tuners are needed). Falls back to a fresh DVR when the old recording has a different shape.
+async function startHdhr(roomId, { channel, channels, names, readySec, onProgress, keepDvr }) {
+  const list = (channels && channels.length ? channels : [channel]).map(String);
+  if (list.length > SPLIT_MAX) throw new Error(`At most ${SPLIT_MAX} channels`);
+  if (list.some(ch => !/^\d{1,3}(\.\d{1,3})?$/.test(ch))) throw new Error('Invalid channel number');
   const oldRelay = relays.get(roomId);
   const oldDvr   = dvrs.get(roomId);
 
-  const dvr = new LiveDvr(roomId);
-  const src = new HdhrSource(roomId, { channel: String(channel), dvr });
+  const split = list.length > 1;
+  const keep = !!keepDvr && split && !!oldDvr && oldDvr.audio.length === list.length && oldRelay instanceof HdhrSource;
+  if (keep) {
+    oldRelay.stop();
+    relays.delete(roomId);
+    oldDvr.audio.forEach((t, i) => { t.name = (names && names[i]) || `Ch ${list[i]}`; });
+  }
+  const dvr = keep ? oldDvr : new LiveDvr(roomId, split ? { audioTracks: list.length, trackNames: names || list.map(ch => `Ch ${ch}`) } : {});
+  const from = keep ? dvr.edge() : 0;   // readiness counts only what this run records
+  const src = new HdhrSource(roomId, { channels: list, dvr });
   const pending = { src, dvr, cancelled: false };
   pendingTunes.set(roomId, pending);
   src.start();
@@ -709,10 +918,12 @@ async function startHdhr(roomId, { channel, readySec, onProgress }) {
   let lastTick = -1;
   const ready = await new Promise(resolve => {
     const t = setInterval(() => {
-      if (pending.cancelled) { clearInterval(t); resolve(false); return; }
-      const tick = Math.floor(Math.min(dvr.total, readySec) * 2); // report in half-second steps
-      if (tick !== lastTick) { lastTick = tick; onProgress && onProgress(Math.min(dvr.total, readySec), readySec); }
-      if (dvr.total >= readySec) { clearInterval(t); resolve(true); }
+      // lastError = a problem retrying won't fix (e.g. a channel with no audio) — give up now
+      if (pending.cancelled || src.lastError) { clearInterval(t); resolve(false); return; }
+      const recorded = Math.max(0, dvr.edge() - from);
+      const tick = Math.floor(Math.min(recorded, readySec) * 2); // report in half-second steps
+      if (tick !== lastTick) { lastTick = tick; onProgress && onProgress(Math.min(recorded, readySec), readySec); }
+      if (recorded >= readySec) { clearInterval(t); resolve(true); }
     }, 200);
     setTimeout(() => { clearInterval(t); resolve(false); }, 25000);
   });
@@ -724,12 +935,14 @@ async function startHdhr(roomId, { channel, readySec, onProgress }) {
   }
   if (!ready) {
     src.stop();
+    if (keep) dvrs.delete(roomId);   // its source is gone too: the room has nothing left to play
     dvr.destroy();
-    throw new Error('HDHomeRun produced no video (tuner busy or channel unavailable?)');
+    throw new Error(src.lastError || 'HDHomeRun produced no video (tuner busy or channel unavailable?)');
   }
 
-  dvrs.set(roomId, dvr);
   relays.set(roomId, src);
+  if (keep) return src;
+  dvrs.set(roomId, dvr);
   if (oldRelay) oldRelay.stop();
   if (oldDvr) oldDvr.destroy();
   return src;
@@ -755,4 +968,4 @@ function getDvr(roomId) {
   return dvrs.get(roomId) || null;
 }
 
-module.exports = { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr };
+module.exports = { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, SPLIT_MAX };

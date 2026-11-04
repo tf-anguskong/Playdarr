@@ -106,14 +106,14 @@ const baseUrl = () => (process.env.APP_URL || '').replace(/\/$/, '');
 function alwaysOnView(def) {
   const room = sync.getPersistentRoom(def.id);
   return {
-    id: def.id, name: def.name, roomType: def.roomType, channel: def.channel,
+    id: def.id, name: def.name, roomType: def.roomType, channel: def.channel, channels: alwaysOn.channelsOf(def),
     inviteUrl: `${baseUrl()}/join/${def.inviteToken}`,
     createdBy: def.createdBy, createdAt: def.createdAt,
     open: !!room,                                            // false when the room type is currently turned off
     roomId: room ? room.id : null,
     viewers: room ? room.viewers.size : 0,
     hostName: room && !room.awaitingHost ? room.hostName : null,
-    onChannel: room ? room.liveTvChannel : null,
+    onChannel: room ? (room.liveTvChannels.length > 1 ? room.liveTvChannels.map(c => c.channel).join(' + ') : room.liveTvChannel) : null,
   };
 }
 
@@ -122,28 +122,32 @@ router.get('/always-on', (req, res) => {
 });
 
 router.post('/always-on', async (req, res) => {
-  const { name, roomType, channel } = req.body || {};
+  const { name, roomType, channel, channels } = req.body || {};
   if (!['livetv', 'movie', 'tv'].includes(roomType) || !sync.enabledRoomTypes()[roomType]) {
     return res.status(400).json({ error: 'That room type is not available' });
   }
   const cleanName = sanitizeText(String(name || '').trim().slice(0, 60));
   if (!cleanName) return res.status(400).json({ error: 'Name is required' });
 
-  let ch = null;
-  if (roomType === 'livetv' && channel) {
-    try {
-      const { channels } = await require('../livetv-manager').getGuide();
-      const found = channels.find(c => c.number === String(channel));
-      if (!found) return res.status(400).json({ error: 'Unknown channel' });
-      ch = { channel: found.number, channelTitle: found.title, channelId: found.channelId };
-    } catch {
-      return res.status(502).json({ error: 'Could not read the channel guide' });
+  // Pinned Live TV channels: one, or several for split view (each looked up in the guide)
+  const wanted = [...new Set((Array.isArray(channels) ? channels : (channel ? [channel] : [])).map(String))];
+  if (wanted.length > 4) return res.status(400).json({ error: 'At most 4 channels' });
+  const picked = [];
+  if (roomType === 'livetv' && wanted.length) {
+    let guide;
+    try { guide = (await require('../livetv-manager').getGuide()).channels; }
+    catch { return res.status(502).json({ error: 'Could not read the channel guide' }); }
+    for (const num of wanted) {
+      const found = guide.find(c => c.number === num);
+      if (!found) return res.status(400).json({ error: `Unknown channel ${num}` });
+      picked.push({ channel: found.number, channelTitle: found.title, channelId: found.channelId });
     }
   }
+  const ch = picked[0] || null;
 
-  const def = alwaysOn.add({ name: cleanName, roomType, channel: ch, createdBy: req.session.user.name });
+  const def = alwaysOn.add({ name: cleanName, roomType, channels: picked, createdBy: req.session.user.name });
   sync.createPersistentRoom(def);
-  console.log(`[Admin] ${req.session.user.name} created always-on room "${def.name}" (${def.roomType}${ch ? ', ' + ch.channel : ''})`);
+  console.log(`[Admin] ${req.session.user.name} created always-on room "${def.name}" (${def.roomType}${ch ? ', ' + picked.map(c => c.channel).join(' + ') : ''})`);
   res.status(201).json({ room: alwaysOnView(def) });
 });
 

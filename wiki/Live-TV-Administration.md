@@ -17,6 +17,23 @@ With Live TV enabled, Plex users see a **Live TV · on now** row in the lobby: c
 - *More channels* starts an empty Live TV room; pick from the full guide inside it.
 - Starting one uses a tuner like any other Live TV room (see capacity below).
 
+## Split view (several channels in one room)
+
+A Live TV room's host can put **up to 4 channels on screen at once**. Everyone sees the same tiled picture, and **each viewer chooses which channel they hear**.
+
+- **Host:** after tuning a channel, *Split view → + Add a channel* in the sidebar adds a tile. Each tile has **✎** (change that channel) and **✕** (take it off the screen); with one channel left the room is back to normal. In the Guide, clicking a channel replaces the tile you're listening to.
+- **Everyone:** click a channel in the sidebar list or its label on the picture to hear it, or press **1–4** (this also works with the video fullscreen). The choice is per viewer and remembered for that room.
+- **Layouts:** 2 = side by side, 3 = two on top and one below, 4 = 2×2.
+- **Turn it off or cap it:** *Settings → Live TV · capacity & playback → Live TV split view* (`LIVETV_SPLIT_MAX`): *Off*, or up to 2, 3 or 4 channels. It applies at once; rooms already split keep their channels (they can still remove tiles).
+- **Tuners:** each tile holds a tuner, and counts against `LIVETV_MAX_ROOMS` (see below), which also caps how many tiles one room can have. A room with 3 tiles leaves one tuner free on a 4-tuner box.
+- **Any change re-records the picture.** Adding, changing or removing a tile shows the tuning screen for roughly 10–15 seconds.
+  - **Changing** a tile's channel keeps the recording, so the room can still rewind to before the change (the tile shows the old channel there; its label shows the current one).
+  - **Adding or removing** a tile starts a fresh recording, so the room can't rewind past it.
+- **Always-on rooms** can be pinned to several channels and open in split view; see [Always-On Rooms](Always-On-Rooms).
+- **Needs the HDHomeRun source.** It isn't offered with `LIVETV_SOURCE=plex`.
+- **Every channel needs sound.** A channel without an audio stream can't be added (*"Channel 7.1 has no audio, so it can't be shown in split view"*).
+- **Encoding:** the whole picture is **one** encode, so the encoder cost is close to one channel's. Each extra channel adds the cheaper work of decoding and deinterlacing it.
+
 ## Requirements
 
 - An HDHomeRun on your LAN, reachable from the container.
@@ -42,16 +59,17 @@ If `HDHR_IP` is unset, or `LIVETV_SOURCE=plex`, Playdarr falls back to tuning th
 
 ## Limiting how many rooms stream: `LIVETV_MAX_ROOMS`
 
-`LIVETV_MAX_ROOMS` is the most Live TV rooms that can be streaming at the same time. **The default is 2.** Set it in `.env` (and recreate the container) to match your hardware:
+`LIVETV_MAX_ROOMS` is the most Live TV **channels** that can be streaming at the same time, across all rooms. **The default is 2.** A room normally streams one channel; a room in split view streams one per channel on screen. Set it in `.env` (and recreate the container) to match your hardware:
 
 ```env
 LIVETV_MAX_ROOMS=3
 ```
 
-- **What counts:** a Live TV room is "in use" while it is **recording or tuning**, because that's what holds a tuner and an encoder. A room that is merely open, such as an empty [always-on room](Always-On-Rooms) or a Live TV room nobody has picked a channel in yet, costs nothing and doesn't count.
-- **When it's full:** starting another Live TV room is refused with *"Live TV is full right now (2 of 2 rooms in use). Try again when one ends."* In an always-on room, the host who tries to tune a channel gets the same message. Changing channel inside a room that's already streaming is always allowed. It isn't a second slot.
+- **What counts:** a Live TV room uses its tuners while it is **recording or tuning**. A room that is merely open, such as an empty [always-on room](Always-On-Rooms) or a Live TV room nobody has picked a channel in yet, costs nothing and doesn't count.
+- **When it's full:** starting another Live TV room is refused with *"Live TV is full right now (2 of 2 tuners in use). Try again when one ends."* In an always-on room, the host who tries to tune a channel gets the same message. Changing channel inside a room that's already streaming is always allowed, since it swaps one channel for another. Adding a split-view tile needs a free tuner (*"Not enough Live TV tuners free for 3 channels"*).
+- **Seamless or not:** when there are enough tuners for the old and new channels at once, a channel change keeps the old one playing until the new one is ready. Otherwise (usually in split view) the old recording stops first and the room shows the tuning screen for a few seconds.
 - **Other room types** (movies, TV, YouTube) are unaffected.
-- **In the lobby**, the *Live TV · on now* row shows how many rooms are in use ("1 of 2 rooms in use"), and its cards are greyed out and disabled while it's full. People can still join Live TV rooms that are already open.
+- **In the lobby**, the *Live TV · on now* row shows how many tuners are in use ("1 of 2 tuners in use"), and its cards are greyed out and disabled while it's full. People can still join Live TV rooms that are already open.
 - **Pick a sensible number:** at most your tuner count (a 4-tuner HDHomeRun means 4), and fewer if your CPU can't encode that many at once. See the capacity table below.
 
 ## Pause cooldown: `LIVETV_PAUSE_COOLDOWN_SEC`
@@ -66,7 +84,7 @@ Pausing and resuming over and over disrupts a Live TV stream, so Playdarr enforc
 
 | Resource | What to expect |
 |---|---|
-| **Tuners** | **Each Live TV room occupies one tuner** while it's open. A 4-tuner HDHomeRun supports four rooms at once |
+| **Tuners** | **Each channel on screen occupies one tuner** while the room streams it: one per normal room, one per tile in [split view](#split-view-several-channels-in-one-room). A 4-tuner HDHomeRun supports four channels at once |
 | **CPU (software)** | About one core per room for a 1080i channel at the default `veryfast` preset |
 | **Disk** | Roughly **3–4 GB per room-hour** at the default bitrate. Recordings are deleted when the room closes and wiped when the server starts |
 | **Bandwidth** | Viewers each pull the transcoded stream from Playdarr, not from the tuner |

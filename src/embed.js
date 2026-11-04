@@ -111,10 +111,18 @@ async function forRoom(room, imageUrl, { invite = true } = {}) {
     if (blurb) card.lines.push('', clip(blurb, 200));
     if (artPath(m)) { card.image = imageUrl; card.large = true; }
   } else if (room.roomType === 'livetv' && room.liveTvChannel) {
-    const ch = room.liveTvChannelTitle || room.liveTvChannel;
-    card.title = `🔴 Live on ${ch}`;
-    if (room.liveTvProgram) card.lines.push(`On now: ${room.liveTvProgram}`);
-    card.lines.push(`${room.playing ? '▶ Watching live' : '⏸ Paused'} · channel ${room.liveTvChannel}`, who);
+    const tiles = room.liveTvChannels || [];
+    if (tiles.length > 1) {
+      // Split view: every channel on screen, and what's on each
+      card.title = `🔴 Live: ${tiles.map(t => t.title || t.channel).join(' + ')}`;
+      tiles.forEach((t, i) => { if (room.liveTvPrograms?.[i]) card.lines.push(`${t.channel}: ${room.liveTvPrograms[i]}`); });
+      card.lines.push(`${room.playing ? '▶ Watching live' : '⏸ Paused'} · ${tiles.length} channels side by side`, who);
+    } else {
+      const ch = room.liveTvChannelTitle || room.liveTvChannel;
+      card.title = `🔴 Live on ${ch}`;
+      if (room.liveTvProgram) card.lines.push(`On now: ${room.liveTvProgram}`);
+      card.lines.push(`${room.playing ? '▶ Watching live' : '⏸ Paused'} · channel ${room.liveTvChannel}`, who);
+    }
     // Channel logo from the (cached) guide, as a small thumbnail — only when Plex gives a public https URL
     try {
       const guide = await Promise.race([getGuide(), new Promise(r => setTimeout(r, 2000, null))]);

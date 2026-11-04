@@ -180,7 +180,9 @@ async function loadAlwaysOn() {
 function renderAlwaysOn() {
   if (!alwaysOn.length) { $('ao-list').innerHTML = '<div class="loading">No always-on rooms. Add one to keep a room open permanently.</div>'; return; }
   $('ao-list').innerHTML = alwaysOn.map(r => {
-    const where = r.channel ? `${r.channel.channel} ${r.channel.channelTitle}` : (r.roomType === 'livetv' ? 'pick a channel in the room' : '');
+    const pinned = r.channels && r.channels.length ? r.channels : (r.channel ? [r.channel] : []);
+    const where = pinned.length ? pinned.map(c => `${c.channel} ${c.channelTitle}`).join(' + ') + (pinned.length > 1 ? ' (split view)' : '')
+      : (r.roomType === 'livetv' ? 'pick a channel in the room' : '');
     const status = !r.open ? 'Not open — that room type is turned off in .env'
       : r.viewers ? `${esc(r.hostName || 'someone')} hosting · ${r.viewers} watching${r.onChannel ? ` · on ${esc(r.onChannel)}` : ''}`
       : (r.roomType === 'livetv' ? 'Empty — tunes when someone arrives' : 'Empty — waiting for someone to arrive');
@@ -199,19 +201,41 @@ function renderAlwaysOn() {
   }).join('');
 }
 
+// Pinned channels: the first select, plus up to AO_SPLIT_MAX - 1 more for split view (each extra one has a ✕)
+const AO_SPLIT_MAX = 4;
+let channelOptions = '';
 async function fillChannels() {
   if (guideLoaded) return;
   $('ao-channel').innerHTML = '<option value="">Loading channels…</option>';
   try {
     const { channels = [] } = await api('GET', '/api/livetv/guide');
     channels.sort((a, b) => parseFloat(a.number) - parseFloat(b.number));
-    $('ao-channel').innerHTML = '<option value="">No channel — pick one when joining</option>' +
-      channels.map(c => `<option value="${esc(c.number)}">${esc(c.number)} ${esc(c.title || '')}</option>`).join('');
+    channelOptions = channels.map(c => `<option value="${esc(c.number)}">${esc(c.number)} ${esc(c.title || '')}</option>`).join('');
+    $('ao-channel').innerHTML = '<option value="">No channel — pick one when joining</option>' + channelOptions;
     guideLoaded = true;
   } catch {
     $('ao-channel').innerHTML = '<option value="">Channel guide unavailable</option>';
   }
+  syncSplitButton();
 }
+
+const extraChannelSelects = () => [...$('ao-extra').querySelectorAll('select')];
+function syncSplitButton() {
+  const count = 1 + extraChannelSelects().length;
+  $('ao-add-channel').style.display = guideLoaded && $('ao-channel').value && count < AO_SPLIT_MAX ? 'inline-block' : 'none';
+}
+$('ao-channel').addEventListener('change', () => {
+  if (!$('ao-channel').value) $('ao-extra').innerHTML = '';   // no first channel → no split either
+  syncSplitButton();
+});
+$('ao-add-channel').addEventListener('click', () => {
+  const row = document.createElement('span');
+  row.className = 'ao-extra-row';
+  row.innerHTML = `<select class="filter-select">${channelOptions}</select><button type="button" class="ao-remove-channel" title="Remove this channel">✕</button>`;
+  row.querySelector('button').addEventListener('click', () => { row.remove(); syncSplitButton(); });
+  $('ao-extra').appendChild(row);
+  syncSplitButton();
+});
 
 function syncAoForm() {
   const live = $('ao-type').value === 'livetv';
@@ -222,6 +246,7 @@ function syncAoForm() {
 $('ao-add-btn').addEventListener('click', () => {
   $('ao-form').style.display = 'block';
   $('ao-name').value = ''; $('ao-error').style.display = 'none';
+  $('ao-extra').innerHTML = ''; $('ao-channel').value = '';
   syncAoForm();
   $('ao-name').focus();
 });
@@ -231,7 +256,9 @@ $('ao-type').addEventListener('change', syncAoForm);
 $('ao-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = { name: $('ao-name').value, roomType: $('ao-type').value };
-  if (body.roomType === 'livetv' && $('ao-channel').value) body.channel = $('ao-channel').value;
+  if (body.roomType === 'livetv' && $('ao-channel').value) {
+    body.channels = [...new Set([$('ao-channel').value, ...extraChannelSelects().map(s => s.value)].filter(Boolean))];
+  }
   try {
     await api('POST', '/api/admin/always-on', body);
     $('ao-form').style.display = 'none';
