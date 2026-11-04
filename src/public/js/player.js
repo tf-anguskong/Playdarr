@@ -59,7 +59,8 @@ function setHostUI(on, inviteToken) {
   const channelBtn   = document.getElementById('choose-channel-btn');
   if (movieBtn)   movieBtn.style.display   = (on && !isYt && !isTv && !isLiveTv) ? 'block' : 'none';
   if (episodeBtn) episodeBtn.style.display = (on && isTv) ? 'block' : 'none';
-  if (channelBtn) channelBtn.style.display = (on && isLiveTv) ? 'block' : 'none';
+  // In split view each tile has its own Change / Remove in the sidebar instead
+  if (channelBtn) channelBtn.style.display = (on && isLiveTv && !liveSplit) ? 'block' : 'none';
   document.getElementById('yt-controls-section').style.display   = (on && isYt)  ? 'block' : 'none';
   document.getElementById('countdown-section').style.display     = (on && !isLiveTv) ? 'block' : 'none';
   document.getElementById('intermission-section').style.display  = (on && !isLiveTv) ? 'block' : 'none';
@@ -68,6 +69,7 @@ function setHostUI(on, inviteToken) {
   if (resyncBtn) resyncBtn.style.display = on ? 'block' : 'none';
   if (on && inviteToken) setupInviteLink(inviteToken);
   if (!on) document.getElementById('invite-section').style.display = 'none';
+  if (isLiveTv) renderSplitUi();
 }
 
 function applyRoomSettings(settings) {
@@ -124,7 +126,13 @@ socket.on('room-state', (state) => {
 socket.on('room-settings', applyRoomSettings);
 
 // Refusals from the server (e.g. a rename the word filter or permissions rejected)
-socket.on('error-msg', (msg) => { if (typeof msg === 'string' && msg) showNotif(`⚠️ ${msg}`); });
+socket.on('error-msg', (msg) => {
+  if (typeof msg !== 'string' || !msg) return;
+  // A failed Live TV tune is already written under the (hidden) player — no second copy as a toast
+  if (lastTuneFail?.message && msg.includes(lastTuneFail.message) && Date.now() - lastTuneFail.at < 3000 && noMovie.style.display !== 'none') return;
+  showNotif(`⚠️ ${msg}`);
+});
+let lastTuneFail = null;   // { message, at } of the latest 'livetv-tune-failed'
 
 socket.on('kicked', ({ byAdmin } = {}) => {
   leavePip();
@@ -513,6 +521,8 @@ function loadLiveTvRelay(targetAbs, shouldPlay) {
     hlsInstance.loadSource(src);
     hlsInstance.attachMedia(video);
     hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => liveLog('manifest parsed'));
+    // Split view: once the channels' audio tracks are known, switch to the one this viewer picked
+    hlsInstance.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => applySplitAudio());
     hlsInstance.on(Hls.Events.LEVEL_LOADED, (_, data) => {
       const frags = data.details.fragments;
       const first = frags[0], last = frags[frags.length - 1];
@@ -549,6 +559,7 @@ function loadLiveTvRelay(targetAbs, shouldPlay) {
     // play from the playlist's default start without position sync.
     video.src = src;
     video.addEventListener('loadedmetadata', () => {
+      applySplitAudio();
       releaseSyncLock();
       tryPlay();
     }, { once: true });
@@ -609,11 +620,163 @@ function setLiveProgram(program) {
   el.textContent = program ? `· ${program}` : '';
   el.title = program || '';
 }
-socket.on('livetv-program', ({ program } = {}) => setLiveProgram(program));
+socket.on('livetv-program', ({ program, programs } = {}) => {
+  if (liveSplit && Array.isArray(programs)) {
+    liveSplit.forEach((t, i) => { t.program = programs[i] || null; });
+    renderSplitUi();
+    setLiveProgram(liveSplit[splitAudioIndex()].program);
+  } else setLiveProgram(program);
+});
+
+// ── Live TV split view ─────────────────────────────────────
+// Several channels tiled into one picture (the server encodes it; see live-relay.js). Everyone shares the video;
+// each viewer picks which channel they *hear*. hls.js sees the channels as alternate audio tracks in tile order.
+// The choice is the viewer's own: it never goes to the server, and it's remembered per room by channel number.
+let liveSplit        = null;   // state.liveTvSplit: [{ slot, channel, title, program, x, y, w, h }] or null
+let liveSplitMax     = 1;      // most tiles this room may have (1 = split view unavailable)
+let liveHasChannel   = false;
+let splitAudioChannel = null;  // channel number this viewer is listening to
+let splitAudioSlot    = 0;     // ...and which tile it was in (to follow the tile if the host replaces its channel)
+const SPLIT_AUDIO_KEY = `livetv-split-audio:${roomId}`;
+const savedSplitChannel = () => { try { return localStorage.getItem(SPLIT_AUDIO_KEY); } catch { return null; } };
+const saveSplitChannel  = ch => { try { localStorage.setItem(SPLIT_AUDIO_KEY, ch); } catch { /* private mode */ } };
+
+/** Which tile's audio is on (falls back to the first tile). */
+function splitAudioIndex() {
+  const i = liveSplit ? liveSplit.findIndex(t => t.channel === splitAudioChannel) : -1;
+  return i >= 0 ? i : 0;
+}
+
+function applySplitState(state) {
+  liveSplit      = Array.isArray(state.liveTvSplit) && state.liveTvSplit.length > 1 ? state.liveTvSplit : null;
+  liveSplitMax   = state.liveTvSplitMax || 1;
+  liveHasChannel = !!state.movieKey;
+  if (liveSplit && !liveSplit.some(t => t.channel === splitAudioChannel)) {
+    // Keep listening to the same channel while it's on screen. On arrival: the one remembered for this room.
+    // If the host replaced the tile you were hearing: that tile's new channel (else tile 1).
+    const saved = savedSplitChannel();
+    if (splitAudioChannel == null && liveSplit.some(t => t.channel === saved)) splitAudioChannel = saved;
+    else splitAudioChannel = (liveSplit[splitAudioSlot] || liveSplit[0]).channel;
+  }
+  if (liveSplit) splitAudioSlot = splitAudioIndex();
+  applySplitAudio();
+  renderSplitUi();
+}
+
+/** Switch to tile `slot`'s audio. */
+function setSplitAudio(slot, { announce = false } = {}) {
+  const tile = liveSplit && liveSplit[slot];
+  if (!tile) return;
+  splitAudioChannel = tile.channel;
+  splitAudioSlot = slot;
+  saveSplitChannel(tile.channel);
+  applySplitAudio();
+  renderSplitUi();
+  setLiveProgram(tile.program);
+  if (announce) showNotif(`🔊 ${tile.channel} ${tile.title || ''}`.trim());
+}
+
+/** Point the player at the chosen tile's audio track (hls.js, or Safari's native audioTracks). */
+function applySplitAudio() {
+  if (!liveSplit) return;
+  const i = splitAudioIndex();
+  if (hlsInstance) {
+    if (hlsInstance.audioTracks.length > i && hlsInstance.audioTrack !== i) hlsInstance.audioTrack = i;
+  } else if (video.audioTracks && video.audioTracks.length > i) {
+    for (let k = 0; k < video.audioTracks.length; k++) video.audioTracks[k].enabled = k === i;
+  }
+}
+
+/** Sidebar list of tiles, and the labels over the picture. */
+function renderSplitUi() {
+  const box = document.getElementById('livetv-split');
+  const overlay = document.getElementById('split-tiles');
+  if (!box || !overlay) return;
+  const channelBtn = document.getElementById('choose-channel-btn');
+  if (channelBtn) channelBtn.style.display = (isHost && roomType === 'livetv' && !liveSplit) ? 'block' : 'none';
+
+  const count = liveSplit ? liveSplit.length : (liveHasChannel ? 1 : 0);
+  const canAdd = isHost && liveHasChannel && count < liveSplitMax;
+  if (!liveSplit && !canAdd) { box.style.display = 'none'; box.innerHTML = ''; }
+  else {
+    box.style.display = 'block';
+    const on = splitAudioIndex();
+    const rows = liveSplit ? liveSplit.map((t, i) => `
+      <div class="split-row${i === on ? ' on' : ''}">
+        <button type="button" class="split-pick" data-slot="${i}" title="Listen to this channel${liveSplit.length > 1 ? ` (key ${i + 1})` : ''}">
+          <span class="split-ico" aria-hidden="true">${i === on ? '🔊' : i + 1}</span>
+          <span class="split-name"><b>${esc(t.channel)}</b> ${esc(t.title || '')}${t.program ? `<span class="split-prog">${esc(t.program)}</span>` : ''}</span>
+        </button>
+        ${isHost ? `<button type="button" class="split-act" data-change="${i}" title="Change this channel">✎</button>
+        <button type="button" class="split-act" data-remove="${i}" title="Take this channel off the screen">✕</button>` : ''}
+      </div>`).join('') : '';
+    box.innerHTML = `
+      <div class="split-head"><span>Split view</span>${liveSplit ? `<span class="split-hint">keys 1–${liveSplit.length} switch audio</span>` : ''}</div>
+      ${rows}
+      ${canAdd ? `<button type="button" class="split-add" data-add="${count}">+ Add a channel${liveSplit ? '' : ' (split screen)'}</button>` : ''}`;
+  }
+
+  overlay.innerHTML = liveSplit ? liveSplit.map((t, i) => `
+    <div class="split-tile${i === splitAudioIndex() ? ' on' : ''}" data-tile="${i}">
+      <button type="button" class="split-chip" data-slot="${i}" title="Listen to this channel">
+        ${i === splitAudioIndex() ? '🔊' : `<span class="split-key">${i + 1}</span>`} ${esc(t.channel)} ${esc(t.title || '')}
+      </button>
+    </div>`).join('') : '';
+  positionSplitTiles();
+}
+
+// Clicks in the sidebar list and on the picture's labels
+document.getElementById('livetv-split')?.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.slot != null) setSplitAudio(Number(b.dataset.slot));
+  else if (b.dataset.change != null) openChannelPicker(Number(b.dataset.change));
+  else if (b.dataset.add != null) openChannelPicker(Number(b.dataset.add));
+  else if (b.dataset.remove != null) socket.emit('livetv-remove-slot', { slot: Number(b.dataset.remove) });
+});
+document.getElementById('split-tiles')?.addEventListener('click', e => {
+  const b = e.target.closest('.split-chip');
+  if (b) setSplitAudio(Number(b.dataset.slot));
+});
+
+// Keys 1–4 switch audio — they also work with the video fullscreen, where the labels can't be shown
+document.addEventListener('keydown', e => {
+  if (!liveSplit || roomType !== 'livetv' || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  const n = Number(e.key);
+  if (Number.isInteger(n) && n >= 1 && n <= liveSplit.length) { e.preventDefault(); setSplitAudio(n - 1, { announce: true }); }
+});
+
+/** Lay the labels over the tiles: the picture is letterboxed inside the <video> box (object-fit: contain). */
+function positionSplitTiles() {
+  const overlay = document.getElementById('split-tiles');
+  if (!overlay) return;
+  const show = !!liveSplit && video.style.display !== 'none' && video.videoWidth > 0;
+  overlay.style.display = show ? 'block' : 'none';
+  if (!show) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const bw = video.clientWidth, bh = video.clientHeight;
+  const scale = Math.min(bw / vw, bh / vh);
+  const pw = vw * scale, ph = vh * scale;
+  const left = video.offsetLeft + (bw - pw) / 2, top = video.offsetTop + (bh - ph) / 2;
+  // Keep labels clear of the Guide / reactions / PiP row along the top of the player
+  const topRow = parseFloat(getComputedStyle(overlay).getPropertyValue('--split-clear')) || 0;
+  overlay.querySelectorAll('.split-tile').forEach(el => {
+    const t = liveSplit[Number(el.dataset.tile)];
+    if (!t) return;
+    el.style.left = `${left + t.x * pw}px`; el.style.top = `${top + t.y * ph}px`;
+    el.style.width = `${t.w * pw}px`; el.style.height = `${t.h * ph}px`;
+    const chip = el.querySelector('.split-chip');
+    if (chip) chip.style.marginTop = `${Math.max(0, topRow - (top + t.y * ph))}px`;
+  });
+}
+if (typeof ResizeObserver !== 'undefined') new ResizeObserver(positionSplitTiles).observe(video);
+['loadedmetadata', 'resize'].forEach(ev => video.addEventListener(ev, positionSplitTiles));
 
 function applyLiveTvState(state) {
   document.getElementById('yt-player-container').style.display = 'none';
-  setLiveProgram(state.liveTvProgram);
+  applySplitState(state);
+  setLiveProgram(liveSplit ? liveSplit[splitAudioIndex()].program : state.liveTvProgram);
   if (state.liveTuning) showTuning(state.liveTuning);
 
   const guideBtn = document.getElementById('guide-toggle-btn');
@@ -634,13 +797,14 @@ function applyLiveTvState(state) {
   const volOverlay = document.getElementById('volume-overlay');
   if (volOverlay) volOverlay.style.display = isHost ? 'none' : 'flex';
 
-  titleEl.textContent = state.liveTvChannelTitle || state.liveTvChannel;
+  const splitTitle = liveSplit ? liveSplit.map(t => t.title || t.channel).join(' + ') : null;
+  titleEl.textContent = splitTitle || state.liveTvChannelTitle || state.liveTvChannel;
 
   // Update sidebar channel info
   const liveTvInfo = document.getElementById('livetv-info');
   const liveTvChannelTitle = document.getElementById('livetv-channel-title');
   if (liveTvInfo) liveTvInfo.style.display = 'block';
-  if (liveTvChannelTitle) liveTvChannelTitle.textContent = state.liveTvChannelTitle || '';
+  if (liveTvChannelTitle) liveTvChannelTitle.textContent = liveSplit ? `${liveSplit.length} channels` : (state.liveTvChannelTitle || '');
 
   // Track the active channel number for guide highlighting
   activeLiveTvChannel = state.liveTvChannel || null;
@@ -734,9 +898,13 @@ function renderGuide() {
     list.innerHTML = '<div class="loading" style="padding:1rem">No channels found.</div>';
     return;
   }
+  // Split view: every channel on screen is "on air"; clicking one of them switches your audio to it, and the
+  // host clicking any other channel replaces the tile they're listening to.
+  const tileOf = num => liveSplit ? liveSplit.findIndex(t => t.channel === num) : -1;
   list.innerHTML = guideChannels.map(ch => {
-    const isActive  = ch.number === activeLiveTvChannel;
-    const clickable = isHost;
+    const tile      = tileOf(ch.number);
+    const isActive  = liveSplit ? tile >= 0 : ch.number === activeLiveTvChannel;
+    const clickable = isHost || tile >= 0;
     return `
       <div class="guide-channel-item${isActive ? ' active' : ''}${clickable ? ' clickable' : ''}"
            data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" data-channelid="${esc(ch.channelId || '')}">
@@ -745,22 +913,24 @@ function renderGuide() {
           <span class="guide-channel-name">${esc(ch.title || ch.number)}</span>
           ${ch.nowPlaying ? `<span class="guide-channel-program">${esc(ch.nowPlaying)}</span>` : ''}
         </div>
-        ${isActive ? '<span class="guide-now-playing">On Air</span>' : ''}
+        ${isActive ? `<span class="guide-now-playing">${liveSplit ? (tile === splitAudioIndex() ? '🔊 Tile ' : 'Tile ') + (tile + 1) : 'On Air'}</span>` : ''}
       </div>
     `;
   }).join('');
-  if (isHost) {
-    list.querySelectorAll('.guide-channel-item.clickable').forEach(item => {
-      item.addEventListener('click', () => {
-        socket.emit('select-livetv-channel', {
-          channel:      item.dataset.channel,
-          channelTitle: item.dataset.title,
-          channelId:    item.dataset.channelid
-        });
-        closeGuide();
+  list.querySelectorAll('.guide-channel-item.clickable').forEach(item => {
+    item.addEventListener('click', () => {
+      const tile = tileOf(item.dataset.channel);
+      if (tile >= 0) { setSplitAudio(tile); renderGuide(); return; }
+      if (!isHost) return;
+      if (liveSplit) socket.emit('livetv-set-slot', { slot: splitAudioIndex(), channel: item.dataset.channel });
+      else socket.emit('select-livetv-channel', {
+        channel:      item.dataset.channel,
+        channelTitle: item.dataset.title,
+        channelId:    item.dataset.channelid
       });
+      closeGuide();
     });
-  }
+  });
 }
 
 document.getElementById('guide-toggle-btn')?.addEventListener('click', () => {
@@ -1279,6 +1449,7 @@ function hideTuning() {
 }
 socket.on('livetv-tuning', showTuning);
 socket.on('livetv-tune-failed', ({ message } = {}) => {
+  lastTuneFail = { message: String(message || ''), at: Date.now() };
   hideTuning();
   noMovieText.textContent = `Couldn't tune that channel${message ? ': ' + message : ''}`;
 });
@@ -1550,10 +1721,18 @@ async function selectEpisode(ratingKey) {
 }
 
 // ── Live TV channel selector (host only) ──────────────────
-document.getElementById('choose-channel-btn')?.addEventListener('click', () => {
+// channelPickSlot: null = tune the room to one channel (ends split view); a number = put the pick in that tile
+let channelPickSlot = null;
+function openChannelPicker(slot = null) {
+  channelPickSlot = slot;
+  const title = document.getElementById('channel-modal-title');
+  const count = liveSplit ? liveSplit.length : 1;
+  if (title) title.textContent = slot == null ? 'Choose Channel'
+    : slot >= count ? 'Add a channel to the screen' : `Change channel ${slot + 1}`;
   document.getElementById('channel-modal').style.display = 'flex';
   loadChannels();
-});
+}
+document.getElementById('choose-channel-btn')?.addEventListener('click', () => openChannelPicker(null));
 
 document.getElementById('cancel-channel')?.addEventListener('click', () => {
   document.getElementById('channel-modal').style.display = 'none';
@@ -1568,17 +1747,20 @@ async function loadChannels() {
       list.innerHTML = '<div class="loading">No channels found.</div>';
       return;
     }
+    // Picking for a tile: channels already on screen can't go on twice
+    const onScreen = new Set(channelPickSlot != null ? (liveSplit ? liveSplit.map(t => t.channel) : [activeLiveTvChannel]) : []);
     list.innerHTML = channels.map(ch => `
-      <div class="episode-item" data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" data-channelid="${esc(ch.channelId || '')}" style="cursor:pointer">
+      <div class="episode-item${onScreen.has(ch.number) ? ' is-disabled' : ''}" data-channel="${esc(ch.number)}" data-title="${esc(ch.title || ch.number)}" data-channelid="${esc(ch.channelId || '')}" style="cursor:${onScreen.has(ch.number) ? 'default' : 'pointer'}">
         <div class="episode-info">
-          <span class="episode-title">${esc(ch.number)} ${esc(ch.title || '')}</span>
+          <span class="episode-title">${esc(ch.number)} ${esc(ch.title || '')}${onScreen.has(ch.number) ? ' <span class="episode-meta">· on screen</span>' : ''}</span>
           ${ch.nowPlaying ? `<span class="episode-meta">${esc(ch.nowPlaying)}</span>` : ''}
         </div>
       </div>
     `).join('');
-    list.querySelectorAll('.episode-item').forEach(item => {
+    list.querySelectorAll('.episode-item:not(.is-disabled)').forEach(item => {
       item.addEventListener('click', () => {
-        socket.emit('select-livetv-channel', {
+        if (channelPickSlot != null) socket.emit('livetv-set-slot', { slot: channelPickSlot, channel: item.dataset.channel });
+        else socket.emit('select-livetv-channel', {
           channel:      item.dataset.channel,
           channelTitle: item.dataset.title,
           channelId:    item.dataset.channelid

@@ -31,6 +31,8 @@
           </div>
           <button id="livetv-golive" class="btn-golive" type="button" style="display:none">Go live</button>
         </div>
+        <!-- Split view: the channels on screen; pick one to hear it (host: change / remove / add tiles) -->
+        <div id="livetv-split" class="livetv-split" style="display:none"></div>
       </div>
 
       <!-- Host: set YouTube video (YouTube rooms only) -->
@@ -216,6 +218,9 @@
         <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.05" value="1">
       </div>
 
+      <!-- Split view: one label per tile over the picture; click one to hear that channel -->
+      <div id="split-tiles" class="split-tiles" style="display:none"></div>
+
       <!-- Guide toggle button (livetv rooms only, shown on player hover) -->
       <button id="guide-toggle-btn" class="guide-toggle-btn" style="display:none">📋 Guide</button>
 
@@ -313,7 +318,7 @@
   <div id="channel-modal" class="modal-overlay" style="display:none">
     <div class="modal">
       <div class="modal-header">
-        <h3>Choose Channel</h3>
+        <h3 id="channel-modal-title">Choose Channel</h3>
         <button id="cancel-channel" class="modal-close">✕</button>
       </div>
       <div id="channel-list" class="episodes-list" style="max-height:400px;overflow-y:auto">

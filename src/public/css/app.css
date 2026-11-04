@@ -1767,3 +1767,39 @@ body.sidebar-resizing .player-container { pointer-events: none; }
   .toolbar-filters .search-input, .toolbar-filters .filter-select { flex: 1 1 100%; font-size: 16px; }
   .search-input, .filter-select { font-size: 16px; }
 }
+
+/* ── Live TV split view ─────────────────────────────────────
+   Sidebar list of the channels on screen (pick one to hear it; host: change / remove / add), and a label over
+   each tile in the picture. The labels sit in #split-tiles, laid over the letterboxed picture by
+   positionSplitTiles() in player.js; --split-clear keeps the top row's labels below the Guide / reactions row. */
+.livetv-split { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.split-head { display: flex; align-items: baseline; justify-content: space-between; font: 500 10px/1 var(--pd-font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--pd-text-muted); margin-bottom: 0.15rem; }
+.split-hint { letter-spacing: .04em; text-transform: none; color: var(--pd-text-faint); }
+.split-row { display: flex; align-items: stretch; gap: 0.2rem; border: 1px solid var(--pd-border-strong); border-radius: 5px; background: var(--pd-bg-deep); }
+.split-row.on { border-color: var(--pd-accent); background: var(--pd-accent-tint); }
+.split-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.5rem; background: none; border: 0; color: var(--pd-text-2); text-align: left; cursor: pointer; font: 400 12px/1.25 var(--pd-font-ui); }
+.split-ico { flex: 0 0 1.2rem; text-align: center; font: 600 11px/1 var(--pd-font-mono); color: var(--pd-text-muted); }
+.split-row.on .split-ico { color: var(--pd-accent); }
+.split-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.split-name b { font: 600 11px/1 var(--pd-font-mono); color: var(--pd-text); margin-right: 0.15rem; }
+.split-prog { display: block; font: 400 10px/1.3 var(--pd-font-mono); color: var(--pd-text-muted); overflow: hidden; text-overflow: ellipsis; }
+.split-act { flex: 0 0 auto; width: 1.9rem; background: none; border: 0; border-left: 1px solid var(--pd-border); color: var(--pd-text-muted); cursor: pointer; font-size: 12px; }
+.split-act:hover, .split-pick:hover .split-name b { color: var(--pd-accent); }
+.split-add { margin-top: 0.15rem; padding: 0.4rem 0.5rem; background: none; border: 1px dashed var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted-2); cursor: pointer; font: 500 11px/1 var(--pd-font-mono); text-align: left; }
+.split-add:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
+.episode-item.is-disabled { opacity: .45; }
+
+.split-tiles { position: absolute; inset: 0; pointer-events: none; z-index: 51; --split-clear: 3.4rem; }
+.split-tile { position: absolute; box-sizing: border-box; padding: 0.5rem; border: 2px solid transparent; transition: border-color 0.2s; }
+.split-tile.on { border-color: rgba(240, 165, 0, .55); }
+.split-chip {
+  pointer-events: auto; display: inline-flex; align-items: center; gap: 0.35rem; max-width: 100%;
+  padding: 0.25rem 0.5rem; background: rgba(10, 12, 14, .78); color: var(--pd-text); border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 4px; font: 500 11px/1.2 var(--pd-font-mono); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: .55; transition: opacity 0.2s;
+}
+.split-tile.on .split-chip { border-color: var(--pd-accent); }
+.player-container:hover .split-chip, .split-chip:focus-visible { opacity: 1; }
+.split-key { display: inline-block; min-width: 1rem; text-align: center; color: var(--pd-accent); }
+@media (hover: none) { .split-chip { opacity: .85; } }
+@media (max-width: 760px) and (orientation: portrait) { .split-tiles { --split-clear: 2.6rem; } .split-chip { font-size: 10px; padding: 0.2rem 0.4rem; } }
