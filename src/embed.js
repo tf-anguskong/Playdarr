@@ -5,6 +5,7 @@
 // lookup falls back to a text-only card rather than holding the crawler up.
 const axios = require('axios');
 const { getGuide } = require('./livetv-manager');
+const users = require('./users');
 
 // "Fri, Nov 7 · 8:00 PM EST" in the night's own time zone
 function formatInTimeZone(date, tz) {
@@ -60,13 +61,26 @@ function artPath(meta) {
 }
 
 /**
+ * The host's name as people see it now. room.hostName is frozen when the room is made, so a nickname set (or reset)
+ * since then wouldn't show: prefer the registry's nickname, then the name on the host's live viewer entry.
+ */
+function currentHostName(room) {
+  if (room.hostId && !room.hostIsGuest) {
+    const u = users.get(room.hostId);
+    if (u) return u.nickname || u.name || room.hostName;
+  }
+  return room.viewers?.get(room.hostSocketId)?.name || room.hostName || null;
+}
+
+/**
  * Build the card for a live room.
  * @param room       a sync.js Room (or null)
  * @param imageUrl   absolute URL of this room's preview image endpoint (only used when the room has Plex artwork)
  * @param invite     true for an invite link (guests can join without Plex); false for a /watch link
  */
 async function forRoom(room, imageUrl, { invite = true } = {}) {
-  const host = room.hostName && !room.awaitingHost ? `Hosted by ${room.hostName}` : 'Waiting for a host';
+  const hostName = currentHostName(room);
+  const host = hostName && !room.awaitingHost ? `Hosted by ${hostName}` : 'Waiting for a host';
   const who = room.viewers?.size ? `${host} · ${plural(room.viewers.size, 'person', 'people')} watching` : host;
   const status = room.playing ? `▶ Playing` : '⏸ Paused';
   const card = { siteName: `Playdarr · ${room.name}`, title: room.name, lines: [], image: null, large: false };
@@ -75,7 +89,9 @@ async function forRoom(room, imageUrl, { invite = true } = {}) {
     const m = await plexMeta(room.movieKey);
     const pos = room.currentPosition();
     const dur = m?.duration ? m.duration / 1000 : 0;
-    const progress = dur ? `${clock(pos)} of ${clock(dur)}` : `${clock(pos)} in`;
+    // Under a minute in and paused = nobody has pressed play yet
+    const notStarted = !room.playing && pos < 60;
+    const progress = notStarted ? null : dur ? `${clock(pos)} of ${clock(dur)}` : `${clock(pos)} in`;
     if (m?.type === 'episode') {
       const se = m.parentIndex != null && m.index != null ? `S${m.parentIndex} · E${m.index}` : '';
       card.title = `📺 ${m.grandparentTitle}${se ? ` — ${se}` : ''}`;
@@ -86,7 +102,11 @@ async function forRoom(room, imageUrl, { invite = true } = {}) {
       const facts = [m?.contentRating, dur ? clock(dur) : null, (m?.Genre || []).slice(0, 2).map(g => g.tag).join(', ') || null].filter(Boolean);
       if (facts.length) card.lines.push(facts.join(' · '));
     }
-    card.lines.push(`${status} · ${progress}`, who);
+    card.lines.push(
+      notStarted ? `⏸ Not started yet${dur && m?.type === 'episode' ? ` · ${clock(dur)}` : ''}`
+        : room.playing && pos < 60 ? '▶ Just started'
+        : `${status} · ${progress}`,
+      who);
     const blurb = m?.tagline || m?.summary;
     if (blurb) card.lines.push('', clip(blurb, 200));
     if (artPath(m)) { card.image = imageUrl; card.large = true; }
