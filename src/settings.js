@@ -21,11 +21,13 @@ const dataPath = process.env.DATA_PATH || '/data';
 const FILE     = path.join(dataPath, 'settings.json');
 
 const sel = (...pairs) => pairs.map(([value, label]) => ({ value, label }));
+const splitWords = v => String(v || '').split(',').map(w => w.trim()).filter(Boolean);
 const BITRATE = /^\d{1,5}(\.\d+)?[kKmM]?$/;
 
 const GROUPS = [
   { id: 'rooms', title: 'Room types', blurb: 'Which kinds of rooms people can start from the lobby. Rooms that are already open keep running.' },
   { id: 'scheduling', title: 'Scheduling' },
+  { id: 'moderation', title: 'Chat & moderation', blurb: 'Offensive words are masked in chat (****), and names or room names containing them are refused. Changes apply straight away.' },
   { id: 'tuner', title: 'Live TV · source', blurb: 'Where Live TV video and the channel guide come from.' },
   { id: 'capacity', title: 'Live TV · capacity & playback', blurb: 'Keep Live TV within what your tuners and server can handle.' },
   { id: 'quality', title: 'Live TV · picture quality' },
@@ -46,6 +48,27 @@ const DEFS = [
   { id: 'defaultTimezone', group: 'scheduling', env: 'DEFAULT_TIMEZONE', type: 'text', default: '', maxLength: 60, placeholder: 'America/New_York',
     label: 'Default time zone', description: 'The time zone pre-selected when someone schedules a watch night. Uses UTC when empty.',
     validate: v => { try { Intl.DateTimeFormat(undefined, { timeZone: v }); } catch { throw new Error('That is not a recognised time zone (try something like America/New_York)'); } } },
+
+  // ── Moderation (read on use by wordfilter.js) ──
+  { id: 'wordFilter', group: 'moderation', env: 'WORD_FILTER', type: 'bool', default: true,
+    label: 'Filter offensive words', description: 'Uses a built-in English list that also catches look-alike spellings (sh1t, f*ck). Turn off to allow anything.' },
+  { id: 'wordFilterExtra', group: 'moderation', env: 'WORD_FILTER_EXTRA', type: 'text', default: '', maxLength: 2000, placeholder: 'word, another word',
+    label: 'Also block these words', description: 'Comma-separated. Matched anywhere in a word, ignoring case.',
+    validate: v => { if (!splitWords(v).length) throw new Error('List words separated by commas'); } },
+  { id: 'wordFilterAllow', group: 'moderation', env: 'WORD_FILTER_ALLOW', type: 'text', default: '', maxLength: 2000, placeholder: 'Penistone, Dick',
+    label: 'Always allow these words', description: 'Comma-separated. For names or places the built-in list catches by mistake.',
+    validate: v => { if (!splitWords(v).length) throw new Error('List words separated by commas'); } },
+
+  // ── Chat GIFs (read on use by gifs.js) ──
+  { id: 'giphyKey', group: 'moderation', env: 'GIPHY_API_KEY', type: 'secret',
+    label: 'Giphy API key', description: 'Turns on the GIF button in chat. Get a free key at developers.giphy.com and add it to the server’s .env file (see the wiki); it is never shown.' },
+  { id: 'giphyRating', group: 'moderation', env: 'GIPHY_RATING', type: 'select', default: 'pg-13',
+    options: sel(['g', 'G — everyone'], ['pg', 'PG'], ['pg-13', 'PG-13'], ['r', 'R']),
+    label: 'GIF content rating', description: 'The most mature GIFs people can search for and post.' },
+
+  { id: 'chatUploads', group: 'moderation', env: 'CHAT_UPLOADS', type: 'select', default: 'all',
+    options: sel(['all', 'Everyone (including guests)'], ['plex', 'Plex users only'], ['off', 'Off']),
+    label: 'Image uploads in chat', description: 'Who can paste or upload their own pictures into chat. Images are resized, stripped of hidden data such as location, only shown to people in that room, and deleted when the room closes.' },
 
   // ── Live TV source ──
   { id: 'hdhrIp', group: 'tuner', env: 'HDHR_IP', type: 'text', default: '', maxLength: 253, placeholder: '192.168.1.115',

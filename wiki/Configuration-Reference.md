@@ -15,7 +15,7 @@ docker compose up -d --force-recreate
 | `SESSION_SECRET` | Random secret that signs session cookies (at least 32 characters; the server refuses to start otherwise). Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `PLEX_URL` | Plex server address **as seen from the container**, on your LAN (e.g. `http://192.168.1.100:32400`, or `http://host.docker.internal:32400`). Never your public domain — video must stay on the LAN |
 | `PLEX_TOKEN` | Plex server token (Plex → Settings → Troubleshooting → *Your Plex Token*) |
-| `APP_URL` | Public URL of Playdarr. Builds the Plex sign-in callback **and** the links in Discord messages and calendar files |
+| `APP_URL` | Public URL of Playdarr. Builds the Plex sign-in callback **and** the links in Discord messages, calendar files and invite-link preview cards (including their artwork) |
 | `COOKIE_SECURE` | `true` behind HTTPS, `false` for plain HTTP/local dev. Set it to match reality or sign-in will loop |
 | `PLEX_CLIENT_ID` | A unique, stable identifier for this app in Plex sign-in (any string, e.g. `my-playdarr`). **The server refuses to start without it.** Keep it the same once set |
 
@@ -26,6 +26,12 @@ docker compose up -d --force-recreate
 | `PORT` | `3000` | Port to listen on |
 | `NODE_ENV` | `production` | Standard Node setting |
 | `DEFAULT_TIMEZONE` | `UTC` | IANA zone pre-selected when scheduling (e.g. `America/New_York`) |
+| `WORD_FILTER` | `true` | Offensive-word filter: masks words in chat, refuses names containing them |
+| `WORD_FILTER_EXTRA` | — | Comma-separated extra words to block |
+| `WORD_FILTER_ALLOW` | — | Comma-separated words to always allow (false positives) |
+| `GIPHY_API_KEY` | — | Turns on GIFs in chat. Create an app at developers.giphy.com and choose **API** (not SDK). A new key is a rate-limited beta key (about 100 calls an hour; Playdarr caches searches for 10 minutes); apply for a production key if that's not enough |
+| `GIPHY_RATING` | `pg-13` | Most mature GIFs allowed: `g`, `pg`, `pg-13` or `r` |
+| `CHAT_UPLOADS` | `all` | Who may paste/upload images in chat: `all` (guests too), `plex` (signed-in Plex users) or `off` |
 | `DATA_PATH` | `/data` | Where Playdarr stores sessions, schedules, webhooks, people and recordings. In Docker this is the `sessions` volume |
 
 ## Room types
@@ -68,5 +74,5 @@ These are managed in the app, not `.env`:
 
 - **Webhooks and reminders:** Admin → Webhooks (stored in `webhooks.json`).
 - **Who is an admin:** automatic from Plex ownership.
-- **Nicknames:** set by each person; reset by you in Admin → People.
+- **Nicknames:** set by each person; renamed or reset by you in Admin → People (hosts can rename guests in their room).
 - **Schedules:** the lobby's *Schedule* button.

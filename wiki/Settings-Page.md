@@ -28,6 +28,9 @@ Turn movie, TV show, YouTube and Live TV rooms on or off. Rooms that are already
 ### Scheduling
 The **default time zone** pre-selected when someone schedules a watch night.
 
+### Chat & moderation
+The **offensive-word filter** (on/off, extra words to block, words to always allow — see [Moderation](Moderation#offensive-word-filter)), whether a **Giphy API key** is set (it can only be set in `.env`), the **GIF content rating**, and who may post **images** in chat (everyone, Plex users only, or nobody).
+
 ### Live TV · source
 The **HDHomeRun address** and **port**, the **Live TV source** (automatic, HDHomeRun, or Plex's DVR) and the **channel guide server**. Changing the tuner address applies to the next channel anyone tunes.
 
@@ -54,6 +57,12 @@ The **secrets** (Plex token, channel guide token, session secret) show only **Co
 | YouTube rooms | `ROOM_TYPE_YOUTUBE` | Immediately |
 | Live TV rooms | `ROOM_TYPE_LIVETV` | Immediately |
 | Default time zone | `DEFAULT_TIMEZONE` | Immediately |
+| Filter offensive words | `WORD_FILTER` | Immediately |
+| Also block these words | `WORD_FILTER_EXTRA` | Immediately |
+| Always allow these words | `WORD_FILTER_ALLOW` | Immediately |
+| Giphy API key (read-only) | `GIPHY_API_KEY` | After a restart (`.env` only) |
+| GIF content rating | `GIPHY_RATING` | Immediately |
+| Image uploads in chat | `CHAT_UPLOADS` | Immediately |
 | HDHomeRun address | `HDHR_IP` | Next tune |
 | HDHomeRun port | `HDHR_PORT` | Next tune |
 | Live TV source | `LIVETV_SOURCE` | Next tune |

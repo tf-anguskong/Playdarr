@@ -4,6 +4,7 @@ const express   = require('express');
 const router    = express.Router();
 const scheduler = require('../scheduler');
 const notifier  = require('../notifier');
+const wordfilter = require('../wordfilter');
 const plex      = require('../plex');
 const { googleCalendarUrl, RECURRENCE } = require('../ical');
 
@@ -70,6 +71,7 @@ router.post('/', async (req, res) => {
 
   const user = req.session.user;
   const cleanName = String(name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 60);
+  if (!wordfilter.isClean(cleanName)) return res.status(400).json({ error: wordfilter.NAME_REFUSED });
   const scheduled = scheduler.createScheduled({
     name:         cleanName || 'Watch Party',
     scheduledFor: scheduledDate.toISOString(),

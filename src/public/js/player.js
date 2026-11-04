@@ -123,7 +123,11 @@ socket.on('room-state', (state) => {
 
 socket.on('room-settings', applyRoomSettings);
 
+// Refusals from the server (e.g. a rename the word filter or permissions rejected)
+socket.on('error-msg', (msg) => { if (typeof msg === 'string' && msg) showNotif(`⚠️ ${msg}`); });
+
 socket.on('kicked', ({ byAdmin } = {}) => {
+  leavePip();
   alert(`You have been removed from this room by the ${byAdmin ? 'server owner' : 'host'}.`);
   window.location.href = '/';
 });
@@ -143,11 +147,13 @@ socket.on('livetv-reload', () => {
 });
 
 socket.on('room-error', (msg) => {
+  leavePip();
   alert(msg + '\n\nRedirecting to lobby.');
   window.location.href = '/';
 });
 
 socket.on('room-closed', ({ reason }) => {
+  leavePip();
   alert(reason || 'Room closed.');
   window.location.href = '/';
 });
@@ -1004,6 +1010,11 @@ function renderViewers(viewers) {
         <span class="viewer-name-wrap">${esc(v.name)}${v.isHost ? ' 👑' : ''}${v.isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span>
         ${bufHtml}${driftHtml}
         ${v.isAdmin ? ' <span class="admin-badge" title="Plex server owner">admin</span>' : ''}
+        ${v.muted ? '<span class="muted-badge" title="Muted in chat">🔇</span>' : ''}
+        ${v.socketId !== socket.id && !v.isAdmin && (isAdmin || (isHost && !v.isHost))
+          ? `<button class="btn-make-host btn-mute" data-sid="${esc(v.socketId)}" data-muted="${v.muted ? '1' : ''}" title="${v.muted ? 'Let them chat again' : 'Stop them sending chat messages in this room'}">${v.muted ? 'Unmute' : 'Mute'}</button>` : ''}
+        ${v.socketId !== socket.id && !v.isAdmin && (isAdmin || (isHost && v.isGuest))
+          ? `<button class="btn-make-host btn-rename" data-sid="${esc(v.socketId)}" data-name="${esc(v.name)}" title="${v.isGuest ? 'Rename this guest' : 'Change their nickname everywhere'}">Rename</button>` : ''}
         ${(isHost || isAdmin) && !v.isHost && !v.isAdmin ? `
           ${isHost ? `<button class="btn-make-host" data-sid="${esc(v.socketId)}">Host</button>` : ''}
           <button class="btn-kick" data-sid="${esc(v.socketId)}">Kick</button>
@@ -1012,8 +1023,18 @@ function renderViewers(viewers) {
     `;
   }).join('');
 
+  viewersList.querySelectorAll('.btn-rename').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = prompt(`New name for ${btn.dataset.name}:`, btn.dataset.name);
+      if (name === null || !name.trim() || name.trim() === btn.dataset.name) return;
+      socket.emit('rename-viewer', { targetSocketId: btn.dataset.sid, name: name.trim() });
+    });
+  });
+  viewersList.querySelectorAll('.btn-mute').forEach(btn => {
+    btn.addEventListener('click', () => socket.emit('mute-viewer', { targetSocketId: btn.dataset.sid, muted: !btn.dataset.muted }));
+  });
   if (isHost || isAdmin) {
-    viewersList.querySelectorAll('.btn-make-host').forEach(btn => {
+    viewersList.querySelectorAll('.btn-make-host:not(.btn-rename):not(.btn-mute)').forEach(btn => {
       btn.addEventListener('click', () => socket.emit('transfer-host', { targetSocketId: btn.dataset.sid }));
     });
     viewersList.querySelectorAll('.btn-kick').forEach(btn => {
@@ -1087,8 +1108,9 @@ socket.on('pause-denied', ({ waitSec } = {}) => {   // the server's word wins if
 
 video.addEventListener('pause',  () => {
   if (isSyncing) return;
-  if (livetvGuest()) return;
-  if (roomSettings.playbackLocked && !isHost) return;
+  // A viewer who can't steer the room (Live TV guest, guest in a locked room) can still pause their own copy from a
+  // Picture-in-Picture window, where the native controls can't be hidden. Put them straight back on the room.
+  if (followsOnly()) { if (roomIsPlaying() && !video.ended) resumeWithRoom(); return; }
   if (roomType === 'livetv' && liveState && liveState.playing) {
     const left = pauseCooldownMsLeft();
     if (left > 0) { undoPause(Math.ceil(left / 1000)); return; }
@@ -1104,6 +1126,70 @@ video.addEventListener('seeked', () => {
   const pos = playbackPos();
   if (pos != null) socket.emit('seek',  { position: pos });
 });
+
+// ── Picture in Picture ─────────────────────────────────────
+// The PiP window shows this same <video>, so the room's play/pause/seek (applyState / applyLiveTvState) and the
+// chase loops drive it exactly as they drive the page. What it adds is a play/pause button that can't be hidden, so:
+// viewers who may steer the room (host, guests in an unlocked Movie/TV room) send it to the room like the native
+// controls do; viewers who only follow get it bounced back onto the room (media-session handlers in Chromium, the
+// 'pause' listener above everywhere else).
+const followsOnly = () => livetvGuest() || (roomSettings.playbackLocked && !isHost && (roomType === 'movie' || roomType === 'tv'));
+const roomIsPlaying = () => !!(roomType === 'livetv' ? liveState?.playing : movieState?.playing);
+function resumeWithRoom() {
+  isSyncing = true; clearTimeout(syncTimer);
+  const t = roomType === 'livetv' ? liveTarget() : movieTarget();
+  if (t != null) { if (roomType === 'livetv') liveSeekAbs(t); else video.currentTime = t; }
+  video.play().catch(() => {});
+  releaseSyncLock();
+}
+
+const pipBtn = document.getElementById('pip-btn');
+const pipStandard = !!(document.pictureInPictureEnabled && !video.disablePictureInPicture);
+const pipWebkit = !pipStandard && typeof video.webkitSupportsPresentationMode === 'function'
+  && video.webkitSupportsPresentationMode('picture-in-picture');   // older iOS Safari
+const inPip = () => document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture';
+
+function leavePip() {
+  try {
+    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    else if (video.webkitPresentationMode === 'picture-in-picture') video.webkitSetPresentationMode('inline');
+  } catch {}
+}
+
+function refreshPipBtn() {
+  if (!pipBtn) return;
+  const videoShown = video.style.display !== 'none' && roomType !== 'youtube';
+  const show = (pipStandard || pipWebkit) && videoShown;
+  pipBtn.style.display = show ? 'flex' : 'none';
+  pipBtn.closest('.player-container')?.classList.toggle('has-pip', show);
+  pipBtn.classList.toggle('is-active', inPip());
+  pipBtn.title = inPip() ? 'Exit Picture in Picture' : 'Picture in Picture';
+  if (!videoShown && inPip()) leavePip();   // nothing loaded any more (room reset, switched to YouTube)
+}
+
+pipBtn?.addEventListener('click', () => {
+  if (inPip()) { leavePip(); return; }
+  if (pipStandard) video.requestPictureInPicture().catch(err => showNotif(`Picture in Picture failed: ${err.message}`));
+  else if (pipWebkit) video.webkitSetPresentationMode('picture-in-picture');
+});
+video.addEventListener('enterpictureinpicture', refreshPipBtn);
+video.addEventListener('leavepictureinpicture', refreshPipBtn);
+video.addEventListener('webkitpresentationmodechanged', refreshPipBtn);
+new MutationObserver(refreshPipBtn).observe(video, { attributes: true, attributeFilter: ['style'] });
+refreshPipBtn();
+
+// Chromium's PiP window calls these instead of pausing the element itself. No seek handlers → no ±10 s buttons.
+if ('mediaSession' in navigator) {
+  const setHandler = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} };
+  setHandler('play', () => {
+    if (followsOnly()) { if (roomIsPlaying()) resumeWithRoom(); return; }   // can't start a paused room
+    video.play().catch(() => {});   // the 'play' listener tells the room
+  });
+  setHandler('pause', () => {
+    if (followsOnly()) return;   // keep watching with the room
+    video.pause();               // the 'pause' listener tells the room (and applies the Live TV cooldown)
+  });
+}
 
 // ── Force resync ───────────────────────────────────────────
 // Host: pause everyone and resume them together from the same spot. The server parks the room at the host's
@@ -1506,9 +1592,26 @@ async function loadChannels() {
 socket.on('disconnect', () => { syncDot.className = 'sync-dot offline'; syncText.textContent = 'Disconnected'; });
 
 // ── Chat ───────────────────────────────────────────────────
+// Messages carry an id from the server (room.chat in sync.js), which replies, deletes and the history a late
+// joiner gets all use. Consecutive messages from the same person are grouped; the list only follows new messages
+// while you're at the bottom (otherwise a "New messages" button appears). The whole .chat-section can be popped
+// out into its own window: the DOM nodes move there, so every listener below keeps working unchanged.
+const chatSection  = document.querySelector('.chat-section');
 const chatMessages = document.getElementById('chat-messages');
 const chatInput    = document.getElementById('chat-input');
-const chatLog      = []; // raw messages for export
+const chatJump     = document.getElementById('chat-jump');
+const chatTyping   = document.getElementById('chat-typing');
+const chatReplyBar = document.getElementById('chat-reply');
+const chatLog      = new Map(); // id (or a local key for system lines) -> message, in arrival order, for export
+let chatReplyTo    = null;      // message being replied to
+let chatMuted      = false;
+let chatNewBelow   = 0;
+let lastChatMsg    = null;      // for grouping
+let chatWin        = null;      // pop-out window, while open
+const CHAT_GROUP_MS = 3 * 60 * 1000;
+
+// Dialogs open in whichever window the chat is in
+const chatUi = () => (chatWin && !chatWin.closed ? chatWin : window);
 
 function formatVideoTime(s) {
   const h = Math.floor(s / 3600);
@@ -1517,60 +1620,378 @@ function formatVideoTime(s) {
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
+const clockTime = at => new Date(at || Date.now()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-// Escape a chat line and highlight @mentions of people in the room (and @everyone / @all)
+// Escape a chat line, turn links into links, and highlight @mentions of people in the room (and @everyone / @all)
 function chatHtml(text) {
   const names = lastViewers.map(v => v.name).filter(Boolean).concat(['everyone', 'all'])
     .sort((a, b) => b.length - a.length)
     .map(n => esc(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const html = esc(text);
+  let html = esc(text).replace(/\bhttps?:\/\/[^\s<]+/g, url => {
+    const trail = /[).,!?:;'"]+$/.exec(url)?.[0] || '';
+    const href = trail ? url.slice(0, -trail.length) : url;
+    return `<a class="chat-link" href="${href}" target="_blank" rel="noopener noreferrer nofollow">${href}</a>${trail}`;
+  });
   const re = new RegExp('(^|[\\s(\\[])(@(?:' + names.join('|') + '))(?![\\p{L}\\p{N}_])', 'giu');
   return html.replace(re, (m, pre, tag) => `${pre}<span class="chat-mention-tag">${tag}</span>`);
 }
 
-socket.on('chat', ({ name, text, isGuest, videoTime, isSystem, mentions }) => {
-  chatLog.push({ name, text, isGuest, videoTime, isSystem, wallTime: new Date() });
-  const mentionsMe = !isSystem && Array.isArray(mentions) && mentions.includes(socket.id);
-  const div = document.createElement('div');
-  const ts  = videoTime != null ? `<span class="chat-ts">[${esc(formatVideoTime(videoTime))}]</span> ` : '';
-  if (isSystem) {
-    div.className = 'chat-msg chat-system';
-    div.innerHTML = `${esc(name)} <span class="chat-system-action">${esc(text)}</span> ${ts}`;
-  } else {
-    div.className = 'chat-msg' + (mentionsMe ? ' chat-msg-mention' : '');
-    div.innerHTML = `<span class="chat-name">${esc(name)}${isGuest ? ' <span class="guest-tag">guest</span>' : ''}</span> ${ts}${chatHtml(text)}`;
-  }
-  chatMessages.appendChild(div);
+const chatAtBottom = () => chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 40;
+function chatScrollToEnd() {
   chatMessages.scrollTop = chatMessages.scrollHeight;
+  chatNewBelow = 0; chatJump.style.display = 'none';
+}
+chatJump.addEventListener('click', chatScrollToEnd);
+chatMessages.addEventListener('scroll', () => { if (chatAtBottom()) { chatNewBelow = 0; chatJump.style.display = 'none'; } });
 
-  if (sidebarCollapsed && !isSystem) {
+const myUserId = () => lastViewers.find(v => v.socketId === socket.id)?.id;
+// The host can remove anyone's message except the owner's; the owner can remove anyone's
+const canDelete = m => !m.isSystem && !m.deleted && (String(m.fromId) === String(myUserId()) || isAdmin || (isHost && !m.fromAdmin));
+
+function renderChatMsg(m, { quiet = false } = {}) {
+  const key = m.id != null ? m.id : `s${chatLog.size}`;
+  chatLog.set(key, m);
+  const div = document.createElement('div');
+  div.dataset.id = m.id ?? '';
+  const ts = m.videoTime != null ? `<span class="chat-ts" title="Time in the video">[${esc(formatVideoTime(m.videoTime))}]</span>` : '';
+  if (m.isSystem) {
+    div.className = 'chat-msg chat-system';
+    div.innerHTML = `${esc(m.name)} <span class="chat-system-action">${esc(m.text)}</span> ${ts}`;
+    lastChatMsg = null;
+  } else {
+    const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(socket.id);
+    const mine = m.fromId != null && String(m.fromId) === String(myUserId());
+    const grouped = lastChatMsg && !m.replyTo && lastChatMsg.fromId === m.fromId && m.fromId != null
+      && (m.at || 0) - (lastChatMsg.at || 0) < CHAT_GROUP_MS;
+    div.className = 'chat-msg' + (grouped ? ' chat-grouped' : '') + (mentionsMe ? ' chat-msg-mention' : '') + (mine ? ' chat-mine' : '');
+    div.innerHTML = chatMsgInner(m, ts);
+    lastChatMsg = m;
+    if (!quiet) chatNotify(m, mentionsMe);
+  }
+  const follow = chatAtBottom() || (m.fromId != null && String(m.fromId) === String(myUserId()));
+  chatMessages.appendChild(div);
+  if (quiet || follow) chatScrollToEnd();
+  else { chatNewBelow++; chatJump.textContent = `↓ ${chatNewBelow} new message${chatNewBelow === 1 ? '' : 's'}`; chatJump.style.display = ''; }
+  div.querySelector('.chat-gif, .chat-image')?.addEventListener('load', () => { if (follow || quiet) chatScrollToEnd(); }, { once: true });
+}
+
+function chatMsgInner(m, ts) {
+  const head = `<div class="chat-head"><span class="chat-name">${esc(m.name)}</span>${m.isGuest ? ' <span class="guest-tag">guest</span>' : ''} ${ts}<time class="chat-time">${esc(clockTime(m.at))}</time></div>`;
+  if (m.deleted) {
+    return `${head}<div class="chat-text chat-deleted">${m.deletedBy ? `Removed by ${esc(m.deletedBy)}` : 'Message deleted'}</div>`;
+  }
+  const quote = m.replyTo
+    ? `<button type="button" class="chat-quote" data-jump="${esc(m.replyTo.id)}" title="Show the original message"><b>↩ ${esc(m.replyTo.name)}</b> ${m.replyTo.text ? esc(m.replyTo.text) : '<i>message deleted</i>'}</button>`
+    : '';
+  const text = m.text ? `<div class="chat-text">${chatHtml(m.text)}</div>` : '';
+  const gif = m.gif
+    ? `<img class="chat-gif" src="${esc(m.gif.url)}" alt="${esc(m.gif.title)}" title="${esc(m.gif.title)}" width="${Number(m.gif.w) || 200}" height="${Number(m.gif.h) || 150}" loading="lazy" referrerpolicy="no-referrer">`
+    : '';
+  const imgUrl = m.image ? `${location.origin}/api/chat/image/${encodeURIComponent(roomId)}/${encodeURIComponent(m.image.id)}.webp` : '';
+  const image = m.image
+    ? `<a class="chat-image-link" href="${esc(imgUrl)}" target="_blank" rel="noopener" title="Open full size"><img class="chat-image" src="${esc(imgUrl)}" alt="Image from ${esc(m.name)}" width="${Number(m.image.w) || 300}" height="${Number(m.image.h) || 200}" loading="lazy"></a>`
+    : '';
+  const actions = `<div class="chat-actions">
+      ${chatMuted ? '' : '<button type="button" class="chat-act" data-act="react" title="React">☺</button>'}
+      <button type="button" class="chat-act" data-act="reply" title="Reply">↩</button>
+      ${canDelete(m) ? '<button type="button" class="chat-act" data-act="delete" title="Delete">🗑</button>' : ''}
+    </div>`;
+  return head + quote + image + text + gif + reactionsHtml(m) + actions;
+}
+
+// Reactions on a message: the same six emojis as the video reactions, one pill each with a count; yours is lit
+const CHAT_REACTIONS = ['👍', '❤️', '😂', '😱', '😮', '👏'];
+function reactionsHtml(m) {
+  const rx = m.reactions || {};
+  const me = String(myUserId());
+  const pills = CHAT_REACTIONS.filter(e => rx[e]?.length).map(e => {
+    const who = rx[e].map(r => r.name);
+    const mine = rx[e].some(r => r.id === me);
+    return `<button type="button" class="chat-rx${mine ? ' mine' : ''}" data-emoji="${esc(e)}" title="${esc(who.join(', '))}">${e} <span>${who.length}</span></button>`;
+  }).join('');
+  return `<div class="chat-reactions">${pills}</div>`;
+}
+socket.on('chat-reactions', ({ id, reactions } = {}) => {
+  const m = chatLog.get(Number(id));
+  if (!m) return;
+  m.reactions = reactions || {};
+  const el = chatMessages.querySelector(`.chat-msg[data-id="${Number(id)}"] .chat-reactions`);
+  if (el) el.outerHTML = reactionsHtml(m);
+});
+function closeReactPicker() { chatMessages.querySelectorAll('.chat-rx-picker').forEach(p => p.remove()); }
+
+function chatNotify(m, mentionsMe) {
+  if (chatWin && !chatWin.closed) return;   // chat has its own window; it's on screen
+  const preview = m.text ? (m.text.length > 55 ? m.text.slice(0, 55) + '…' : m.text) : (m.image ? 'sent an image' : 'sent a GIF');
+  if (sidebarCollapsed) {
     unreadChats++;
     chatBadge.textContent = unreadChats > 99 ? '99+' : String(unreadChats);
     chatBadge.style.display = 'flex';
-    const preview = text.length > 55 ? text.slice(0, 55) + '…' : text;
-    showNotif(`${mentionsMe ? '🔔' : '💬'} ${name}: ${preview}`);
+    showNotif(`${mentionsMe ? '🔔' : '💬'} ${m.name}: ${preview}`);
   } else if (mentionsMe && (document.hidden || window.matchMedia('(max-width: 760px)').matches)) {
     // tagged while the chat is off-screen (phone layout) or the tab is in the background
-    const preview = text.length > 55 ? text.slice(0, 55) + '…' : text;
-    showNotif(`🔔 ${name}: ${preview}`);
+    showNotif(`🔔 ${m.name}: ${preview}`);
+  }
+}
+
+socket.on('chat', (m) => { if (m && typeof m === 'object') { clearTyping(m.name); renderChatMsg(m); } });
+
+// On (re)joining: the room's recent messages, replacing whatever was shown
+socket.on('chat-history', (list) => {
+  if (!Array.isArray(list)) return;
+  chatMessages.innerHTML = ''; chatLog.clear(); lastChatMsg = null;
+  list.forEach(m => renderChatMsg(m, { quiet: true }));
+});
+
+socket.on('chat-deleted', ({ id, by } = {}) => {
+  const m = chatLog.get(Number(id));
+  if (!m) return;
+  Object.assign(m, { deleted: true, deletedBy: by || null, text: '', gif: null, image: null, replyTo: null, reactions: null });
+  const el = chatMessages.querySelector(`.chat-msg[data-id="${Number(id)}"]`);
+  if (el) el.innerHTML = chatMsgInner(m, el.querySelector('.chat-ts')?.outerHTML || '');
+  chatMessages.querySelectorAll(`.chat-quote[data-jump="${Number(id)}"]`).forEach(q => { q.innerHTML = `<b>${q.querySelector('b')?.textContent || ''}</b> <i>message deleted</i>`; });
+  if (chatReplyTo?.id === Number(id)) setReply(null);
+});
+
+// Reply / delete / jump-to-quoted
+chatMessages.addEventListener('click', e => {
+  const quote = e.target.closest('.chat-quote');
+  if (quote) {
+    const el = chatMessages.querySelector(`.chat-msg[data-id="${Number(quote.dataset.jump)}"]`);
+    if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('chat-flash'); setTimeout(() => el.classList.remove('chat-flash'), 1200); }
+    return;
+  }
+  const pill = e.target.closest('.chat-rx, .chat-rx-opt');
+  if (pill) {
+    const id = Number(pill.closest('.chat-msg')?.dataset.id);
+    if (!chatMuted && id) socket.emit('chat-react', { id, emoji: pill.dataset.emoji });
+    closeReactPicker();
+    return;
+  }
+  const act = e.target.closest('.chat-act');
+  if (!act) { closeReactPicker(); return; }
+  const m = chatLog.get(Number(act.closest('.chat-msg')?.dataset.id));
+  if (!m) return;
+  if (act.dataset.act === 'react') {
+    const open = act.closest('.chat-msg').querySelector('.chat-rx-picker');
+    closeReactPicker();
+    if (!open) act.closest('.chat-msg').insertAdjacentHTML('beforeend',
+      `<div class="chat-rx-picker">${CHAT_REACTIONS.map(e => `<button type="button" class="chat-rx-opt" data-emoji="${e}">${e}</button>`).join('')}</div>`);
+    return;
+  }
+  if (act.dataset.act === 'reply') { setReply(m); chatInput.focus(); }
+  if (act.dataset.act === 'delete') {
+    const mine = String(m.fromId) === String(myUserId());
+    if (mine || chatUi().confirm(`Remove this message from ${m.name}?`)) socket.emit('chat-delete', { id: m.id });
   }
 });
 
-function sendChat() {
-  const text = chatInput.value.trim();
-  if (!text) return;
-  let videoTime = null;
-  if (roomType === 'youtube' && ytPlayer && ytVideoId) {
-    const t = ytPlayer.getCurrentTime?.();
-    if (typeof t === 'number' && isFinite(t)) videoTime = Math.floor(t);
-  } else if (roomType === 'movie' && currentKey) {
-    videoTime = video.currentTime;
-  }
-  socket.emit('chat', { text, videoTime });
-  chatInput.value = '';
+function setReply(m) {
+  chatReplyTo = m;
+  chatReplyBar.style.display = m ? '' : 'none';
+  if (m) document.getElementById('chat-reply-name').textContent = m.name;
+}
+document.getElementById('chat-reply-cancel').addEventListener('click', () => setReply(null));
+
+// ── Typing indicator ──
+const typingNow = new Map();   // sid -> { name, until }
+function renderTyping() {
+  const now = Date.now();
+  for (const [sid, t] of typingNow) if (t.until < now) typingNow.delete(sid);
+  const names = [...typingNow.values()].map(t => t.name);
+  chatTyping.textContent = !names.length ? ''
+    : names.length === 1 ? `${names[0]} is typing…`
+    : names.length === 2 ? `${names[0]} and ${names[1]} are typing…`
+    : 'Several people are typing…';
+}
+function clearTyping(name) { for (const [sid, t] of typingNow) if (t.name === name) typingNow.delete(sid); renderTyping(); }
+socket.on('typing', ({ sid, name, stop } = {}) => {
+  if (stop) typingNow.delete(sid); else if (name) typingNow.set(sid, { name, until: Date.now() + 3500 });
+  renderTyping();
+});
+setInterval(renderTyping, 1000);
+let lastTypingSent = 0;
+function pingTyping() {
+  if (chatMuted || !chatInput.value.trim() || Date.now() - lastTypingSent < 2000) return;
+  lastTypingSent = Date.now();
+  socket.emit('typing', {});
 }
 
-document.getElementById('chat-send').addEventListener('click', sendChat);
+// ── Muted by the host / owner ──
+function setChatMuted(muted, by) {
+  chatMuted = !!muted;
+  chatInput.disabled = chatMuted;
+  chatInput.placeholder = chatMuted ? 'You’ve been muted in this room' : 'Message…';
+  document.getElementById('chat-send').disabled = chatMuted;
+  document.getElementById('chat-gif-btn').disabled = chatMuted;
+  document.getElementById('chat-attach-btn').disabled = chatMuted;
+  if (chatMuted) { closeGifPanel(); setReply(null); clearAttachment(); }
+}
+socket.on('chat-muted', ({ muted, by } = {}) => {
+  const was = chatMuted;
+  setChatMuted(muted, by);
+  if (muted && !was) showNotif(`🔇 ${by ? `${by} muted you` : 'You’re muted'} in this room's chat`);
+  if (!muted && was) showNotif(`🔊 ${by ? `${by} unmuted you` : 'You can chat again'}`);
+});
+
+// ── Sending ──
+function chatVideoTime() {
+  if (roomType === 'youtube' && ytPlayer && ytVideoId) {
+    const t = ytPlayer.getCurrentTime?.();
+    if (typeof t === 'number' && isFinite(t)) return Math.floor(t);
+  } else if ((roomType === 'movie' || roomType === 'tv') && currentKey) {
+    return video.currentTime;
+  }
+  return null;
+}
+function sendChat(extra = {}) {
+  const text = chatInput.value.trim();
+  if (chatMuted) return;
+  if (!extra.gif && attachment?.uploading) { showNotif('⏳ Still uploading your image…'); return; }
+  const image = !extra.gif && attachment?.id ? attachment.id : null;
+  if (!text && !extra.gif && !image) return;
+  socket.emit('chat', { text: extra.gif ? '' : text, image, videoTime: chatVideoTime(), replyTo: chatReplyTo?.id ?? null, ...extra });
+  if (!extra.gif) { chatInput.value = ''; autosizeChat(); clearAttachment(); }
+  setReply(null);
+}
+document.getElementById('chat-send').addEventListener('click', () => sendChat());
+
+// The message box grows with its text, up to a few lines
+function autosizeChat() {
+  chatInput.style.height = 'auto';
+  const h = chatInput.scrollHeight + 2;
+  chatInput.style.height = Math.min(h, 140) + 'px';
+  chatInput.style.overflowY = h > 140 ? 'auto' : 'hidden';
+}
+
+// ── GIFs (only when the server has a Giphy key: /api/config says gifs: true) ──
+const gifPanel = document.getElementById('gif-panel');
+const gifGrid  = document.getElementById('gif-grid');
+const gifSearch = document.getElementById('gif-search');
+const gifBtn   = document.getElementById('chat-gif-btn');
+let gifQuery = null, gifNext = 0, gifLoading = false, gifTimer = null;
+fetch('/api/config').then(r => r.json()).then(c => {
+  if (c.gifs) gifBtn.style.display = '';
+  if (c.imageUploads) { document.getElementById('chat-attach-btn').style.display = ''; imageUploadsOn = true; }
+}).catch(() => {});
+
+function closeGifPanel() { gifPanel.style.display = 'none'; gifBtn.classList.remove('active'); }
+gifBtn.addEventListener('click', () => {
+  if (gifPanel.style.display !== 'none') return closeGifPanel();
+  gifPanel.style.display = ''; gifBtn.classList.add('active');
+  gifSearch.value = ''; loadGifs('', true); gifSearch.focus();
+});
+gifSearch.addEventListener('input', () => { clearTimeout(gifTimer); gifTimer = setTimeout(() => loadGifs(gifSearch.value.trim(), true), 350); });
+gifSearch.addEventListener('keydown', e => { if (e.key === 'Escape') { closeGifPanel(); chatInput.focus(); } });
+chatMessages.addEventListener('pointerdown', closeGifPanel);   // clicking back into the conversation closes the picker
+gifGrid.addEventListener('scroll', () => {
+  if (gifNext != null && !gifLoading && gifGrid.scrollTop + gifGrid.clientHeight > gifGrid.scrollHeight - 120) loadGifs(gifQuery, false);
+});
+async function loadGifs(q, fresh) {
+  if (fresh) { gifQuery = q; gifNext = 0; gifGrid.innerHTML = '<div class="gif-msg">Loading…</div>'; }
+  if (gifNext == null || gifLoading) return;
+  gifLoading = true;
+  try {
+    const r = await fetch(`/api/gifs?q=${encodeURIComponent(q)}&offset=${gifNext}`);
+    const data = await r.json();
+    if (q !== gifQuery) return;   // a newer search took over
+    if (!r.ok) throw new Error(data.error || 'GIF search failed');
+    if (fresh) gifGrid.innerHTML = '';
+    gifGrid.insertAdjacentHTML('beforeend', data.results.map(g =>
+      `<button type="button" class="gif-opt" data-id="${esc(g.id)}" title="${esc(g.title)}"><img src="${esc(g.preview)}" alt="${esc(g.title)}" loading="lazy" referrerpolicy="no-referrer"></button>`).join(''));
+    if (fresh && !data.results.length) gifGrid.innerHTML = '<div class="gif-msg">No GIFs found.</div>';
+    gifNext = data.next;
+  } catch (err) {
+    if (fresh) gifGrid.innerHTML = `<div class="gif-msg">${esc(err.message)}</div>`;
+    gifNext = null;
+  } finally { gifLoading = false; }
+}
+gifGrid.addEventListener('click', e => {
+  const b = e.target.closest('.gif-opt');
+  if (!b) return;
+  sendChat({ gif: b.dataset.id });
+  closeGifPanel();
+  chatInput.focus();
+});
+
+// ── Images people paste, drop or pick (only when /api/config says imageUploads) ──
+// The file uploads as soon as it's attached (POST /api/chat/upload/:roomId → an id); sending the message names that
+// id. Big photos are scaled down here first so a phone picture fits the 8 MB limit; GIFs and WebPs are sent as they
+// are so animation survives. The server re-encodes everything anyway (uploads.js).
+let imageUploadsOn = false;
+let attachment = null;   // { id?, uploading, token }
+const attachBox = document.getElementById('chat-attach');
+const attachImg = document.getElementById('chat-attach-img');
+const attachStatus = document.getElementById('chat-attach-status');
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+function clearAttachment() {
+  attachment = null;
+  attachBox.style.display = 'none';
+  attachImg.removeAttribute('src');
+}
+document.getElementById('chat-attach-cancel').addEventListener('click', clearAttachment);
+
+async function shrinkIfLarge(file) {
+  if (!['image/png', 'image/jpeg'].includes(file.type) || file.size <= 4 * 1024 * 1024) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+    return blob || file;
+  } catch { return file; }
+}
+
+async function attachImage(file) {
+  if (!imageUploadsOn || chatMuted || !file) return;
+  if (!IMAGE_TYPES.includes(file.type)) { showNotif('⚠️ Use a PNG, JPEG, WebP or GIF image'); return; }
+  closeGifPanel();
+  const token = {};
+  attachment = { uploading: true, token };
+  attachBox.style.display = '';
+  attachStatus.textContent = 'Uploading…';
+  const reader = new FileReader();   // a data: preview (the page's security policy doesn't allow blob: images)
+  reader.onload = () => { if (attachment?.token === token) attachImg.src = reader.result; };
+  reader.readAsDataURL(file);
+  try {
+    const body = await shrinkIfLarge(file);
+    if (body.size > 8 * 1024 * 1024) throw new Error('Images can be up to 8 MB.');
+    const r = await fetch(`/api/chat/upload/${encodeURIComponent(roomId)}`, { method: 'POST', headers: { 'Content-Type': body.type || 'application/octet-stream' }, body });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'Upload failed.');
+    if (attachment?.token !== token) return;   // removed or replaced meanwhile
+    attachment = { id: data.id, uploading: false, token };
+    attachStatus.textContent = 'Ready — add a caption or press Enter';
+    chatInput.focus();
+  } catch (err) {
+    if (attachment?.token !== token) return;
+    clearAttachment();
+    showNotif(`⚠️ ${err.message}`);
+  }
+}
+
+const chatFile = document.getElementById('chat-file');
+document.getElementById('chat-attach-btn').addEventListener('click', () => chatFile.click());
+chatFile.addEventListener('change', () => { attachImage(chatFile.files[0]); chatFile.value = ''; });
+chatInput.addEventListener('paste', e => {
+  const file = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
+  if (file && imageUploadsOn) { e.preventDefault(); attachImage(file); }
+});
+// Drop an image anywhere on the chat
+chatSection.addEventListener('dragover', e => {
+  if (!imageUploadsOn || chatMuted || ![...(e.dataTransfer?.items || [])].some(i => i.kind === 'file')) return;
+  e.preventDefault(); chatSection.classList.add('chat-dragover');
+});
+chatSection.addEventListener('dragleave', e => { if (!chatSection.contains(e.relatedTarget)) chatSection.classList.remove('chat-dragover'); });
+chatSection.addEventListener('drop', e => {
+  chatSection.classList.remove('chat-dragover');
+  const file = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
+  if (!file || !imageUploadsOn) return;
+  e.preventDefault(); attachImage(file);
+});
 
 // ── @mention picker ────────────────────────────────────────
 const mentionBox = document.getElementById('mention-box');
@@ -1616,7 +2037,7 @@ mentionBox.addEventListener('pointerdown', e => {
   pickMention(Number(b.dataset.i));
 });
 
-chatInput.addEventListener('input', () => { mentionIdx = 0; updateMentions(); });
+chatInput.addEventListener('input', () => { mentionIdx = 0; updateMentions(); autosizeChat(); pingTyping(); });
 chatInput.addEventListener('click', updateMentions);
 chatInput.addEventListener('blur', () => setTimeout(closeMentions, 150));
 chatInput.addEventListener('keydown', e => {
@@ -1630,7 +2051,9 @@ chatInput.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mentionIdx); return; }
     if (e.key === 'Escape') { e.preventDefault(); closeMentions(); return; }
   }
-  if (e.key === 'Enter') sendChat();
+  if (e.key === 'Escape' && chatReplyTo) { setReply(null); return; }
+  // Enter sends; Shift+Enter (or an IME composing text) makes a new line
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }
 });
 
 // Clicking someone's name in the Watching list tags them
@@ -1645,7 +2068,7 @@ viewersList.addEventListener('click', e => {
 });
 
 document.getElementById('chat-export').addEventListener('click', () => {
-  if (!chatLog.length) return;
+  if (!chatLog.size) return;
   const room  = roomNameEl.textContent.trim() || 'Room';
   const title = titleEl.textContent.trim() || '';
   const date  = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
@@ -1656,11 +2079,13 @@ document.getElementById('chat-export').addEventListener('click', () => {
     '─'.repeat(40),
     '',
   ].join('\n');
-  const lines = chatLog.map(({ name, text, isGuest, videoTime, isSystem }) => {
-    const ts   = videoTime != null ? `[${formatVideoTime(Math.floor(videoTime))}] ` : '';
+  const lines = [...chatLog.values()].map(({ name, text, gif, image, replyTo, deleted, isGuest, videoTime, isSystem, at }) => {
+    const ts   = videoTime != null ? `[${formatVideoTime(Math.floor(videoTime))}] ` : `[${clockTime(at)}] `;
     const tag  = isGuest ? ' (guest)' : '';
     if (isSystem) return `${ts}* ${name} ${text}`;
-    return `${ts}${name}${tag}: ${text}`;
+    if (deleted) return `${ts}${name}${tag}: (deleted)`;
+    const re = replyTo ? `(↩ ${replyTo.name}) ` : '';
+    return `${ts}${name}${tag}: ${re}${text || ''}${gif ? `${text ? ' ' : ''}[GIF: ${gif.title} ${gif.url}]` : ''}${image ? `${text ? ' ' : ''}[Image]` : ''}`;
   });
   const blob = new Blob([header + lines.join('\n')], { type: 'text/plain' });
   const a    = document.createElement('a');
@@ -1670,6 +2095,84 @@ document.getElementById('chat-export').addEventListener('click', () => {
   a.click();
   URL.revokeObjectURL(a.href);
 });
+
+// ── Bigger chat: hide the other sidebar panels ──
+const sidebarEl = document.querySelector('.sidebar');
+function setChatFocus(on) {
+  sidebarEl.classList.toggle('chat-focus', on);
+  document.getElementById('chat-focus').title = on ? 'Show the other panels again' : 'Make chat bigger (hide the other panels)';
+  try { localStorage.setItem('chatFocus', on ? '1' : ''); } catch {}
+}
+document.getElementById('chat-focus').addEventListener('click', () => {
+  if (chatWin && !chatWin.closed) return;
+  setChatFocus(!sidebarEl.classList.contains('chat-focus'));
+});
+try { if (localStorage.getItem('chatFocus')) setChatFocus(true); } catch {}
+
+// ── Resizable sidebar (drag its edge; double-click resets) ──
+const sidebarResizer = document.getElementById('sidebar-resizer');
+const SIDEBAR_MIN = 220;
+const sidebarMax = () => Math.max(SIDEBAR_MIN, Math.min(720, window.innerWidth * 0.6));
+function setSidebarWidth(px, save) {
+  if (px == null) { document.documentElement.style.removeProperty('--sidebar-w'); }
+  else document.documentElement.style.setProperty('--sidebar-w', Math.round(Math.max(SIDEBAR_MIN, Math.min(sidebarMax(), px))) + 'px');
+  if (save) try { localStorage.setItem('sidebarWidth', px == null ? '' : String(Math.round(px))); } catch {}
+}
+try { const w = parseInt(localStorage.getItem('sidebarWidth'), 10); if (w) setSidebarWidth(w, false); } catch {}
+sidebarResizer.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  sidebarResizer.setPointerCapture(e.pointerId);
+  document.body.classList.add('sidebar-resizing');
+  const left = sidebarEl.getBoundingClientRect().left;
+  const move = ev => setSidebarWidth(ev.clientX - left, false);
+  const up = ev => {
+    sidebarResizer.removeEventListener('pointermove', move);
+    document.body.classList.remove('sidebar-resizing');
+    setSidebarWidth(ev.clientX - left, true);
+  };
+  sidebarResizer.addEventListener('pointermove', move);
+  sidebarResizer.addEventListener('pointerup', up, { once: true });
+});
+sidebarResizer.addEventListener('dblclick', () => setSidebarWidth(null, true));
+
+// ── Pop the chat out into its own window ──
+const chatPoppedNote = document.getElementById('chat-popped-note');
+function popOutChat() {
+  if (chatWin && !chatWin.closed) { chatWin.focus(); return; }
+  const w = window.open('', `playdarr-chat-${roomId}`, 'popup,width=400,height=680');
+  if (!w) { showNotif('Allow pop-ups for this site to open chat in its own window'); return; }
+  const roomName = roomNameEl.textContent.trim() || 'Room';
+  w.document.open();
+  w.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body class="chat-popout-body"></body></html>');
+  w.document.close();
+  w.document.title = `Chat · ${roomName}`;
+  // Same styles as the page (absolute URLs, since the new window has no address of its own)
+  document.querySelectorAll('link[rel="stylesheet"]').forEach(l => {
+    const c = w.document.createElement('link'); c.rel = 'stylesheet'; c.href = l.href; w.document.head.appendChild(c);
+  });
+  const fav = document.querySelector('link[rel="icon"]');
+  if (fav) { const c = w.document.createElement('link'); c.rel = 'icon'; c.href = fav.href; w.document.head.appendChild(c); }
+  chatWin = w;
+  chatPoppedNote.style.display = '';
+  w.document.body.appendChild(w.document.adoptNode(chatSection));
+  chatSection.classList.add('chat-popped');
+  chatScrollToEnd();
+  chatInput.focus();
+  w.addEventListener('pagehide', popInChat);
+}
+function popInChat() {
+  if (!chatWin) return;
+  const w = chatWin;
+  chatWin = null;
+  chatSection.classList.remove('chat-popped');
+  chatPoppedNote.after(document.adoptNode(chatSection));
+  chatPoppedNote.style.display = 'none';
+  chatScrollToEnd();
+  if (!w.closed) w.close();
+}
+document.getElementById('chat-popout').addEventListener('click', () => (chatWin && !chatWin.closed ? popInChat() : popOutChat()));
+document.getElementById('chat-popin').addEventListener('click', popInChat);
+window.addEventListener('pagehide', () => { if (chatWin && !chatWin.closed) chatWin.close(); });
 
 // ── Reactions ──────────────────────────────────────────────
 const playerContainer = document.querySelector('.player-container');
