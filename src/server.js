@@ -75,6 +75,9 @@ app.use(helmet({
       imgSrc: ["'self'", 'data:', 'https:'],
     }
   },
+  // helmet's default is no-referrer, but YouTube's embedded player refuses to play without one ("Error 153").
+  // This policy sends other sites only our origin (never a path, so no invite tokens), and nothing over HTTP.
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   hsts: behindHttps ? { maxAge: 31536000, includeSubDomains: true } : false,
   crossOriginEmbedderPolicy: false
 }));

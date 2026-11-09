@@ -57,7 +57,7 @@ The Settings page can't be used to run arbitrary programs or write files: *Custo
 
 ## Browser protections
 
-Playdarr sends security headers (CSP, frame blocking, HSTS when `COOKIE_SECURE=true`). The Content Security Policy restricts where scripts, frames and media can load from: only itself and YouTube for embeds. Images may load from any HTTPS address (Plex avatars, Giphy, channel logos), but chat can only show GIFs the server looked up on Giphy itself and images it re-encoded — never a URL someone typed. If you add a custom reverse-proxy header policy, don't strip these.
+Playdarr sends security headers (CSP, frame blocking, HSTS when `COOKIE_SECURE=true`, and a referrer policy that tells other sites only Playdarr's address — never the page path, so invite tokens don't leak; YouTube's player needs at least that much to play). The Content Security Policy restricts where scripts, frames and media can load from: only itself and YouTube for embeds. Images may load from any HTTPS address (Plex avatars, Giphy, channel logos), but chat can only show GIFs the server looked up on Giphy itself and images it re-encoded — never a URL someone typed. If you add a custom reverse-proxy header policy, don't strip these.
 
 ## Chat images and GIFs
 
