@@ -1082,16 +1082,25 @@ function createYtPlayer(videoId, targetTime, shouldPlay) {
   }
 
   if (ytPlayer) {
-    ytPlayer.destroy();
+    try { ytPlayer.destroy(); } catch {}
     ytPlayer = null;
   }
 
   ytVideoId = videoId;
+  // A different video while YouTube is in Picture in Picture: load it in the PiP window
+  if (ytPipWin && ytPipWin.YT?.Player) { buildYtPlayer(ytPipWin.YT, ytPipDiv(), videoId, targetTime, shouldPlay); return; }
   ensureYtDiv();
+  buildYtPlayer(YT, 'yt-player', videoId, targetTime, shouldPlay);
+}
 
-  ytPlayer = new YT.Player('yt-player', {
+// One YT.Player, in the page or in the Picture in Picture window (each has its own copy of the IFrame API, because
+// the player talks to the API in whichever window holds its iframe). `origin` is always the page's, so YouTube
+// accepts it from the PiP window too.
+function buildYtPlayer(YTns, el, videoId, targetTime, shouldPlay) {
+  ytPlayer = new YTns.Player(el, {
     videoId,
-    playerVars: { rel: 0, modestbranding: 1 },
+    width: '100%', height: '100%',
+    playerVars: { rel: 0, modestbranding: 1, playsinline: 1, origin: location.origin },
     events: {
       onReady(e) {
         isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
@@ -1351,6 +1360,7 @@ const pipWebkit = !pipStandard && typeof video.webkitSupportsPresentationMode ==
 const inPip = () => document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture';
 
 function leavePip() {
+  try { ytPipWin?.close(); } catch {}
   try {
     if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
     else if (video.webkitPresentationMode === 'picture-in-picture') video.webkitSetPresentationMode('inline');
@@ -1360,23 +1370,94 @@ function leavePip() {
 function refreshPipBtn() {
   if (!pipBtn) return;
   const videoShown = video.style.display !== 'none' && roomType !== 'youtube';
-  const show = (pipStandard || pipWebkit) && videoShown;
+  const ytShown = roomType === 'youtube' && !!ytVideoId && ytContainer.style.display !== 'none';
+  const show = roomType === 'youtube' ? (ytDocPip && ytShown) : ((pipStandard || pipWebkit) && videoShown);
+  const active = inPip() || !!ytPipWin;
   pipBtn.style.display = show ? 'flex' : 'none';
   pipBtn.closest('.player-container')?.classList.toggle('has-pip', show);
-  pipBtn.classList.toggle('is-active', inPip());
-  pipBtn.title = inPip() ? 'Exit Picture in Picture' : 'Picture in Picture';
+  pipBtn.classList.toggle('is-active', active);
+  pipBtn.title = active ? 'Exit Picture in Picture' : 'Picture in Picture';
   if (!videoShown && inPip()) leavePip();   // nothing loaded any more (room reset, switched to YouTube)
+  if (!ytShown && ytPipWin) ytPipWin.close();
 }
 
 pipBtn?.addEventListener('click', () => {
+  if (roomType === 'youtube') { if (ytPipWin) ytPipWin.close(); else openYtPip(); return; }
   if (inPip()) { leavePip(); return; }
   if (pipStandard) video.requestPictureInPicture().catch(err => showNotif(`Picture in Picture failed: ${err.message}`));
   else if (pipWebkit) video.webkitSetPresentationMode('picture-in-picture');
 });
+
+// ── YouTube in Picture in Picture (Chrome / Edge: Document Picture-in-Picture) ──
+// YouTube plays in its own iframe, which the page can't put into ordinary video PiP. Instead, an always-on-top
+// Document PiP window gets a fresh YouTube player at the current spot, and `ytPlayer` points at it — so the room
+// sync (applyYtState, onYtStateChange, chat timestamps, resync) drives it unchanged. Closing the window (its ✕, the
+// button again, a room change) brings playback back to the page where it left off.
+const ytContainer = document.getElementById('yt-player-container');
+const ytDocPip = 'documentPictureInPicture' in window;
+let ytPipWin = null;
+// A fresh holder for each player: YouTube's destroy() takes the element it was built on with it
+function ytPipDiv() {
+  const d = ytPipWin.document, wrap = d.getElementById('yt-pip-wrap');
+  wrap.innerHTML = '';
+  const div = d.createElement('div'); div.id = 'yt-pip-player';
+  wrap.appendChild(div);
+  return div;
+}
+
+async function openYtPip() {
+  if (!ytDocPip || !ytPlayer || !ytVideoId || ytPipWin) return;
+  let w;
+  try { w = await documentPictureInPicture.requestWindow({ width: 480, height: 270 }); }
+  catch (err) { showNotif(`Picture in Picture failed: ${err.message}`); return; }
+  ytPipWin = w;
+  const st = w.document.createElement('style');
+  st.textContent = 'html,body{margin:0;height:100%;background:#000;overflow:hidden}#yt-pip-wrap,#yt-pip-wrap iframe{width:100%;height:100%;border:0;display:block}';
+  w.document.head.appendChild(st);
+  w.document.title = titleEl.textContent || 'YouTube';
+  const wrap = w.document.createElement('div'); wrap.id = 'yt-pip-wrap';
+  w.document.body.appendChild(wrap);
+
+  // Hand over: where the page's player is now, then remove it
+  let t = 0, playing = false;
+  try { t = ytPlayer.getCurrentTime?.() || 0; playing = ytPlayer.getPlayerState?.() === YT.PlayerState.PLAYING; } catch {}
+  try { ytPlayer.destroy(); } catch {}
+  ytPlayer = null;
+  ytContainer.classList.add('yt-in-pip');
+  refreshPipBtn();
+
+  w.onYouTubeIframeAPIReady = () => {
+    if (ytPipWin !== w || !ytVideoId) return;
+    buildYtPlayer(w.YT, ytPipDiv(), ytVideoId, t, playing);
+  };
+  const s = w.document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  w.document.head.appendChild(s);
+  w.addEventListener('pagehide', () => closeYtPip(w), { once: true });
+}
+
+function closeYtPip(w) {
+  if (ytPipWin !== w) return;
+  let t = 0, playing = false;
+  try { t = ytPlayer?.getCurrentTime?.() || 0; playing = ytPlayer?.getPlayerState?.() === YT.PlayerState.PLAYING; } catch {}
+  try { ytPlayer?.destroy?.(); } catch {}
+  ytPipWin = null;
+  ytPlayer = null;
+  ytContainer.classList.remove('yt-in-pip');
+  const vid = ytVideoId;
+  ytVideoId = null;   // so createYtPlayer builds a new player rather than seeking a destroyed one
+  if (roomType === 'youtube' && vid) {
+    isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
+    createYtPlayer(vid, t, playing);
+  }
+  refreshPipBtn();
+}
+document.getElementById('yt-pip-back')?.addEventListener('click', () => ytPipWin?.close());
 video.addEventListener('enterpictureinpicture', refreshPipBtn);
 video.addEventListener('leavepictureinpicture', refreshPipBtn);
 video.addEventListener('webkitpresentationmodechanged', refreshPipBtn);
 new MutationObserver(refreshPipBtn).observe(video, { attributes: true, attributeFilter: ['style'] });
+new MutationObserver(refreshPipBtn).observe(ytContainer, { attributes: true, attributeFilter: ['style'] });
 refreshPipBtn();
 
 // Chromium's PiP window calls these instead of pausing the element itself. No seek handlers → no ±10 s buttons.
