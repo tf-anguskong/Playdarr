@@ -71,7 +71,7 @@ app.use(helmet({
       mediaSrc: ["'self'", 'blob:'],
       connectSrc: ["'self'", ...(process.env.APP_URL ? [`wss://${new URL(process.env.APP_URL).host}`, `ws://${new URL(process.env.APP_URL).host}`] : ['wss:', 'ws:'])],
       frameSrc: ["'self'", 'https://www.youtube.com'],
-      frameAncestors: ["'none'"],
+      frameAncestors: ["'self'"],   // only our own pages may frame us (the YouTube PiP window frames /yt-pip.html)
       imgSrc: ["'self'", 'data:', 'https:'],
     }
   },
