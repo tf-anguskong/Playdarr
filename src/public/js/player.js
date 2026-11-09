@@ -1098,7 +1098,8 @@ function createYtPlayer(videoId, targetTime, shouldPlay) {
 function buildYtPlayer(YTns, el, videoId, targetTime, shouldPlay) {
   ytPlayer = new YTns.Player(el, {
     videoId,
-    width: '100%', height: '100%',
+    // No width/height here: '100%' made YouTube draw the video hugely zoomed on wide layouts (a black frame with
+    // stray captions). The iframe is stretched by CSS instead (#yt-player iframe; yt-pip.html), as it always was.
     playerVars: { rel: 0, modestbranding: 1, playsinline: 1, origin: location.origin },
     events: {
       onReady(e) {
