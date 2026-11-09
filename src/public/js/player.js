@@ -1075,8 +1075,7 @@ function createYtPlayer(videoId, targetTime, shouldPlay) {
     // Same video — just sync position/state
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
     ytPlayer.seekTo(targetTime, true);
-    if (shouldPlay) ytPlayer.playVideo();
-    else ytPlayer.pauseVideo();
+    if (shouldPlay) ytPlay(); else ytPause();
     releaseSyncLock();
     return;
   }
@@ -1088,7 +1087,7 @@ function createYtPlayer(videoId, targetTime, shouldPlay) {
 
   ytVideoId = videoId;
   // A different video while YouTube is in Picture in Picture: load it in the PiP window
-  if (ytPipWin && ytPipWin.YT?.Player) { buildYtPlayer(ytPipWin.YT, ytPipDiv(), videoId, targetTime, shouldPlay); return; }
+  if (ytPipInner?.YT?.Player) { buildYtPlayer(ytPipInner.YT, ytPipDiv(), videoId, targetTime, shouldPlay); return; }
   ensureYtDiv();
   buildYtPlayer(YT, 'yt-player', videoId, targetTime, shouldPlay);
 }
@@ -1105,8 +1104,7 @@ function buildYtPlayer(YTns, el, videoId, targetTime, shouldPlay) {
       onReady(e) {
         isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
         e.target.seekTo(targetTime, true);
-        if (shouldPlay) e.target.playVideo();
-        else e.target.pauseVideo();
+        if (shouldPlay) ytPlay(e.target); else ytPause(e.target);
         releaseSyncLock();
       },
       onStateChange: onYtStateChange
@@ -1114,15 +1112,39 @@ function buildYtPlayer(YTns, el, videoId, targetTime, shouldPlay) {
   });
 }
 
+// What the page last asked the YouTube player to do. A state change that matches it is the player obeying (it can
+// arrive seconds later, after buffering), not the viewer — so it must never be sent to the room. Before this, a
+// viewer whose browser blocked autoplay reported "paused" and paused the room for everyone.
+let ytWant = null;        // true = asked to play, false = asked to pause
+let ytStarted = false;    // has it actually played since it was last asked to?
+function ytPlay(p = ytPlayer) {
+  ytWant = true;
+  ytStarted = p.getPlayerState?.() === YT.PlayerState.PLAYING;
+  p.playVideo();
+}
+function ytPause(p = ytPlayer) { ytWant = false; p.pauseVideo(); }
+
 function onYtStateChange(event) {
-  if (isSyncing) return;
-  const s = event.data;
-  if (s === YT.PlayerState.PLAYING) {
-    if (roomSettings.playbackLocked && !isHost) {
-      isSyncing = true; ytPlayer.pauseVideo(); releaseSyncLock(); return;
-    }
+  const s = event.data, P = YT.PlayerState;
+  if (s === P.PLAYING) {
+    ytStarted = true;
+    if (ytWant === true || isSyncing) return;            // doing what it was told
+    if (roomSettings.playbackLocked && !isHost) { ytPause(); return; }
+    ytWant = true;                                       // the viewer pressed play
     socket.emit('play', { position: ytPlayer.getCurrentTime() });
-  } else if (s === YT.PlayerState.PAUSED) {
+  } else if (s === P.PAUSED) {
+    if (ytWant === false) return;                        // doing what it was told
+    if (ytWant === true && !ytStarted) {
+      // Told to play but never started: the browser blocked autoplay with sound. Muted autoplay is always allowed,
+      // so play muted rather than stopping (or worse, pausing the room).
+      if (!ytPlayer.isMuted?.()) {
+        ytPlayer.mute?.(); ytPlayer.playVideo();
+        showNotif('🔇 Your browser blocked sound until you interact — unmute in the player');
+      }
+      return;
+    }
+    if (isSyncing) return;
+    ytWant = false;                                      // the viewer pressed pause
     if (roomSettings.playbackLocked && !isHost) return;
     socket.emit('pause', { position: ytPlayer.getCurrentTime() });
   }
@@ -1155,12 +1177,12 @@ function applyYtState(state) {
   if (state.playing && !ytPlaying) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
     ytPlayer.seekTo(targetTime, true);
-    ytPlayer.playVideo();
+    ytPlay();
     releaseSyncLock();
   } else if (!state.playing && ytPlaying) {
     isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
     ytPlayer.seekTo(targetTime, true);
-    ytPlayer.pauseVideo();
+    ytPause();
     releaseSyncLock();
   }
 
@@ -1395,12 +1417,13 @@ pipBtn?.addEventListener('click', () => {
 // button again, a room change) brings playback back to the page where it left off.
 const ytContainer = document.getElementById('yt-player-container');
 const ytDocPip = 'documentPictureInPicture' in window;
-let ytPipWin = null;
+let ytPipWin = null;     // the Document PiP window
+let ytPipInner = null;   // /yt-pip.html inside it, which holds the player and its own copy of the IFrame API
 // A fresh holder for each player: YouTube's destroy() takes the element it was built on with it
 function ytPipDiv() {
-  const d = ytPipWin.document, wrap = d.getElementById('yt-pip-wrap');
+  const d = ytPipInner.document, wrap = d.getElementById('p');
   wrap.innerHTML = '';
-  const div = d.createElement('div'); div.id = 'yt-pip-player';
+  const div = d.createElement('div');
   wrap.appendChild(div);
   return div;
 }
@@ -1412,11 +1435,16 @@ async function openYtPip() {
   catch (err) { showNotif(`Picture in Picture failed: ${err.message}`); return; }
   ytPipWin = w;
   const st = w.document.createElement('style');
-  st.textContent = 'html,body{margin:0;height:100%;background:#000;overflow:hidden}#yt-pip-wrap,#yt-pip-wrap iframe{width:100%;height:100%;border:0;display:block}';
+  st.textContent = 'html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{width:100%;height:100%;border:0;display:block}';
   w.document.head.appendChild(st);
   w.document.title = titleEl.textContent || 'YouTube';
-  const wrap = w.document.createElement('div'); wrap.id = 'yt-pip-wrap';
-  w.document.body.appendChild(wrap);
+  // The PiP window has no address of its own, so YouTube would get no referrer from it and refuse to play
+  // (Error 153). A real page from this server inside it gives the player one.
+  const frame = w.document.createElement('iframe');
+  frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+  frame.src = `${location.origin}/yt-pip.html`;
+  w.document.body.appendChild(frame);
+  w.addEventListener('pagehide', () => closeYtPip(w), { once: true });
 
   // Hand over: where the page's player is now, then remove it
   let t = 0, playing = false;
@@ -1426,14 +1454,21 @@ async function openYtPip() {
   ytContainer.classList.add('yt-in-pip');
   refreshPipBtn();
 
-  w.onYouTubeIframeAPIReady = () => {
-    if (ytPipWin !== w || !ytVideoId) return;
-    buildYtPlayer(w.YT, ytPipDiv(), ytVideoId, t, playing);
-  };
-  const s = w.document.createElement('script');
-  s.src = 'https://www.youtube.com/iframe_api';
-  w.document.head.appendChild(s);
-  w.addEventListener('pagehide', () => closeYtPip(w), { once: true });
+  // Wait for the inner page's IFrame API, then build the player there
+  const started = Date.now();
+  const poll = setInterval(() => {
+    if (ytPipWin !== w) { clearInterval(poll); return; }
+    const inner = frame.contentWindow;
+    if (inner?.YT?.loaded && inner.YT.Player) {
+      clearInterval(poll);
+      ytPipInner = inner;
+      if (ytVideoId) buildYtPlayer(inner.YT, ytPipDiv(), ytVideoId, t, playing);
+    } else if (Date.now() - started > 15000) {
+      clearInterval(poll);
+      showNotif('⚠️ YouTube didn’t load in Picture in Picture');
+      w.close();
+    }
+  }, 100);
 }
 
 function closeYtPip(w) {
@@ -1442,6 +1477,7 @@ function closeYtPip(w) {
   try { t = ytPlayer?.getCurrentTime?.() || 0; playing = ytPlayer?.getPlayerState?.() === YT.PlayerState.PLAYING; } catch {}
   try { ytPlayer?.destroy?.(); } catch {}
   ytPipWin = null;
+  ytPipInner = null;
   ytPlayer = null;
   ytContainer.classList.remove('yt-in-pip');
   const vid = ytVideoId;
@@ -1509,7 +1545,7 @@ socket.on('resync', ({ seconds = 2, position, by } = {}) => {
   isSyncing = true; setSyncing(true); clearTimeout(syncTimer);
   try {
     if (roomType === 'youtube') {
-      if (ytPlayer && ytPlayer.seekTo) { ytPlayer.seekTo(position, true); ytPlayer.pauseVideo(); }
+      if (ytPlayer && ytPlayer.seekTo) { ytPlayer.seekTo(position, true); ytPause(); }
     } else {
       video.pause();
       if (roomType === 'livetv') { if (liveTlOffset != null) liveSeekAbs(position); }
