@@ -44,7 +44,7 @@ docker run --rm -v movienight_sessions:/data -v "$PWD":/backup alpine \
 docker compose up -d
 ```
 
-Restoring `scheduled.json` re-arms the schedule on startup. A recurring night that went overdue by more than 6 hours while you were restoring is skipped to its next occurrence.
+Restoring `scheduled.json` re-arms the schedule on startup. A night that went overdue by more than 6 hours while you were restoring is not opened late: a recurring one skips to its next occurrence, a one-off is dropped.
 
 ## Updating Playdarr
 

@@ -1793,6 +1793,32 @@ body.sidebar-resizing .player-container { pointer-events: none; }
 .split-act:hover, .split-pick:hover .split-name b { color: var(--pd-accent); }
 .split-add { margin-top: 0.15rem; padding: 0.4rem 0.5rem; background: none; border: 1px dashed var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted-2); cursor: pointer; font: 500 11px/1 var(--pd-font-mono); text-align: left; }
 .split-add:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
+/* Host's layout picker: one small sketch per layout (the solid block is the main channel) */
+.split-layouts { display: flex; align-items: center; gap: 0.3rem; margin-top: 0.15rem; }
+.split-layouts-label { flex: 1; font: 500 10px/1 var(--pd-font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--pd-text-muted); }
+.split-layout { padding: 0.25rem 0.3rem; background: var(--pd-bg-deep); border: 1px solid var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted); cursor: pointer; line-height: 0; }
+.split-layout svg { width: 32px; height: 18px; fill: currentColor; }
+.split-layout svg .minor { opacity: .5; }
+.split-layout svg .inset { fill: var(--pd-bg-deep); stroke: currentColor; stroke-width: 1; }
+.split-layout:hover { border-color: var(--pd-accent); color: var(--pd-text-2); }
+.split-layout.on { border-color: var(--pd-accent); background: var(--pd-accent-tint); color: var(--pd-accent); }
+/* Channel picker: tick several channels (+ on a row), then the tray under the list tunes them in one go */
+.channel-multi-tip { font: 400 11px/1.4 var(--pd-font-mono); color: var(--pd-text-muted); padding: 0 0.1rem 0.2rem; }
+.channel-multi-tip b { color: var(--pd-accent); }
+.channel-tick { flex: 0 0 auto; margin-left: auto; width: 1.9rem; height: 1.9rem; background: var(--pd-bg-deep); border: 1px solid var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted); cursor: pointer; font: 600 14px/1 var(--pd-font-mono); }
+.channel-tick:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
+.episode-item.is-picked { border-color: var(--pd-accent); background: var(--pd-accent-tint); }
+.episode-item.is-picked .channel-tick { border-color: var(--pd-accent); background: var(--pd-accent); color: var(--pd-bg-deep); }
+.channel-multi { flex-direction: column; gap: 0.5rem; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--pd-border-strong); }
+.channel-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.channel-chip { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.45rem; border: 1px solid var(--pd-border-strong); border-radius: 4px; background: var(--pd-bg-deep); color: var(--pd-text); font: 600 11px/1.2 var(--pd-font-mono); }
+.channel-chip.main { border-color: var(--pd-accent); }
+.channel-chip i { font-style: normal; font-weight: 400; color: var(--pd-accent); }
+.channel-chip button { padding: 0; background: none; border: 0; color: var(--pd-text-muted); cursor: pointer; font-size: 11px; }
+.channel-chip button:hover { color: var(--pd-accent); }
+.channel-multi-hint { font: 400 10px/1 var(--pd-font-mono); color: var(--pd-text-faint); margin-left: 0.25rem; }
+.channel-multi-go { padding: 0.55rem 0.75rem; background: var(--pd-accent); border: 1px solid var(--pd-accent); border-radius: 5px; color: var(--pd-bg-deep); cursor: pointer; font: 600 12px/1 var(--pd-font-mono); }
+.channel-multi-go:hover { filter: brightness(1.1); }
 .episode-item.is-disabled { opacity: .45; }
 
 .split-tiles { position: absolute; inset: 0; pointer-events: none; z-index: 51; --split-clear: 3.4rem; }

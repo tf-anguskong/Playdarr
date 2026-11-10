@@ -594,26 +594,67 @@ function videoFilter(hw) {
  * 2 = side by side (letterboxed), 3 = two on top and one centred below, 4 = 2×2.
  * Exported so the room can tell browsers where the tiles are (labels, which audio is on).
  */
-function splitLayout(n) {
+// Layouts a split-view room can use. In every one but 'grid', tile 0 is the main (large) channel.
+//   grid  — equal tiles (2 side by side, 3 = two over one, 4 = 2×2)
+//   main  — one large tile (80% of the width) with the others in a column to its right
+//   pip   — the main channel fills the picture, the others are small windows along the bottom right
+//   stack — two equal tiles, one above the other (2 channels only)
+const SPLIT_LAYOUTS = ['grid', 'main', 'pip', 'stack'];
+/** Layout ids that work for `n` channels. */
+function splitLayouts(n) {
+  if (n < 2) return [];
+  return SPLIT_LAYOUTS.filter(id => id !== 'stack' || n === 2);
+}
+/** `layout` if it works for `n` channels, else 'grid'. */
+const splitLayoutFor = (n, layout) => (splitLayouts(n).includes(layout) ? layout : 'grid');
+
+/**
+ * Where each channel sits in a split-view picture, in pixels of the SPLIT_W×SPLIT_H frame (all even numbers,
+ * as the encoder needs). Exported so the room can tell browsers where the tiles are (labels, which audio is on).
+ */
+function splitLayout(n, layout = 'grid') {
+  if (n < 2) return [{ x: 0, y: 0, w: SPLIT_W, h: SPLIT_H }];
   const w = SPLIT_W / 2, h = SPLIT_H / 2;
-  if (n === 2) return [{ x: 0, y: h / 2, w, h }, { x: w, y: h / 2, w, h }];
-  if (n === 3) return [{ x: 0, y: 0, w, h }, { x: w, y: 0, w, h }, { x: w / 2, y: h, w, h }];
-  if (n === 4) return [{ x: 0, y: 0, w, h }, { x: w, y: 0, w, h }, { x: 0, y: h, w, h }, { x: w, y: h, w, h }];
-  return [{ x: 0, y: 0, w: SPLIT_W, h: SPLIT_H }];
+  switch (splitLayoutFor(n, layout)) {
+    case 'main': {
+      // 1536×864 main with 384×216 tiles in a column beside it, from the main tile's top edge (3 fit)
+      const mw = SPLIT_W * 0.8, mh = SPLIT_H * 0.8, sw = SPLIT_W - mw, sh = sw * 9 / 16, top = (SPLIT_H - mh) / 2;
+      return [{ x: 0, y: top, w: mw, h: mh }, ...Array.from({ length: n - 1 }, (_, i) => ({ x: mw, y: top + i * sh, w: sw, h: sh }))];
+    }
+    case 'pip': {
+      // Small windows are a quarter of the width, in a row from the bottom-right corner
+      const sw = SPLIT_W / 4, sh = SPLIT_H / 4, edge = 48, gap = 16;
+      return [{ x: 0, y: 0, w: SPLIT_W, h: SPLIT_H }, ...Array.from({ length: n - 1 }, (_, i) =>
+        ({ x: SPLIT_W - edge - sw - (n - 2 - i) * (sw + gap), y: SPLIT_H - edge - sh, w: sw, h: sh }))];
+    }
+    case 'stack':
+      return [{ x: w / 2, y: 0, w, h }, { x: w / 2, y: h, w, h }];
+    default:
+      if (n === 2) return [{ x: 0, y: h / 2, w, h }, { x: w, y: h / 2, w, h }];
+      if (n === 3) return [{ x: 0, y: 0, w, h }, { x: w, y: 0, w, h }, { x: w / 2, y: h, w, h }];
+      return [{ x: 0, y: 0, w, h }, { x: w, y: 0, w, h }, { x: 0, y: h, w, h }, { x: w, y: h, w, h }];
+  }
 }
 
 // Split view filter graph: every input is deinterlaced, put on a common frame rate (xstack needs it)
-// and fitted into its tile, then the tiles are stacked onto one SPLIT_W×SPLIT_H frame. Upscaling is
-// skipped — the tiles are smaller than the sources anyway.
-function compositeFilter(n, hw) {
-  const tiles = splitLayout(n);
+// and fitted into its tile, then the tiles are put onto one SPLIT_W×SPLIT_H frame. Upscaling is
+// skipped — the tiles are no bigger than the sources.
+function compositeFilter(n, hw, layout = 'grid') {
+  const tiles = splitLayout(n, layout);
   const parts = tiles.map((t, i) =>
     `[${i}:v:0]yadif=mode=0:parity=-1:deint=1,fps=30000/1001,` +
     `scale=${t.w}:${t.h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${t.w}:${t.h}:(ow-iw)/2:(oh-ih)/2,setsar=1[t${i}]`);
-  const layout = tiles.map(t => `${t.x}_${t.y - tiles[0].y}`).join('|');
-  // xstack's frame is the tiles' bounding box (2 tiles: 1920×540) — pad it out to the full frame.
-  const tail = [`pad=${SPLIT_W}:${SPLIT_H}:(ow-iw)/2:(oh-ih)/2`, ...(hw ? ['format=nv12', 'hwupload'] : [])];
-  return `${parts.join(';')};${tiles.map((_, i) => `[t${i}]`).join('')}xstack=inputs=${n}:layout=${layout}:fill=black,${tail.join(',')}[v]`;
+  const hwTail = hw ? ',format=nv12,hwupload' : '';
+  if (splitLayoutFor(n, layout) === 'pip') {
+    // Tiles overlap, which xstack can't do: lay each small window over the full-frame main picture in turn.
+    const chain = tiles.slice(1).map((t, k) =>
+      `[${k ? `o${k}` : 't0'}][t${k + 1}]overlay=x=${t.x}:y=${t.y}:eof_action=pass${k === n - 2 ? `${hwTail}[v]` : `[o${k + 1}]`}`);
+    return `${parts.join(';')};${chain.join(';')}`;
+  }
+  // xstack's frame is the tiles' bounding box (2 side by side: 1920×540) — pad it out to the full frame.
+  const x0 = Math.min(...tiles.map(t => t.x)), y0 = Math.min(...tiles.map(t => t.y));
+  const pos = tiles.map(t => `${t.x - x0}_${t.y - y0}`).join('|');
+  return `${parts.join(';')};${tiles.map((_, i) => `[t${i}]`).join('')}xstack=inputs=${n}:layout=${pos}:fill=black,pad=${SPLIT_W}:${SPLIT_H}:${x0}:${y0}${hwTail}[v]`;
 }
 
 // Overridable for other hardware encoders, e.g. LIVETV_VIDEO_ARGS="-c:v h264_nvenc -preset p4 -b:v 6M".
@@ -645,8 +686,9 @@ function videoArgs(hw) {
 }
 
 class HdhrSource {
-  constructor(roomId, { channel, channels, dvr }) {
+  constructor(roomId, { channel, channels, dvr, layout }) {
     this.roomId  = roomId;
+    this.layout  = layout || 'grid';   // split view only
     this.channels = (channels && channels.length ? channels : [channel]).map(String);
     this.channel = this.channels.join('+');   // for log lines
     this.dvr     = dvr;
@@ -718,7 +760,7 @@ class HdhrSource {
     return [
       ...head,
       ...this.channels.flatMap(ch => this._inputArgs(ch)),
-      '-filter_complex', compositeFilter(n, hw),
+      '-filter_complex', compositeFilter(n, hw, this.layout),
       '-map', '[v]', '-an',
       ...videoArgs(hw),
       ...keyframes,
@@ -894,7 +936,8 @@ const pendingTunes = new Map();   // roomId -> { src, dvr, cancelled }
 // opts.keepDvr (split view, same number of tiles): record the new set into the room's existing DVR after a
 // discontinuity, so the room can still rewind to before the change. The old source stops first (one writer per
 // DVR, and its tuners are needed). Falls back to a fresh DVR when the old recording has a different shape.
-async function startHdhr(roomId, { channel, channels, names, readySec, onProgress, keepDvr }) {
+// opts.layout (split view): one of splitLayouts(n); anything else is the grid.
+async function startHdhr(roomId, { channel, channels, names, readySec, onProgress, keepDvr, layout }) {
   const list = (channels && channels.length ? channels : [channel]).map(String);
   if (list.length > SPLIT_MAX) throw new Error(`At most ${SPLIT_MAX} channels`);
   if (list.some(ch => !/^\d{1,3}(\.\d{1,3})?$/.test(ch))) throw new Error('Invalid channel number');
@@ -910,7 +953,7 @@ async function startHdhr(roomId, { channel, channels, names, readySec, onProgres
   }
   const dvr = keep ? oldDvr : new LiveDvr(roomId, split ? { audioTracks: list.length, trackNames: names || list.map(ch => `Ch ${ch}`) } : {});
   const from = keep ? dvr.edge() : 0;   // readiness counts only what this run records
-  const src = new HdhrSource(roomId, { channels: list, dvr });
+  const src = new HdhrSource(roomId, { channels: list, dvr, layout });
   const pending = { src, dvr, cancelled: false };
   pendingTunes.set(roomId, pending);
   src.start();
@@ -968,4 +1011,4 @@ function getDvr(roomId) {
   return dvrs.get(roomId) || null;
 }
 
-module.exports = { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, SPLIT_MAX };
+module.exports = { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, splitLayouts, splitLayoutFor, compositeFilter, SPLIT_MAX };

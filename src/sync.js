@@ -1,7 +1,7 @@
 const { randomUUID: uuidv4 } = require('crypto');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
-const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, SPLIT_MAX } = require('./live-relay');
+const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, splitLayouts, splitLayoutFor, SPLIT_MAX } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 const wordfilter = require('./wordfilter');
@@ -103,7 +103,10 @@ class Room {
       liveTvChannel:      this.liveTvChannel,
       liveTvChannelTitle: this.liveTvChannelTitle,
       // Changes whenever the set of channels does (the player reloads the stream on it)
-      liveTvKey: this.liveTvChannels.length ? this.liveTvChannels.map(c => c.channel).join('+') : this.liveTvChannel,
+      // Names what the picture is made of (channels, and the split layout unless it's the grid): the player reloads when it changes
+      liveTvKey: this.liveTvChannels.length ? this.liveTvChannels.map(c => c.channel).join('+') + (roomLayout(this) === 'grid' ? '' : `@${roomLayout(this)}`) : this.liveTvChannel,
+      liveTvLayout: this.liveTvChannels.length > 1 ? roomLayout(this) : null,
+      liveTvLayouts: splitLayouts(this.liveTvChannels.length),
       liveTvSplit: this.roomType === 'livetv' ? splitState(this) : null,
       liveTvSplitMax: this.roomType === 'livetv' ? liveSplitMax() : 0,
       liveTuning: this.roomType === 'livetv' ? (this.liveTuning || null) : null,
@@ -203,6 +206,7 @@ function closeRoom(io, room, reason) {
   if (room.intermissionTimer) clearTimeout(room.intermissionTimer);
   if (room.closeTimer)        clearTimeout(room.closeTimer);
   if (room.resyncTimer)       clearTimeout(room.resyncTimer);
+  if (room.unclaimedTimer)    clearTimeout(room.unclaimedTimer);
   room.broadcast(io, 'room-closed', { reason });
   room.viewers.forEach((_, sid) => socketToRoom.delete(sid));
   stopRelay(room.id);
@@ -243,6 +247,7 @@ function resetPersistentRoom(io, room) {
     stopRelay(room.id);
     clearRoomManifest(room.id);
     setLiveChannels(room, []);
+    room.liveTvLayout = 'grid';
     room.liveTvSubKey = room.liveTvSource = null;
     room.liveTuning = null; room._tuningInProgress = false; room.retuning = false;
     room.movieKey = null;
@@ -467,12 +472,15 @@ function setLiveChannels(room, list) {
   room.liveTvProgram      = null;
 }
 
+/** The split layout a room's picture uses ('grid' unless the host picked another that fits its channel count). */
+const roomLayout = room => splitLayoutFor(room.liveTvChannels.length, room.liveTvLayout);
+
 /** Split view for state(): each tile's channel, what's on, and where it sits (fractions of the picture). */
 function splitState(room) {
   const n = room.liveTvChannels.length;
   if (n < 2) return null;
   const full = splitLayout(1)[0];
-  return splitLayout(n).map((t, i) => ({
+  return splitLayout(n, roomLayout(room)).map((t, i) => ({
     slot: i,
     channel: room.liveTvChannels[i].channel,
     title: room.liveTvChannels[i].title,
@@ -549,13 +557,16 @@ function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
 
 /**
  * Tune a Live TV room to one channel, or (split view, HDHomeRun only) 2–liveSplitMax() channels tiled into
- * one picture, each with its own audio track. Any change to the set re-records everything into a fresh DVR.
+ * one picture, each with its own audio track. Any change to the set re-records everything (into the same DVR
+ * when the number of tiles stays the same). opts.layout picks the split layout; without it the room keeps its
+ * own, falling back to the grid when that one doesn't fit the new number of channels.
  */
-async function tuneRoomChannels(io, room, list) {
+async function tuneRoomChannels(io, room, list, opts = {}) {
   if (!Array.isArray(list) || !list.length) return 'No channel given';
   // Validate channelIds are not empty (Plex may return numeric or string IDs)
   if (list.some(c => !c || !c.channelId || !String(c.channelId).trim())) return 'Invalid channelId';
   const split = list.length > 1;
+  const layout = splitLayoutFor(list.length, opts.layout || room.liveTvLayout);
   if (split && !hdhrEnabled()) return 'Split view needs the HDHomeRun tuner source';
   if (list.length > liveSplitMax()) return splitLimitMessage();
 
@@ -606,9 +617,10 @@ async function tuneRoomChannels(io, room, list) {
     if (hdhrEnabled()) {
       // Straight from the HDHomeRun via ffmpeg — Plex is only used for the guide.
       const names = list.map(c => `${c.channel} ${c.channelTitle || ''}`.trim());
-      await startHdhr(room.id, { channels: list.map(c => c.channel), names, keepDvr, readySec: tuneNeeded, onProgress: (rec) => { if (!stale()) setTuning(rec); } });
+      await startHdhr(room.id, { channels: list.map(c => c.channel), names, keepDvr, layout, readySec: tuneNeeded, onProgress: (rec) => { if (!stale()) setTuning(rec); } });
       if (stale()) { stopRelay(room.id); return; }
       setLiveChannels(room, list);
+      room.liveTvLayout       = layout;
       room.liveTvSubKey       = null;
       room.liveTvSource       = 'hdhr';
       room.movieKey           = `hdhr-${room.liveTvChannels.map(c => c.channel).join('+')}`;
@@ -895,6 +907,7 @@ function setupSync(io, enabledRoomTypes) {
           return socket.emit('room-error', 'Waiting for the host to arrive. Please try again shortly.');
         }
         room.awaitingHost  = false;
+        if (room.unclaimedTimer) { clearTimeout(room.unclaimedTimer); room.unclaimedTimer = null; }
         room.hostId        = user.isGuest ? null : user.id;
         room.hostName      = user.displayName || user.name;
         room.hostPicture   = user.picture || null;
@@ -1091,11 +1104,19 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select live TV channel (host only, livetv rooms) ──
-    socket.on('select-livetv-channel', async ({ channel, channelTitle, channelId }) => {
+    // The browser only names the channel; its id and title come from the guide. (The id goes into a Plex URL when
+    // Live TV runs through Plex's DVR, so a browser-supplied one could point the tune at any Plex path.)
+    socket.on('select-livetv-channel', async ({ channel, channelId }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
-      if (!channelId) return;
-      const err = await tuneRoomChannel(io, room, { channel, channelTitle, channelId });
+      let ch;
+      try {
+        const { channels } = await require('./livetv-manager').getGuide();
+        ch = channels.find(c => c.number === String(channel)) || (channelId != null && channels.find(c => c.channelId === String(channelId)));
+      } catch { return socket.emit('error-msg', 'The channel guide is unavailable right now'); }
+      if (!ch) return socket.emit('error-msg', 'Unknown channel');
+      if (room.hostSocketId !== socket.id) return;   // host changed while the guide loaded
+      const err = await tuneRoomChannel(io, room, { channel: ch.number, channelTitle: ch.title, channelId: ch.channelId });
       if (err) socket.emit('error-msg', err);
     });
 
@@ -1120,6 +1141,50 @@ function setupSync(io, enabledRoomTypes) {
       if (err) socket.emit('error-msg', err);
     });
 
+    // Set the whole screen in one go: every channel (first = main) and the layout, so the host tunes once
+    // instead of once per tile. Channels are looked up in the guide like everywhere else.
+    socket.on('livetv-set-channels', async ({ channels, layout }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      if (!Array.isArray(channels) || !channels.length || channels.length > SPLIT_MAX * 2) return;
+      const wanted = [...new Set(channels.map(String))];
+      if (wanted.length > liveSplitMax()) return socket.emit('error-msg', splitLimitMessage());
+      let guide;
+      try { guide = (await require('./livetv-manager').getGuide()).channels; }
+      catch { return socket.emit('error-msg', 'The channel guide is unavailable right now'); }
+      const list = wanted.map(n => guide.find(c => c.number === n));
+      if (list.some(c => !c)) return socket.emit('error-msg', 'Unknown channel');
+      if (room.hostSocketId !== socket.id) return;   // host changed while the guide loaded
+      const pick = typeof layout === 'string' ? layout : undefined;
+      const now = room.liveTvChannels.map(c => c.channel);
+      const sameChannels = now.length === list.length && list.every((c, i) => c.number === now[i]);
+      if (sameChannels && splitLayoutFor(list.length, pick || room.liveTvLayout) === roomLayout(room)) return;
+      const err = await tuneRoomChannels(io, room, list.map(c => ({ channel: c.number, channelTitle: c.title, channelId: c.channelId })), { layout: pick });
+      if (err) socket.emit('error-msg', err);
+    });
+
+    // Split layout (see splitLayouts in live-relay.js). The tiles are one encoded picture, so this re-records
+    // them; the recording itself is kept, so rewind still reaches back before the change.
+    socket.on('livetv-set-layout', async ({ layout }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      const list = currentChannelList(room);
+      if (list.length < 2 || !splitLayouts(list.length).includes(layout) || layout === roomLayout(room)) return;
+      const err = await tuneRoomChannels(io, room, list, { layout });
+      if (err) socket.emit('error-msg', err);
+    });
+
+    // Make tile `slot` the main (first) channel: the large one in every layout but the grid.
+    socket.on('livetv-set-main', async ({ slot }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      const list = currentChannelList(room);
+      if (list.length < 2 || !Number.isInteger(slot) || slot < 1 || slot >= list.length) return;
+      list.unshift(...list.splice(slot, 1));
+      const err = await tuneRoomChannels(io, room, list);
+      if (err) socket.emit('error-msg', err);
+    });
+
     socket.on('livetv-remove-slot', async ({ slot }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
@@ -1140,13 +1205,16 @@ function setupSync(io, enabledRoomTypes) {
       await doRetune(room, io);
     });
 
-    // ── Playback (anyone in room, unless locked) ───────────
+    // ── Playback (anyone in room, unless locked; Live TV: the host only) ───────────
+    // The page never sends these from a Live TV guest, but the rule has to hold for a hand-made client too.
+    const mayControl = room => socket.id === room.hostSocketId || (room.roomType !== 'livetv' && !room.settings.playbackLocked);
+
     socket.on('play', ({ position }) => {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (room.resyncTimer) return;   // a resync is counting down; it will resume everyone itself
       if (!playPauseLimiter.allow(socket.id)) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (!mayControl(room)) return;
       room.position = validPosition(position) ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
@@ -1163,7 +1231,7 @@ function setupSync(io, enabledRoomTypes) {
       if (!room) return;
       if (room.resyncTimer) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (!mayControl(room)) return;
       // Live TV: no pause spam. A pause that comes too soon after the last one is refused and the pauser's
       // player resumes (the room never actually paused, so nothing changes for anyone else).
       if (room.roomType === 'livetv' && room.playing) {
@@ -1186,7 +1254,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (room.resyncTimer) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (!mayControl(room)) return;
       if (!seekLimiter.allow(socket.id)) return;
       if (validPosition(position) == null) return;
       room.position = position; room.lastUpdate = Date.now();
@@ -1586,26 +1654,17 @@ function setupSync(io, enabledRoomTypes) {
         if (room.hostIsGuest) {
           // Guest hosts cannot reconnect — close the room immediately
           console.log(`[Room] Guest host "${user.name}" disconnected from "${room.name}" — closing`);
-          room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
-          stopRelay(room.id);
-          clearRoomManifest(room.id);
-          inviteTokens.delete(room.inviteToken);
-          rooms.delete(room.id);
-          broadcastRoomList(io);
+          closeRoom(io, room, 'Host left the room');   // also clears its timers and chat images
         } else {
           // Give the Plex host a grace window to reconnect (e.g. lobby → watch navigation).
           // If they rejoin before the timer fires it will be cancelled.
           console.log(`[Room] Host "${user.name}" disconnected from "${room.name}" — waiting to see if they reconnect…`);
           room.closeTimer = setTimeout(() => {
-            if (!rooms.has(room.id)) return; // already cleaned up
+            room.closeTimer = null;
+            if (rooms.get(room.id) !== room) return; // already cleaned up
             console.log(`[Room] "${room.name}" closed — host did not reconnect`);
-            room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
-            stopRelay(room.id);
-            clearRoomManifest(room.id);
-            inviteTokens.delete(room.inviteToken);
-            rooms.delete(room.id);
-            broadcastRoomList(io);
-            }, 30000);
+            closeRoom(io, room, 'Host left the room');
+          }, 30000);
         }
       } else {
         room.broadcastViewers(io);
@@ -1622,6 +1681,8 @@ function setupSync(io, enabledRoomTypes) {
  * The room is registered in the rooms/inviteTokens maps and the pre-shared
  * inviteToken is preserved so outstanding invite links continue to work.
  */
+const UNCLAIMED_ROOM_MS = 6 * 3600 * 1000;   // how long a scheduled room waits for its first Plex user
+
 function createScheduledRoom(scheduled) {
   const room = new Room({
     hostId:      null,
@@ -1647,6 +1708,16 @@ function createScheduledRoom(scheduled) {
 
   rooms.set(room.id, room);
   inviteTokens.set(room.inviteToken, room.id);
+
+  // Nobody turned up: don't leave the room in the lobby until the next restart. (Once someone has hosted it,
+  // it closes the usual way, when the host leaves.)
+  room.unclaimedTimer = setTimeout(() => {
+    room.unclaimedTimer = null;
+    if (rooms.get(room.id) !== room || !room.awaitingHost || !_io) return;
+    console.log(`[Scheduler] Room "${room.name}" closed — nobody arrived to host it`);
+    closeRoom(_io, room, 'Nobody arrived to host this watch night');
+  }, UNCLAIMED_ROOM_MS);
+  room.unclaimedTimer.unref();
 
   if (_io) broadcastRoomList(_io);
   return room;
