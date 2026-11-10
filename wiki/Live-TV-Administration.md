@@ -22,7 +22,8 @@ With Live TV enabled, Plex users see a **Live TV · on now** row in the lobby: c
 
 A Live TV room's host can put **up to 4 channels on screen at once**. Everyone sees the same tiled picture, and **each viewer chooses which channel they hear**.
 
-- **Host:** after tuning a channel, *Split view → + Add a channel* in the sidebar adds a tile. Each tile has **✎** (change that channel) and **✕** (take it off the screen); with one channel left the room is back to normal. In the Guide, clicking a channel replaces the tile you're listening to.
+- **Host, all at once:** in the channel list (*Choose Channel*), the **+** on a row ticks that channel instead of tuning it. Tick up to as many as the room may show, pick a **layout** in the tray under the list, and *Watch these N channels* tunes them together: one wait instead of one per channel. The first channel ticked is the main one. Clicking a channel's row without ticking anything still tunes just that channel straight away.
+- **Host, one at a time:** after tuning a channel, *Split view → + Add a channel* in the sidebar adds a tile (its list has the same **+** and layout tray, so a second channel and a layout can go on in one tune). *⇄ Choose channels again* reopens the list to pick the whole screen afresh. Each tile has **✎** (change that channel) and **✕** (take it off the screen); with one channel left the room is back to normal. In the Guide, clicking a channel replaces the tile you're listening to.
 - **Everyone:** click a channel in the sidebar list or its label on the picture to hear it, or press **1–4** (this also works with the video fullscreen). The choice is per viewer and remembered for that room.
 - **Layouts (host):** the *Layout* buttons under the channel list arrange the tiles. Everyone sees the layout the host picks.
   - **Grid** (the default): equal tiles. 2 = side by side, 3 = two on top and one below, 4 = 2×2.

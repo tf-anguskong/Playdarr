@@ -1141,6 +1141,28 @@ function setupSync(io, enabledRoomTypes) {
       if (err) socket.emit('error-msg', err);
     });
 
+    // Set the whole screen in one go: every channel (first = main) and the layout, so the host tunes once
+    // instead of once per tile. Channels are looked up in the guide like everywhere else.
+    socket.on('livetv-set-channels', async ({ channels, layout }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      if (!Array.isArray(channels) || !channels.length || channels.length > SPLIT_MAX * 2) return;
+      const wanted = [...new Set(channels.map(String))];
+      if (wanted.length > liveSplitMax()) return socket.emit('error-msg', splitLimitMessage());
+      let guide;
+      try { guide = (await require('./livetv-manager').getGuide()).channels; }
+      catch { return socket.emit('error-msg', 'The channel guide is unavailable right now'); }
+      const list = wanted.map(n => guide.find(c => c.number === n));
+      if (list.some(c => !c)) return socket.emit('error-msg', 'Unknown channel');
+      if (room.hostSocketId !== socket.id) return;   // host changed while the guide loaded
+      const pick = typeof layout === 'string' ? layout : undefined;
+      const now = room.liveTvChannels.map(c => c.channel);
+      const sameChannels = now.length === list.length && list.every((c, i) => c.number === now[i]);
+      if (sameChannels && splitLayoutFor(list.length, pick || room.liveTvLayout) === roomLayout(room)) return;
+      const err = await tuneRoomChannels(io, room, list.map(c => ({ channel: c.number, channelTitle: c.title, channelId: c.channelId })), { layout: pick });
+      if (err) socket.emit('error-msg', err);
+    });
+
     // Split layout (see splitLayouts in live-relay.js). The tiles are one encoded picture, so this re-records
     // them; the recording itself is kept, so rewind still reaches back before the change.
     socket.on('livetv-set-layout', async ({ layout }) => {
