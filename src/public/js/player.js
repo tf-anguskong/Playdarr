@@ -664,6 +664,15 @@ socket.on('livetv-program', ({ program, programs } = {}) => {
 let liveSplit        = null;   // state.liveTvSplit: [{ slot, channel, title, program, x, y, w, h }] or null
 let liveSplitMax     = 1;      // most tiles this room may have (1 = split view unavailable)
 let liveHasChannel   = false;
+let liveLayout       = 'grid'; // state.liveTvLayout: how the tiles are arranged (the host picks; everyone gets the same picture)
+let liveLayouts      = [];     // layouts that fit this many channels
+// Layout picker: what each one is called, and a 32×18 sketch of it (the main channel is the solid block)
+const SPLIT_LAYOUT_INFO = {
+  grid:  { name: 'Side by side / grid',  svg: '<rect x="1" y="5" width="14" height="8"/><rect x="17" y="5" width="14" height="8"/>' },
+  main:  { name: 'One large, the rest small', svg: '<rect x="1" y="2" width="23" height="14"/><rect class="minor" x="25" y="2" width="6" height="4"/>' },
+  pip:   { name: 'Picture in picture',   svg: '<rect x="1" y="1" width="30" height="16"/><rect class="inset" x="20" y="10" width="9" height="5"/>' },
+  stack: { name: 'One above the other',  svg: '<rect x="9" y="1" width="14" height="7.5"/><rect x="9" y="9.5" width="14" height="7.5"/>' },
+};
 let splitAudioChannel = null;  // channel number this viewer is listening to
 let splitAudioSlot    = 0;     // ...and which tile it was in (to follow the tile if the host replaces its channel)
 const SPLIT_AUDIO_KEY = `livetv-split-audio:${roomId}`;
@@ -680,6 +689,8 @@ function applySplitState(state) {
   liveSplit      = Array.isArray(state.liveTvSplit) && state.liveTvSplit.length > 1 ? state.liveTvSplit : null;
   liveSplitMax   = state.liveTvSplitMax || 1;
   liveHasChannel = !!state.movieKey;
+  liveLayout     = state.liveTvLayout || 'grid';
+  liveLayouts    = Array.isArray(state.liveTvLayouts) ? state.liveTvLayouts.filter(id => SPLIT_LAYOUT_INFO[id]) : [];
   if (liveSplit && !liveSplit.some(t => t.channel === splitAudioChannel)) {
     // Keep listening to the same channel while it's on screen. On arrival: the one remembered for this room.
     // If the host replaced the tile you were hearing: that tile's new channel (else tile 1).
@@ -736,12 +747,20 @@ function renderSplitUi() {
           <span class="split-ico" aria-hidden="true">${i === on ? '🔊' : i + 1}</span>
           <span class="split-name"><b>${esc(t.channel)}</b> ${esc(t.title || '')}${t.program ? `<span class="split-prog">${esc(t.program)}</span>` : ''}</span>
         </button>
+        ${isHost && i > 0 && liveLayout !== 'grid' ? `<button type="button" class="split-act" data-main="${i}" title="Make this the main (large) channel">⤢</button>` : ''}
         ${isHost ? `<button type="button" class="split-act" data-change="${i}" title="Change this channel">✎</button>
         <button type="button" class="split-act" data-remove="${i}" title="Take this channel off the screen">✕</button>` : ''}
       </div>`).join('') : '';
+    // Host only: how the tiles are arranged. Changing it re-records the picture (a few seconds of tuning).
+    const layoutPicker = isHost && liveSplit && liveLayouts.length > 1 ? `
+      <div class="split-layouts" role="group" aria-label="Layout">
+        <span class="split-layouts-label">Layout</span>
+        ${liveLayouts.map(id => `<button type="button" class="split-layout${id === liveLayout ? ' on' : ''}" data-layout="${id}" title="${esc(SPLIT_LAYOUT_INFO[id].name)}" aria-label="${esc(SPLIT_LAYOUT_INFO[id].name)}" aria-pressed="${id === liveLayout}"><svg viewBox="0 0 32 18" aria-hidden="true">${SPLIT_LAYOUT_INFO[id].svg}</svg></button>`).join('')}
+      </div>` : '';
     box.innerHTML = `
       <div class="split-head"><span>Split view</span>${liveSplit ? `<span class="split-hint">keys 1–${liveSplit.length} switch audio</span>` : ''}</div>
       ${rows}
+      ${layoutPicker}
       ${canAdd ? `<button type="button" class="split-add" data-add="${count}">+ Add a channel${liveSplit ? '' : ' (split screen)'}</button>` : ''}`;
   }
 
@@ -762,6 +781,8 @@ document.getElementById('livetv-split')?.addEventListener('click', e => {
   else if (b.dataset.change != null) openChannelPicker(Number(b.dataset.change));
   else if (b.dataset.add != null) openChannelPicker(Number(b.dataset.add));
   else if (b.dataset.remove != null) socket.emit('livetv-remove-slot', { slot: Number(b.dataset.remove) });
+  else if (b.dataset.main != null) socket.emit('livetv-set-main', { slot: Number(b.dataset.main) });
+  else if (b.dataset.layout != null && b.dataset.layout !== liveLayout) socket.emit('livetv-set-layout', { layout: b.dataset.layout });
 });
 document.getElementById('split-tiles')?.addEventListener('click', e => {
   const b = e.target.closest('.split-chip');

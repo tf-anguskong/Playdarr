@@ -1793,6 +1793,15 @@ body.sidebar-resizing .player-container { pointer-events: none; }
 .split-act:hover, .split-pick:hover .split-name b { color: var(--pd-accent); }
 .split-add { margin-top: 0.15rem; padding: 0.4rem 0.5rem; background: none; border: 1px dashed var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted-2); cursor: pointer; font: 500 11px/1 var(--pd-font-mono); text-align: left; }
 .split-add:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
+/* Host's layout picker: one small sketch per layout (the solid block is the main channel) */
+.split-layouts { display: flex; align-items: center; gap: 0.3rem; margin-top: 0.15rem; }
+.split-layouts-label { flex: 1; font: 500 10px/1 var(--pd-font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--pd-text-muted); }
+.split-layout { padding: 0.25rem 0.3rem; background: var(--pd-bg-deep); border: 1px solid var(--pd-border-strong); border-radius: 5px; color: var(--pd-text-muted); cursor: pointer; line-height: 0; }
+.split-layout svg { width: 32px; height: 18px; fill: currentColor; }
+.split-layout svg .minor { opacity: .5; }
+.split-layout svg .inset { fill: var(--pd-bg-deep); stroke: currentColor; stroke-width: 1; }
+.split-layout:hover { border-color: var(--pd-accent); color: var(--pd-text-2); }
+.split-layout.on { border-color: var(--pd-accent); background: var(--pd-accent-tint); color: var(--pd-accent); }
 .episode-item.is-disabled { opacity: .45; }
 
 .split-tiles { position: absolute; inset: 0; pointer-events: none; z-index: 51; --split-clear: 3.4rem; }

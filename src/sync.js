@@ -1,7 +1,7 @@
 const { randomUUID: uuidv4 } = require('crypto');
 const axios = require('axios');
 const { clearRoomManifest, prewarmManifest } = require('./routes/stream');
-const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, SPLIT_MAX } = require('./live-relay');
+const { startRelay, startHdhr, hdhrEnabled, stopRelay, getRelay, getDvr, splitLayout, splitLayouts, splitLayoutFor, SPLIT_MAX } = require('./live-relay');
 const plex = require('./plex');
 const { sanitizeText } = require('./sanitize');
 const wordfilter = require('./wordfilter');
@@ -103,7 +103,10 @@ class Room {
       liveTvChannel:      this.liveTvChannel,
       liveTvChannelTitle: this.liveTvChannelTitle,
       // Changes whenever the set of channels does (the player reloads the stream on it)
-      liveTvKey: this.liveTvChannels.length ? this.liveTvChannels.map(c => c.channel).join('+') : this.liveTvChannel,
+      // Names what the picture is made of (channels, and the split layout unless it's the grid): the player reloads when it changes
+      liveTvKey: this.liveTvChannels.length ? this.liveTvChannels.map(c => c.channel).join('+') + (roomLayout(this) === 'grid' ? '' : `@${roomLayout(this)}`) : this.liveTvChannel,
+      liveTvLayout: this.liveTvChannels.length > 1 ? roomLayout(this) : null,
+      liveTvLayouts: splitLayouts(this.liveTvChannels.length),
       liveTvSplit: this.roomType === 'livetv' ? splitState(this) : null,
       liveTvSplitMax: this.roomType === 'livetv' ? liveSplitMax() : 0,
       liveTuning: this.roomType === 'livetv' ? (this.liveTuning || null) : null,
@@ -244,6 +247,7 @@ function resetPersistentRoom(io, room) {
     stopRelay(room.id);
     clearRoomManifest(room.id);
     setLiveChannels(room, []);
+    room.liveTvLayout = 'grid';
     room.liveTvSubKey = room.liveTvSource = null;
     room.liveTuning = null; room._tuningInProgress = false; room.retuning = false;
     room.movieKey = null;
@@ -468,12 +472,15 @@ function setLiveChannels(room, list) {
   room.liveTvProgram      = null;
 }
 
+/** The split layout a room's picture uses ('grid' unless the host picked another that fits its channel count). */
+const roomLayout = room => splitLayoutFor(room.liveTvChannels.length, room.liveTvLayout);
+
 /** Split view for state(): each tile's channel, what's on, and where it sits (fractions of the picture). */
 function splitState(room) {
   const n = room.liveTvChannels.length;
   if (n < 2) return null;
   const full = splitLayout(1)[0];
-  return splitLayout(n).map((t, i) => ({
+  return splitLayout(n, roomLayout(room)).map((t, i) => ({
     slot: i,
     channel: room.liveTvChannels[i].channel,
     title: room.liveTvChannels[i].title,
@@ -550,13 +557,16 @@ function tuneRoomChannel(io, room, { channel, channelTitle, channelId }) {
 
 /**
  * Tune a Live TV room to one channel, or (split view, HDHomeRun only) 2–liveSplitMax() channels tiled into
- * one picture, each with its own audio track. Any change to the set re-records everything into a fresh DVR.
+ * one picture, each with its own audio track. Any change to the set re-records everything (into the same DVR
+ * when the number of tiles stays the same). opts.layout picks the split layout; without it the room keeps its
+ * own, falling back to the grid when that one doesn't fit the new number of channels.
  */
-async function tuneRoomChannels(io, room, list) {
+async function tuneRoomChannels(io, room, list, opts = {}) {
   if (!Array.isArray(list) || !list.length) return 'No channel given';
   // Validate channelIds are not empty (Plex may return numeric or string IDs)
   if (list.some(c => !c || !c.channelId || !String(c.channelId).trim())) return 'Invalid channelId';
   const split = list.length > 1;
+  const layout = splitLayoutFor(list.length, opts.layout || room.liveTvLayout);
   if (split && !hdhrEnabled()) return 'Split view needs the HDHomeRun tuner source';
   if (list.length > liveSplitMax()) return splitLimitMessage();
 
@@ -607,9 +617,10 @@ async function tuneRoomChannels(io, room, list) {
     if (hdhrEnabled()) {
       // Straight from the HDHomeRun via ffmpeg — Plex is only used for the guide.
       const names = list.map(c => `${c.channel} ${c.channelTitle || ''}`.trim());
-      await startHdhr(room.id, { channels: list.map(c => c.channel), names, keepDvr, readySec: tuneNeeded, onProgress: (rec) => { if (!stale()) setTuning(rec); } });
+      await startHdhr(room.id, { channels: list.map(c => c.channel), names, keepDvr, layout, readySec: tuneNeeded, onProgress: (rec) => { if (!stale()) setTuning(rec); } });
       if (stale()) { stopRelay(room.id); return; }
       setLiveChannels(room, list);
+      room.liveTvLayout       = layout;
       room.liveTvSubKey       = null;
       room.liveTvSource       = 'hdhr';
       room.movieKey           = `hdhr-${room.liveTvChannels.map(c => c.channel).join('+')}`;
@@ -1126,6 +1137,28 @@ function setupSync(io, enabledRoomTypes) {
       if (list.some((c, i) => i !== slot && c.channel === ch.number)) return socket.emit('error-msg', 'That channel is already on screen');
       if (list[slot]?.channel === ch.number) return;
       list[slot] = { channel: ch.number, channelTitle: ch.title, channelId: ch.channelId };
+      const err = await tuneRoomChannels(io, room, list);
+      if (err) socket.emit('error-msg', err);
+    });
+
+    // Split layout (see splitLayouts in live-relay.js). The tiles are one encoded picture, so this re-records
+    // them; the recording itself is kept, so rewind still reaches back before the change.
+    socket.on('livetv-set-layout', async ({ layout }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      const list = currentChannelList(room);
+      if (list.length < 2 || !splitLayouts(list.length).includes(layout) || layout === roomLayout(room)) return;
+      const err = await tuneRoomChannels(io, room, list, { layout });
+      if (err) socket.emit('error-msg', err);
+    });
+
+    // Make tile `slot` the main (first) channel: the large one in every layout but the grid.
+    socket.on('livetv-set-main', async ({ slot }) => {
+      const room = socketToRoom.get(socket.id);
+      if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
+      const list = currentChannelList(room);
+      if (list.length < 2 || !Number.isInteger(slot) || slot < 1 || slot >= list.length) return;
+      list.unshift(...list.splice(slot, 1));
       const err = await tuneRoomChannels(io, room, list);
       if (err) socket.emit('error-msg', err);
     });
