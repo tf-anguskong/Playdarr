@@ -18,7 +18,8 @@ const store = new Map();
 
 let _openRoomCallback = null;
 
-// A recurring night that was missed by more than this (server was down) is skipped, not opened late.
+// A night that was missed by more than this (server was down) is not opened late: a recurring one skips to its
+// next occurrence, a one-off is dropped.
 const MISSED_GRACE_MS = 6 * 3600 * 1000;
 
 // ── Persistence ───────────────────────────────────────────
@@ -104,6 +105,10 @@ function fire(id) {
     // One-off: remove from store before calling callback
     store.delete(id);
     persist();
+    if (overdue > MISSED_GRACE_MS) {
+      console.log(`[Scheduler] Dropped missed night "${scheduled.name}" (${Math.round(overdue / 3600000)}h overdue)`);
+      return;
+    }
   }
 
   console.log(`[Scheduler] Firing scheduled room "${snapshot.name}" (id=${id})`);

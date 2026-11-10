@@ -29,6 +29,9 @@ For a **recurring night, the link stays the same every week.** People can bookma
 2. The **first Plex user to open it becomes the host.** Guests who arrive first see "Waiting for the host to arrive" and can retry.
 3. If a movie was picked in advance it's already loaded.
 4. Any webhook subscribed to *A scheduled room has opened* posts.
+5. If **no Plex user opens it within 6 hours**, the room closes on its own.
+
+If the server was down at the start time, the room opens when it comes back, unless the night is **more than 6 hours late**: a one-off night is then dropped, and a recurring one skips to its next occurrence.
 
 ## Recurring nights
 
@@ -76,7 +79,7 @@ Hosts of movie rooms have a **🗳 Movie vote** button: the host chooses filters
 
 | Symptom | Likely cause |
 |---|---|
-| Night didn't open | Server was down by more than 6 hours (recurring) — check `docker compose logs | grep Scheduler` |
+| Night didn't open | Server was down for more than 6 hours past the start time (a one-off is dropped, a recurring night skips to the next one) — check `docker compose logs | grep Scheduler` |
 | Wrong time shown | Timezone picked at creation; the night is stored in that zone and displayed in each viewer's own zone |
 | No reminder | See [Webhooks and Notifications](Webhooks-and-Notifications#troubleshooting-webhooks) |
 | Guest says "Invite expired" | The one-off night was cancelled, or the room was closed. Recurring nights keep the link until the series is cancelled |

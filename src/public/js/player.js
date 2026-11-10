@@ -2080,7 +2080,7 @@ socket.on('chat-deleted', ({ id, by } = {}) => {
   Object.assign(m, { deleted: true, deletedBy: by || null, text: '', gif: null, image: null, replyTo: null, reactions: null });
   const el = chatMessages.querySelector(`.chat-msg[data-id="${Number(id)}"]`);
   if (el) el.innerHTML = chatMsgInner(m, el.querySelector('.chat-ts')?.outerHTML || '');
-  chatMessages.querySelectorAll(`.chat-quote[data-jump="${Number(id)}"]`).forEach(q => { q.innerHTML = `<b>${q.querySelector('b')?.textContent || ''}</b> <i>message deleted</i>`; });
+  chatMessages.querySelectorAll(`.chat-quote[data-jump="${Number(id)}"]`).forEach(q => { q.innerHTML = `<b>${esc(q.querySelector('b')?.textContent || '')}</b> <i>message deleted</i>`; });
   if (chatReplyTo?.id === Number(id)) setReply(null);
 });
 

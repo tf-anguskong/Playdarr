@@ -52,7 +52,7 @@ docker compose logs | grep -E "Auth|Webhooks|Scheduler|Room|Vote|HDHR"
 
 | Symptom | Cause and fix |
 |---|---|
-| Recurring night didn't open | Server was down more than 6 hours late — it skips to the next one. Check `docker compose logs | grep Scheduler` |
+| Scheduled night didn't open | Server was down more than 6 hours past the start time — a recurring night skips to the next one, a one-off is dropped. Check `docker compose logs | grep Scheduler` |
 | Time is off by an hour in a calendar app | Older calendar clients and time zones; the Playdarr schedule itself keeps local time across DST |
 | Skipped the wrong night | There's no undo; cancel the series and re-create it, or wait — the next occurrence follows the usual interval |
 

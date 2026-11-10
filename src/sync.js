@@ -203,6 +203,7 @@ function closeRoom(io, room, reason) {
   if (room.intermissionTimer) clearTimeout(room.intermissionTimer);
   if (room.closeTimer)        clearTimeout(room.closeTimer);
   if (room.resyncTimer)       clearTimeout(room.resyncTimer);
+  if (room.unclaimedTimer)    clearTimeout(room.unclaimedTimer);
   room.broadcast(io, 'room-closed', { reason });
   room.viewers.forEach((_, sid) => socketToRoom.delete(sid));
   stopRelay(room.id);
@@ -895,6 +896,7 @@ function setupSync(io, enabledRoomTypes) {
           return socket.emit('room-error', 'Waiting for the host to arrive. Please try again shortly.');
         }
         room.awaitingHost  = false;
+        if (room.unclaimedTimer) { clearTimeout(room.unclaimedTimer); room.unclaimedTimer = null; }
         room.hostId        = user.isGuest ? null : user.id;
         room.hostName      = user.displayName || user.name;
         room.hostPicture   = user.picture || null;
@@ -1091,11 +1093,19 @@ function setupSync(io, enabledRoomTypes) {
     });
 
     // ── Select live TV channel (host only, livetv rooms) ──
-    socket.on('select-livetv-channel', async ({ channel, channelTitle, channelId }) => {
+    // The browser only names the channel; its id and title come from the guide. (The id goes into a Plex URL when
+    // Live TV runs through Plex's DVR, so a browser-supplied one could point the tune at any Plex path.)
+    socket.on('select-livetv-channel', async ({ channel, channelId }) => {
       const room = socketToRoom.get(socket.id);
       if (!room || socket.id !== room.hostSocketId || room.roomType !== 'livetv') return;
-      if (!channelId) return;
-      const err = await tuneRoomChannel(io, room, { channel, channelTitle, channelId });
+      let ch;
+      try {
+        const { channels } = await require('./livetv-manager').getGuide();
+        ch = channels.find(c => c.number === String(channel)) || (channelId != null && channels.find(c => c.channelId === String(channelId)));
+      } catch { return socket.emit('error-msg', 'The channel guide is unavailable right now'); }
+      if (!ch) return socket.emit('error-msg', 'Unknown channel');
+      if (room.hostSocketId !== socket.id) return;   // host changed while the guide loaded
+      const err = await tuneRoomChannel(io, room, { channel: ch.number, channelTitle: ch.title, channelId: ch.channelId });
       if (err) socket.emit('error-msg', err);
     });
 
@@ -1140,13 +1150,16 @@ function setupSync(io, enabledRoomTypes) {
       await doRetune(room, io);
     });
 
-    // ── Playback (anyone in room, unless locked) ───────────
+    // ── Playback (anyone in room, unless locked; Live TV: the host only) ───────────
+    // The page never sends these from a Live TV guest, but the rule has to hold for a hand-made client too.
+    const mayControl = room => socket.id === room.hostSocketId || (room.roomType !== 'livetv' && !room.settings.playbackLocked);
+
     socket.on('play', ({ position }) => {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (room.resyncTimer) return;   // a resync is counting down; it will resume everyone itself
       if (!playPauseLimiter.allow(socket.id)) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (!mayControl(room)) return;
       room.position = validPosition(position) ?? room.currentPosition();
       room.playing = true; room.lastUpdate = Date.now();
       room.broadcastState(io);
@@ -1163,7 +1176,7 @@ function setupSync(io, enabledRoomTypes) {
       if (!room) return;
       if (room.resyncTimer) return;
       if (!playPauseLimiter.allow(socket.id)) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (!mayControl(room)) return;
       // Live TV: no pause spam. A pause that comes too soon after the last one is refused and the pauser's
       // player resumes (the room never actually paused, so nothing changes for anyone else).
       if (room.roomType === 'livetv' && room.playing) {
@@ -1186,7 +1199,7 @@ function setupSync(io, enabledRoomTypes) {
       const room = socketToRoom.get(socket.id);
       if (!room) return;
       if (room.resyncTimer) return;
-      if (room.settings.playbackLocked && socket.id !== room.hostSocketId) return;
+      if (!mayControl(room)) return;
       if (!seekLimiter.allow(socket.id)) return;
       if (validPosition(position) == null) return;
       room.position = position; room.lastUpdate = Date.now();
@@ -1586,26 +1599,17 @@ function setupSync(io, enabledRoomTypes) {
         if (room.hostIsGuest) {
           // Guest hosts cannot reconnect — close the room immediately
           console.log(`[Room] Guest host "${user.name}" disconnected from "${room.name}" — closing`);
-          room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
-          stopRelay(room.id);
-          clearRoomManifest(room.id);
-          inviteTokens.delete(room.inviteToken);
-          rooms.delete(room.id);
-          broadcastRoomList(io);
+          closeRoom(io, room, 'Host left the room');   // also clears its timers and chat images
         } else {
           // Give the Plex host a grace window to reconnect (e.g. lobby → watch navigation).
           // If they rejoin before the timer fires it will be cancelled.
           console.log(`[Room] Host "${user.name}" disconnected from "${room.name}" — waiting to see if they reconnect…`);
           room.closeTimer = setTimeout(() => {
-            if (!rooms.has(room.id)) return; // already cleaned up
+            room.closeTimer = null;
+            if (rooms.get(room.id) !== room) return; // already cleaned up
             console.log(`[Room] "${room.name}" closed — host did not reconnect`);
-            room.broadcast(io, 'room-closed', { reason: 'Host left the room' });
-            stopRelay(room.id);
-            clearRoomManifest(room.id);
-            inviteTokens.delete(room.inviteToken);
-            rooms.delete(room.id);
-            broadcastRoomList(io);
-            }, 30000);
+            closeRoom(io, room, 'Host left the room');
+          }, 30000);
         }
       } else {
         room.broadcastViewers(io);
@@ -1622,6 +1626,8 @@ function setupSync(io, enabledRoomTypes) {
  * The room is registered in the rooms/inviteTokens maps and the pre-shared
  * inviteToken is preserved so outstanding invite links continue to work.
  */
+const UNCLAIMED_ROOM_MS = 6 * 3600 * 1000;   // how long a scheduled room waits for its first Plex user
+
 function createScheduledRoom(scheduled) {
   const room = new Room({
     hostId:      null,
@@ -1647,6 +1653,16 @@ function createScheduledRoom(scheduled) {
 
   rooms.set(room.id, room);
   inviteTokens.set(room.inviteToken, room.id);
+
+  // Nobody turned up: don't leave the room in the lobby until the next restart. (Once someone has hosted it,
+  // it closes the usual way, when the host leaves.)
+  room.unclaimedTimer = setTimeout(() => {
+    room.unclaimedTimer = null;
+    if (rooms.get(room.id) !== room || !room.awaitingHost || !_io) return;
+    console.log(`[Scheduler] Room "${room.name}" closed — nobody arrived to host it`);
+    closeRoom(_io, room, 'Nobody arrived to host this watch night');
+  }, UNCLAIMED_ROOM_MS);
+  room.unclaimedTimer.unref();
 
   if (_io) broadcastRoomList(_io);
   return room;
