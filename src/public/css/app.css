@@ -1067,7 +1067,18 @@ body {
 }
 #yt-player { width: 100%; height: 100%; display: block; }
 #yt-player iframe { width: 100% !important; height: 100% !important; border: none; display: block; }
-.yt-pip-note { display: none; }
+.yt-pip-note, .video-pip-note { display: none; }
+.player-container.video-in-pip .video-pip-note { display: flex; position: absolute; inset: 0; z-index: 2; flex-direction: column; align-items: center;
+  justify-content: center; gap: 0.8rem; color: var(--text-muted); font: 400 13px var(--pd-font-mono); }
+/* The Document Picture-in-Picture window: the player (or YouTube frame) filling it, reactions floating over it */
+.pip-body { margin: 0; height: 100vh; background: #000; overflow: hidden; }
+.pip-body .player-container.pip-stage { width: 100vw; height: 100vh; flex: none; aspect-ratio: auto; max-height: none; order: 0; --ovl-top: 0.4rem; }
+.pip-body .pip-yt-frame { width: 100%; height: 100%; border: 0; display: block; }
+.pip-body .floating-reaction { bottom: 3.5rem; font-size: 1.8rem; }
+.pip-body .reaction-bar { padding: 0.2rem 0.4rem; gap: 0.1rem; }
+.pip-body .reaction-btn { font-size: 1.1rem; padding: 0.1rem 0.2rem; }
+.pip-mute { position: absolute; right: 0.5rem; bottom: 0.5rem; z-index: 61; background: rgba(0, 0, 0, .6); color: #fff;
+  border: 1px solid rgba(255, 255, 255, .25); border-radius: 5px; padding: 0.2rem 0.45rem; cursor: pointer; font-size: 0.9rem; }
 #yt-player-container.yt-in-pip #yt-player { display: none; }
 #yt-player-container.yt-in-pip .yt-pip-note { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.8rem;
   height: 100%; color: var(--text-muted); font: 400 13px var(--pd-font-mono); }
