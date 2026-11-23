@@ -90,6 +90,7 @@ function applyRoomSettings(settings) {
     if (volOverlay) volOverlay.style.display = isHost ? 'none' : 'flex';
   }
   document.getElementById('reaction-bar').style.display = roomSettings.reactionsEnabled ? '' : 'none';
+  syncPipReactionBar();
   if (isHost) {
     const lockEl = document.getElementById('toggle-lock-playback');
     const reactEl = document.getElementById('toggle-reactions');
@@ -1403,9 +1404,15 @@ const pipBtn = document.getElementById('pip-btn');
 const pipStandard = !!(document.pictureInPictureEnabled && !video.disablePictureInPicture);
 const pipWebkit = !pipStandard && typeof video.webkitSupportsPresentationMode === 'function'
   && video.webkitSupportsPresentationMode('picture-in-picture');   // older iOS Safari
-const inPip = () => document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture';
+const inPip = () => document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture' || !!vidPipWin;
+// Chrome / Edge: Picture in Picture is a Document PiP window — the real player plus the reactions overlay.
+// Elsewhere it falls back to the browser's own video PiP, which can only show the bare video.
+const docPip = 'documentPictureInPicture' in window;
+let vidPipWin = null;   // Document PiP window holding the <video> (movie / TV / Live TV)
+let pipStage  = null;   // the player-sized box in whichever PiP window is open; reactions float in it
 
 function leavePip() {
+  try { vidPipWin?.close(); } catch {}
   try { ytPipWin?.close(); } catch {}
   try {
     if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
@@ -1417,7 +1424,7 @@ function refreshPipBtn() {
   if (!pipBtn) return;
   const videoShown = video.style.display !== 'none' && roomType !== 'youtube';
   const ytShown = roomType === 'youtube' && !!ytVideoId && ytContainer.style.display !== 'none';
-  const show = roomType === 'youtube' ? (ytDocPip && ytShown) : ((pipStandard || pipWebkit) && videoShown);
+  const show = roomType === 'youtube' ? (ytDocPip && ytShown) : ((docPip || pipStandard || pipWebkit) && videoShown);
   const active = inPip() || !!ytPipWin;
   pipBtn.style.display = show ? 'flex' : 'none';
   pipBtn.closest('.player-container')?.classList.toggle('has-pip', show);
@@ -1430,9 +1437,85 @@ function refreshPipBtn() {
 pipBtn?.addEventListener('click', () => {
   if (roomType === 'youtube') { if (ytPipWin) ytPipWin.close(); else openYtPip(); return; }
   if (inPip()) { leavePip(); return; }
+  if (docPip) { openVideoPip(); return; }
   if (pipStandard) video.requestPictureInPicture().catch(err => showNotif(`Picture in Picture failed: ${err.message}`));
   else if (pipWebkit) video.webkitSetPresentationMode('picture-in-picture');
 });
+
+// ── Document Picture-in-Picture window (shared by video and YouTube) ──
+// The page's stylesheets, a player-sized stage (it carries .player-container, so the reaction bar and floating
+// reactions are styled exactly as on the page), and the six reaction buttons, shown on hover.
+function preparePipWindow(w, title) {
+  const d = w.document;
+  document.querySelectorAll('link[rel="stylesheet"]').forEach(l => {
+    const c = d.createElement('link'); c.rel = 'stylesheet'; c.href = l.href; d.head.appendChild(c);
+  });
+  d.title = title || 'Playdarr';
+  d.body.className = 'pip-body';
+  const stage = d.createElement('div');
+  stage.className = 'player-container pip-stage';
+  const bar = d.createElement('div');
+  bar.className = 'reaction-bar pip-reaction-bar';
+  bar.innerHTML = [...document.querySelectorAll('#reaction-bar .reaction-btn')]
+    .map(b => `<button class="reaction-btn" type="button" data-emoji="${esc(b.dataset.emoji)}">${esc(b.dataset.emoji)}</button>`).join('');
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('.reaction-btn');
+    if (b) socket.emit('reaction', { emoji: b.dataset.emoji });
+  });
+  stage.appendChild(bar);
+  d.body.appendChild(stage);
+  pipStage = stage;
+  syncPipReactionBar();
+  return stage;
+}
+function syncPipReactionBar() {
+  const bar = pipStage?.querySelector('.pip-reaction-bar');
+  if (bar) bar.style.display = roomSettings.reactionsEnabled ? '' : 'none';
+}
+
+// Movie / TV / Live TV: the <video> itself moves into the PiP window (and back), so it keeps playing, keeps its
+// stream, and the room sync keeps driving it. The move can make the browser pause it; that pause is ours, so the
+// sync lock keeps it from reaching the room and the video is resumed.
+const videoAnchor = document.createComment('video-player');
+async function openVideoPip() {
+  if (!docPip || vidPipWin) return;
+  const ratio = video.videoWidth && video.videoHeight ? video.videoHeight / video.videoWidth : 9 / 16;
+  let w;
+  try { w = await documentPictureInPicture.requestWindow({ width: 480, height: Math.round(480 * ratio) }); }
+  catch (err) { showNotif(`Picture in Picture failed: ${err.message}`); return; }
+  vidPipWin = w;
+  const stage = preparePipWindow(w, titleEl.textContent);
+  // Viewers without the player's controls (Live TV guests, guests in a locked room) still need sound
+  if (!video.controls) {
+    const mute = w.document.createElement('button');
+    mute.type = 'button'; mute.className = 'pip-mute';
+    const label = () => { mute.textContent = video.muted ? '🔇' : '🔊'; mute.title = video.muted ? 'Unmute' : 'Mute'; };
+    mute.addEventListener('click', () => { video.muted = !video.muted; label(); });
+    video.addEventListener('volumechange', label);
+    label();
+    stage.appendChild(mute);
+  }
+  moveVideo(() => { video.before(videoAnchor); stage.prepend(video); });
+  playerContainer.classList.add('video-in-pip');
+  w.addEventListener('pagehide', () => closeVideoPip(w), { once: true });
+  refreshPipBtn();
+}
+function closeVideoPip(w) {
+  if (vidPipWin !== w) return;
+  vidPipWin = null;
+  pipStage = null;
+  moveVideo(() => { if (videoAnchor.parentNode) videoAnchor.replaceWith(video); });
+  playerContainer.classList.remove('video-in-pip');
+  refreshPipBtn();
+}
+function moveVideo(fn) {
+  const wasPlaying = !video.paused;
+  isSyncing = true; clearTimeout(syncTimer);
+  fn();
+  if (wasPlaying && video.paused) video.play().catch(() => {});
+  releaseSyncLock();
+}
+document.getElementById('video-pip-back')?.addEventListener('click', () => vidPipWin?.close());
 
 // ── YouTube in Picture in Picture (Chrome / Edge: Document Picture-in-Picture) ──
 // YouTube plays in its own iframe, which the page can't put into ordinary video PiP. Instead, an always-on-top
@@ -1458,16 +1541,14 @@ async function openYtPip() {
   try { w = await documentPictureInPicture.requestWindow({ width: 480, height: 270 }); }
   catch (err) { showNotif(`Picture in Picture failed: ${err.message}`); return; }
   ytPipWin = w;
-  const st = w.document.createElement('style');
-  st.textContent = 'html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{width:100%;height:100%;border:0;display:block}';
-  w.document.head.appendChild(st);
-  w.document.title = titleEl.textContent || 'YouTube';
+  const stage = preparePipWindow(w, titleEl.textContent || 'YouTube');
   // The PiP window has no address of its own, so YouTube would get no referrer from it and refuse to play
   // (Error 153). A real page from this server inside it gives the player one.
   const frame = w.document.createElement('iframe');
   frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
   frame.src = `${location.origin}/yt-pip.html`;
-  w.document.body.appendChild(frame);
+  frame.className = 'pip-yt-frame';
+  stage.prepend(frame);
   w.addEventListener('pagehide', () => closeYtPip(w), { once: true });
 
   // Hand over: where the page's player is now, then remove it
@@ -1502,6 +1583,7 @@ function closeYtPip(w) {
   try { ytPlayer?.destroy?.(); } catch {}
   ytPipWin = null;
   ytPipInner = null;
+  pipStage = null;
   ytPlayer = null;
   ytContainer.classList.remove('yt-in-pip');
   const vid = ytVideoId;
@@ -2634,7 +2716,7 @@ socket.on('reaction', ({ emoji, name, picture }) => {
   if (!picture) badge.classList.add('reaction-avatar-initial');
   el.appendChild(badge);
   el.style.left = (15 + Math.random() * 70) + '%';
-  playerContainer.appendChild(el);
+  (pipStage || playerContainer).appendChild(el);   // in the Picture in Picture window while it's open
   setTimeout(() => el.remove(), 2200);
 });
 
